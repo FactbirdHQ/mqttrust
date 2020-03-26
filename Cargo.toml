@@ -3,7 +3,7 @@ name = "mqttrust"
 version = "0.0.1"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "MQTT Client "
-readme = "../README.md"
+readme = "README.md"
 keywords = ["mqtt", "no-std"]
 categories = ["embedded", "no-std"]
 license = "MIT OR Apache-2.0"
@@ -26,4 +26,7 @@ log = { version = "0.4", default-features = false }
 mqttrs = { git = "https://github.com/00imvj00/mqttrs", default-features = false }
 bytes = { version = "0.5.4", default-features = false }
 embedded-nal = { git = "https://github.com/thejpster/embedded-nal" }
-embedded-timeout-macros = "0.2.0"
+
+[dev-dependencies]
+void = "1.0.2"
+env_logger = "0.7.1"
