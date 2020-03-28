@@ -194,9 +194,15 @@ where
                 encode(&pkt.into(), &mut self.tx_buf).map_err(|e| nb::Error::Other(e.into()))?;
                 self.send_buffer(network)?;
                 self.state = State::AwaitingPubAck(qospid.qos());
+                self.command_timer.start(5000);
                 nb::Error::WouldBlock
             }
             State::AwaitingPubAck(qos) => {
+                if self.command_timer.wait().is_ok() {
+                    self.state = State::Idle;
+                    return Err(nb::Error::Other(Error::Timeout));
+                }
+
                 let error = match qos {
                     QoS::AtMostOnce => return Ok(()),
                     QoS::AtLeastOnce => match self.cycle_until(network, PacketType::Puback) {
