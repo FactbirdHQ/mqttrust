@@ -1,343 +1,269 @@
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
-extern crate embedded_nal;
-extern crate mqttrs;
-#[macro_use]
-extern crate nb;
+
+mod options;
+mod requests;
+mod state;
+
+use state::{MqttState, StateError};
 
 use bytes::BytesMut;
-use embedded_nal::TcpStack;
-use mqttrs::{decode, encode, ConnectReturnCode, Packet, PacketType, Pid, Publish, QosPid};
+use mqttrs::{decode, encode, Packet, Pid, Suback};
+use embedded_nal::{Mode, TcpStack};
+use heapless::{spsc::Consumer, ArrayLength};
+use alloc::{borrow::ToOwned, collections::VecDeque};
 
-pub use mqttrs::{Connect, Protocol, QoS};
+pub use mqttrs::{Connect, Protocol, Publish, QoS, Subscribe, SubscribeTopic, Unsubscribe};
+pub use options::MqttOptions;
+pub use requests::{PublishRequest, Request, SubscribeRequest};
 
-use alloc::{string::String, vec::Vec};
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Error {
-    Network,
-    Encoding(mqttrs::Error),
-    Timeout,
-    ConnectionDenied,
-    InvalidPacket,
-    PongTimeout,
-    Busy,
-    Unknown,
+/// Includes incoming packets from the network and other interesting events happening in the eventloop
+#[derive(Debug)]
+pub enum Notification {
+    /// Incoming publish from the broker
+    Publish(Publish),
+    /// Incoming puback from the broker
+    Puback(Pid),
+    /// Incoming pubrec from the broker
+    Pubrec(Pid),
+    /// Incoming pubcomp from the broker
+    Pubcomp(Pid),
+    /// Incoming suback from the broker
+    Suback(Suback),
+    /// Incoming unsuback from the broker
+    Unsuback(Pid),
+    // Eventloop error
+    Abort(EventError),
 }
 
-impl From<mqttrs::Error> for Error {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttConnectionStatus {
+    Handshake,
+    Connected,
+    Disconnecting,
+    Disconnected,
+}
+
+/// Critical errors during eventloop polling
+#[derive(Debug)]
+pub enum EventError {
+    MqttState(StateError),
+    Timeout,
+    Encoding(mqttrs::Error),
+    // Network(network::Error),
+    Network,
+    StreamDone,
+    RequestsDone,
+}
+
+impl From<mqttrs::Error> for EventError {
     fn from(e: mqttrs::Error) -> Self {
-        Error::Encoding(e)
+        EventError::Encoding(e)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum State {
-    Idle,
-    AwaitingConnack,
-    AwaitingPubAck(QoS),
+impl From<StateError> for EventError {
+    fn from(e: StateError) -> Self {
+        EventError::MqttState(e)
+    }
 }
 
-pub struct MQTTClient<N, T, P>
+pub struct MqttEvent<'a, L, N, I, O>
 where
+    L: ArrayLength<Request>,
     N: TcpStack,
 {
-    pub last_pid: Pid,
-    pub keep_alive_ms: u32,
-    pub pong_pending: bool,
+    /// Current state of the connection
+    state: MqttState<I, O>,
+    /// Options of the current mqtt connection
+    options: MqttOptions,
+    /// Receive buffer for incomming packets
+    rx_buf: BytesMut,
+    /// Network socket
+    socket: Option<N::TcpSocket>,
+    /// Request stream
+    requests: Consumer<'a, Request, L>,
 
-    pub(crate) state: State,
-
-    pub(crate) rx_buf: BytesMut,
-    pub(crate) tx_buf: BytesMut,
-
-    pub(crate) socket: Option<N::TcpSocket>,
-    pub(crate) keep_alive_timer: P,
-    pub(crate) command_timer: T,
+    pending_pub: VecDeque<Publish>,
+    pending_rel: VecDeque<Pid>,
 }
 
-impl<N, T, P> MQTTClient<N, T, P>
+impl<'a, L, N, I, O> MqttEvent<'a, L, N, I, O>
 where
+    L: ArrayLength<Request>,
     N: TcpStack,
-    T: embedded_hal::timer::CountDown,
-    P: embedded_hal::timer::CountDown,
-    T::Time: From<u32>,
-    P::Time: From<u32>,
+    I: embedded_hal::timer::CountDown,
+    O: embedded_hal::timer::CountDown,
+    I::Time: From<u32>,
+    O::Time: From<u32>,
 {
-    pub fn new(keep_alive_timer: P, command_timer: T, rx_size: usize, tx_size: usize) -> Self {
-        MQTTClient {
-            last_pid: Pid::new(),
-            keep_alive_ms: 0,
-            pong_pending: false,
-
-            state: State::Idle,
-
-            rx_buf: BytesMut::with_capacity(rx_size),
-            tx_buf: BytesMut::with_capacity(tx_size),
+    pub fn new(
+        requests: Consumer<'a, Request, L>,
+        incoming_timer: I,
+        outgoing_timer: O,
+        options: MqttOptions,
+    ) -> Self {
+        MqttEvent {
+            state: MqttState::new(incoming_timer, outgoing_timer),
+            rx_buf: BytesMut::with_capacity(options.max_packet_size()),
+            options,
             socket: None,
-            keep_alive_timer,
-            command_timer,
+            requests,
+            pending_pub: VecDeque::new(),
+            pending_rel: VecDeque::new(),
         }
     }
 
-    fn next_pid(&mut self) -> Pid {
-        self.last_pid = self.last_pid + 1;
-        self.last_pid
+    pub fn connect(&mut self, network: &N) -> Result<(), EventError> {
+        self.state.await_pingresp = false;
+
+        // connect to the broker
+        self.socket = Some(self.network_connect(network)?);
+        self.mqtt_connect(network)?;
+
+        // Handle state after reconnect events
+        // self.populate_pending();
+
+        Ok(())
     }
 
-    fn send_buffer(&mut self, network: &N) -> Result<(), Error> {
-        if let Some(ref mut socket) = self.socket {
-            block!(network.write(socket, &self.tx_buf)).map_err(|_| Error::Network)?;
-            self.tx_buf.clear();
+    pub fn yield_event(&mut self, network: &N) -> nb::Result<Notification, EventError> {
+        self.receive(network)?;
 
-            // reset keep alive timer
-            self.keep_alive_timer.start(self.keep_alive_ms);
+        let o = if let Some(packet) = decode(&mut self.rx_buf).map_err(EventError::Encoding)? {
+            // Handle incoming
+            self.state.handle_incoming_packet(packet)
+        } else if let Some(p) = self.pending_rel.pop_front() {
+            // Handle pending PubRec
+            self.state
+                .handle_outgoing_packet(Packet::Pubrec(p), self.options.keep_alive_ms())
+        } else if let Some(p) = self.pending_pub.pop_front() {
+            // Handle pending Publish
+            log::warn!("Handle pending Publish!!");
+            self.state
+                .handle_outgoing_packet(Packet::Publish(p), self.options.keep_alive_ms())
+        } else if !self.state.outgoing_pub.len() >= self.options.inflight() && self.requests.ready()
+        {
+            // Handle requests
+            let request = self.requests.dequeue().unwrap();
+            self.state
+                .handle_outgoing_request(request, self.options.keep_alive_ms())
+        } else if self.state.last_outgoing_timer.wait().is_ok() {
+            // Handle ping
+            self.state
+                .handle_outgoing_packet(Packet::Pingreq, self.options.keep_alive_ms())
+                .map_err(|e| nb::Error::Other(e.into()))?;
+            Ok((None, Some(Packet::Pingreq)))
+        } else {
+            Ok((None, None))
+        };
+
+        let (notification, outpacket) = match o {
+            Ok((n, p)) => (n, p),
+            Err(e) => {
+                return Ok(Notification::Abort(e.into()));
+            }
+        };
+
+        if let Some(p) = outpacket {
+            if let Err(e) = self.send(network, p) {
+                return Ok(Notification::Abort(e.into()));
+            }
+        }
+
+        if let Some(n) = notification {
+            return Ok(n);
+        }
+
+        return Err(nb::Error::WouldBlock);
+    }
+
+    // fn populate_pending(&mut self) {
+    //     let mut pending_pub = core::mem::replace(&mut self.state.outgoing_pub, VecDeque::new());
+    //     self.pending_pub.append(&mut pending_pub);
+
+    //     let mut pending_rel = core::mem::replace(&mut self.state.outgoing_rel, VecDeque::new());
+    //     self.pending_rel.append(&mut pending_rel);
+    // }
+
+    fn send(&mut self, network: &N, pkt: Packet) -> Result<(), EventError> {
+        let mut buf = BytesMut::with_capacity(self.options.max_packet_size());
+        encode(&pkt, &mut buf)?;
+
+        if let Some(ref mut socket) = self.socket {
+            nb::block!(network.write(socket, &buf)).map_err(|_| EventError::Timeout)?;
+
             Ok(())
         } else {
-            Err(Error::Network)
+            Err(EventError::Network)
         }
     }
 
-    fn cycle(&mut self, network: &N) -> nb::Result<Packet, Error> {
+    fn receive(&mut self, network: &N) -> Result<(), EventError> {
         if let Some(ref mut socket) = self.socket {
             // TODO: It seems silly to create an additional buffer here, only to copy more
             let mut buf = [0u8; 256];
-            let size = network
-                .read(socket, &mut buf)
-                .map_err(|_e| Error::Network)?;
+            match network.read(socket, &mut buf) {
+                Ok(size) => {
+                    if size > 0 {
+                        self.rx_buf.extend_from_slice(&buf[0..size]);
+                    }
+                    Ok(())
+                }
+                Err(nb::Error::WouldBlock) => Ok(()),
+                _ => Err(EventError::Network),
+            }
+        } else {
+            return Err(EventError::Network);
+        }
+    }
 
-            if size == 0 {
-                // No data available
-                return Err(nb::Error::WouldBlock);
+    fn network_connect(&mut self, network: &N) -> Result<N::TcpSocket, EventError> {
+        let soc = network
+            .open(Mode::Timeout(50))
+            .map_err(|_e| EventError::Network)?;
+
+        Ok(network
+            .connect(soc, self.options.broker_address().into())
+            .map_err(|_e| EventError::Network)?)
+    }
+
+    fn mqtt_connect(&mut self, network: &N) -> Result<(), EventError> {
+        let (username, password) = if let Some((username, password)) = self.options.credentials() {
+            (Some(username), Some(password.as_bytes().to_owned()))
+        } else {
+            (None, None)
+        };
+
+        let connect = Connect {
+            protocol: Protocol::MQTT311,
+            keep_alive: (self.options.keep_alive_ms() / 1000) as u16,
+            client_id: self.options.client_id(),
+            clean_session: self.options.clean_session(),
+            last_will: self.options.last_will(),
+            username,
+            password,
+        };
+
+        // mqtt connection with timeout
+        self.send(network, Packet::Connect(connect))?;
+        self.state.handle_outgoing_connect(5000)?;
+
+        loop {
+            if self.state.last_outgoing_timer.wait().is_ok() {
+                return Err(EventError::Timeout);
             }
 
-            self.rx_buf.extend_from_slice(&buf[0..size]);
+            self.receive(network)?;
 
-            let packet = decode(&mut self.rx_buf)
-                .map_err(|e| Error::Encoding(e))?
-                .ok_or(nb::Error::WouldBlock)?;
-
-            match &packet {
-                Packet::Publish(p) => {
-                    // Handle callbacks!
-
-                    match p.qospid {
-                        QosPid::AtMostOnce => {}
-                        QosPid::AtLeastOnce(pid) => {
-                            let pkt = Packet::Puback(pid).into();
-                            encode(&pkt, &mut self.tx_buf).map_err(|e| Error::Encoding(e))?;
-                            self.send_buffer(network)?;
-                        }
-                        QosPid::ExactlyOnce(pid) => {
-                            let pkt = Packet::Pubrec(pid).into();
-                            encode(&pkt, &mut self.tx_buf).map_err(|e| Error::Encoding(e))?;
-                            self.send_buffer(network)?;
-                        }
-                    }
+            match decode(&mut self.rx_buf).map_err(|e| EventError::Encoding(e))? {
+                Some(packet) => {
+                    self.state.handle_incoming_connack(packet)?;
+                    return Ok(());
                 }
-                Packet::Pubrec(pid) => {
-                    let pkt = Packet::Pubrel(pid.clone()).into();
-                    encode(&pkt, &mut self.tx_buf).map_err(|e| Error::Encoding(e))?;
-                    self.send_buffer(network)?;
-                }
-                Packet::Pubrel(pid) => {
-                    let pkt = Packet::Pubcomp(pid.clone()).into();
-                    encode(&pkt, &mut self.tx_buf).map_err(|e| Error::Encoding(e))?;
-                    self.send_buffer(network)?;
-                }
-                Packet::Pingresp => {
-                    self.pong_pending = false;
-                }
-                _ => {}
+                None => {}
             };
-
-            Ok(packet)
-        } else {
-            Err(nb::Error::Other(Error::Network))
         }
-    }
-
-    fn cycle_until(&mut self, network: &N, packet_type: PacketType) -> nb::Result<Packet, Error> {
-        let packet = self.cycle(network)?;
-        if packet.get_type() == packet_type {
-            Ok(packet)
-        } else {
-            Err(nb::Error::Other(Error::InvalidPacket))
-        }
-    }
-
-    pub fn publish(
-        &mut self,
-        network: &N,
-        qos: QoS,
-        topic_name: String,
-        payload: Vec<u8>,
-    ) -> nb::Result<(), Error> {
-        Err(match self.state {
-            State::Idle => {
-                let pid = self.next_pid();
-
-                let qospid = match qos {
-                    QoS::AtMostOnce => QosPid::AtMostOnce,
-                    QoS::AtLeastOnce => QosPid::AtLeastOnce(pid),
-                    QoS::ExactlyOnce => QosPid::ExactlyOnce(pid),
-                };
-
-                let pkt = Publish {
-                    dup: false,
-                    qospid,
-                    retain: false,
-                    topic_name,
-                    payload,
-                };
-                encode(&pkt.into(), &mut self.tx_buf).map_err(|e| nb::Error::Other(e.into()))?;
-                self.send_buffer(network)?;
-                self.state = State::AwaitingPubAck(qospid.qos());
-                self.command_timer.start(5000);
-                nb::Error::WouldBlock
-            }
-            State::AwaitingPubAck(qos) => {
-                if self.command_timer.wait().is_ok() {
-                    self.state = State::Idle;
-                    return Err(nb::Error::Other(Error::Timeout));
-                }
-
-                let error = match qos {
-                    QoS::AtMostOnce => return Ok(()),
-                    QoS::AtLeastOnce => match self.cycle_until(network, PacketType::Puback) {
-                        Ok(_) => {
-                            self.state = State::Idle;
-                            return Ok(());
-                        }
-                        Err(e) => e,
-                    },
-                    QoS::ExactlyOnce => match self.cycle_until(network, PacketType::Pubcomp) {
-                        Ok(_) => {
-                            self.state = State::Idle;
-                            return Ok(());
-                        }
-                        Err(e) => e,
-                    },
-                };
-                if let nb::Error::Other(_) = error {
-                    self.state = State::Idle;
-                };
-                error
-            }
-            _ => nb::Error::Other(Error::Busy),
-        })
-    }
-
-    pub fn yield_client(&mut self) -> Result<(), Error> {
-        // self.cycle_until()
-        match self.state {
-            State::AwaitingConnack => {}
-            _ => {}
-        }
-        Ok(())
-    }
-
-    pub fn keep_alive(&mut self, network: &N) -> Result<(), Error> {
-        // return immediately if keep alive interval is zero
-        if self.keep_alive_ms == 0 {
-            return Ok(());
-        };
-
-        // return immediately if no ping is due
-        if self.keep_alive_timer.wait().is_ok() {
-            return Ok(());
-        }
-
-        // a ping is due
-
-        // fail immediately if a pong is already pending
-        if self.pong_pending {
-            return Err(Error::PongTimeout);
-        };
-
-        // encode & send pingreq packet
-        let pkt = Packet::Pingreq.into();
-        encode(&pkt, &mut self.tx_buf)?;
-        self.send_buffer(network)?;
-
-        // set flag
-        self.pong_pending = true;
-
-        Ok(())
-    }
-
-    pub fn disconnect(&mut self, network: &N) -> Result<(), Error> {
-        // encode & send disconnect packet
-        let pkt = Packet::Disconnect.into();
-        encode(&pkt, &mut self.tx_buf)?;
-        self.send_buffer(network)?;
-        Ok(())
-    }
-
-    pub fn connect(
-        &mut self,
-        network: &N,
-        socket: N::TcpSocket,
-        options: Connect,
-    ) -> nb::Result<(), Error> {
-        Err(match self.state {
-            State::Idle => {
-                self.socket = Some(socket);
-
-                // save keep alive interval
-                self.keep_alive_ms = (options.keep_alive as u32) * 1000;
-
-                // set keep alive timer
-                self.keep_alive_timer.start(self.keep_alive_ms);
-
-                // reset pong pending flag
-                self.pong_pending = false;
-
-                // encode connect packet
-                encode(&options.into(), &mut self.tx_buf)
-                    .map_err(|e| nb::Error::Other(e.into()))?;
-
-                // send packet
-                self.send_buffer(network)?;
-
-                // wait for connack packet
-                self.command_timer.start(5000);
-                self.state = State::AwaitingConnack;
-
-                nb::Error::WouldBlock
-            }
-            State::AwaitingConnack => {
-                if self.command_timer.wait().is_ok() {
-                    self.state = State::Idle;
-                    return Err(nb::Error::Other(Error::Timeout));
-                }
-
-                match self.cycle_until(network, PacketType::Connack) {
-                    Ok(Packet::Connack(c)) => {
-                        self.state = State::Idle;
-                        if c.code != ConnectReturnCode::Accepted {
-                            nb::Error::Other(Error::ConnectionDenied)
-                        } else {
-                            return Ok(());
-                        }
-                    }
-                    Ok(_) => {
-                        self.state = State::Idle;
-                        nb::Error::Other(Error::InvalidPacket)
-                    }
-                    Err(e) => {
-                        match e {
-                            nb::Error::Other(_) => {
-                                self.state = State::Idle;
-                            }
-                            _ => {}
-                        };
-                        e
-                    }
-                }
-            }
-            _ => nb::Error::Other(Error::Busy),
-        })
     }
 }
