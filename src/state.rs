@@ -139,26 +139,28 @@ where
     /// it by wrapping publish in packet
     fn handle_outgoing_publish(
         &mut self,
-        publish: PublishRequest,
+        request: PublishRequest,
         timeout_ms: u32,
     ) -> Result<Packet, StateError> {
         self.last_outgoing_timer.start(timeout_ms);
 
-        let qospid = match publish.qos {
+        let qospid = match request.qos {
             QoS::AtMostOnce => QosPid::AtMostOnce,
             QoS::AtLeastOnce => QosPid::AtLeastOnce(self.next_pid()),
             QoS::ExactlyOnce => QosPid::ExactlyOnce(self.next_pid()),
         };
 
         let publish = Publish {
-            dup: publish.dup,
+            dup: request.dup,
             qospid,
-            retain: publish.retain,
-            topic_name: publish.topic_name,
-            payload: publish.payload,
+            retain: request.retain,
+            topic_name: request.topic_name,
+            payload: request.payload,
         };
 
-        self.outgoing_pub.push_back(publish.clone());
+        if request.qos != QoS::AtMostOnce {
+            self.outgoing_pub.push_back(publish.clone());
+        }
 
         log::trace!(
             "Publish. Topic = {:?}, pid = {:?}, Payload Size = {:?}",
@@ -393,5 +395,324 @@ where
     fn next_pid(&mut self) -> Pid {
         self.last_pid = self.last_pid + 1;
         self.last_pid
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{MqttConnectionStatus, MqttState, Packet, StateError};
+    use crate::{MqttOptions, Notification, PublishRequest};
+    use core::convert::TryFrom;
+    use embedded_hal::timer::CountDown;
+    use embedded_nal::Ipv4Addr;
+    use mqttrs::*;
+    use void::Void;
+
+    extern crate std;
+
+    #[derive(Debug)]
+    struct CdMock {
+        time: u32,
+    }
+
+    impl CountDown for CdMock {
+        type Time = u32;
+        fn start<T>(&mut self, count: T)
+        where
+            T: Into<Self::Time>,
+        {
+            self.time = count.into();
+        }
+        fn wait(&mut self) -> nb::Result<(), Void> {
+            Ok(())
+        }
+    }
+
+    fn build_outgoing_publish(qos: QoS) -> PublishRequest {
+        let topic = "hello/world".to_owned();
+        let payload = vec![1, 2, 3];
+
+        PublishRequest::new(topic, payload).qos(qos)
+    }
+
+    fn build_incoming_publish(qos: QoS, pid: u16) -> Publish {
+        let topic = "hello/world".to_owned();
+        let payload = vec![1, 2, 3];
+
+        let qospid = match qos {
+            QoS::AtMostOnce => QosPid::AtMostOnce,
+            QoS::AtLeastOnce => QosPid::AtLeastOnce(Pid::try_from(pid).unwrap()),
+            QoS::ExactlyOnce => QosPid::ExactlyOnce(Pid::try_from(pid).unwrap()),
+        };
+
+        Publish {
+            qospid,
+            payload,
+            dup: false,
+            retain: false,
+            topic_name: topic,
+        }
+    }
+
+    fn build_mqttstate() -> MqttState<CdMock, CdMock> {
+        let incoming_timer = CdMock { time: 0 };
+        let outgoing_timer = CdMock { time: 0 };
+        MqttState::new(incoming_timer, outgoing_timer)
+    }
+
+    #[test]
+    fn outgoing_publish_handle_should_set_pid_correctly_and_add_publish_to_queue_correctly() {
+        let mut mqtt = build_mqttstate();
+
+        // QoS0 Publish
+        let publish = build_outgoing_publish(QoS::AtMostOnce);
+
+        // Packet id shouldn't be set and publish shouldn't be saved in queue
+        let publish_out = match mqtt.handle_outgoing_publish(publish, 5000) {
+            Ok(Packet::Publish(p)) => p,
+            _ => panic!("Invalid packet. Should've been a publish packet"),
+        };
+        assert_eq!(publish_out.qospid, QosPid::AtMostOnce);
+        assert_eq!(mqtt.outgoing_pub.len(), 0);
+
+        // QoS1 Publish
+        let publish = build_outgoing_publish(QoS::AtLeastOnce);
+
+        // Packet id should be set and publish should be saved in queue
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+            Ok(Packet::Publish(p)) => p,
+            _ => panic!("Invalid packet. Should've been a publish packet"),
+        };
+        assert_eq!(
+            publish_out.qospid,
+            QosPid::AtLeastOnce(Pid::try_from(2).unwrap())
+        );
+        assert_eq!(mqtt.outgoing_pub.len(), 1);
+
+        // Packet id should be incremented and publish should be saved in queue
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+            Ok(Packet::Publish(p)) => p,
+            _ => panic!("Invalid packet. Should've been a publish packet"),
+        };
+        assert_eq!(
+            publish_out.qospid,
+            QosPid::AtLeastOnce(Pid::try_from(3).unwrap())
+        );
+        assert_eq!(mqtt.outgoing_pub.len(), 2);
+
+        // QoS1 Publish
+        let publish = build_outgoing_publish(QoS::ExactlyOnce);
+
+        // Packet id should be set and publish should be saved in queue
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+            Ok(Packet::Publish(p)) => p,
+            _ => panic!("Invalid packet. Should've been a publish packet"),
+        };
+        assert_eq!(
+            publish_out.qospid,
+            QosPid::ExactlyOnce(Pid::try_from(4).unwrap())
+        );
+        assert_eq!(mqtt.outgoing_pub.len(), 3);
+
+        // Packet id should be incremented and publish should be saved in queue
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+            Ok(Packet::Publish(p)) => p,
+            _ => panic!("Invalid packet. Should've been a publish packet"),
+        };
+        assert_eq!(
+            publish_out.qospid,
+            QosPid::ExactlyOnce(Pid::try_from(5).unwrap())
+        );
+        assert_eq!(mqtt.outgoing_pub.len(), 4);
+    }
+
+    #[test]
+    fn incoming_publish_should_be_added_to_queue_correctly() {
+        let mut mqtt = build_mqttstate();
+
+        // QoS0, 1, 2 Publishes
+        let publish1 = build_incoming_publish(QoS::AtMostOnce, 1);
+        let publish2 = build_incoming_publish(QoS::AtLeastOnce, 2);
+        let publish3 = build_incoming_publish(QoS::ExactlyOnce, 3);
+
+        mqtt.handle_incoming_publish(publish1).unwrap();
+        mqtt.handle_incoming_publish(publish2).unwrap();
+        mqtt.handle_incoming_publish(publish3).unwrap();
+
+        let pid = *mqtt.incoming_pub.get(0).unwrap();
+
+        // only qos2 publish should be add to queue
+        assert_eq!(mqtt.incoming_pub.len(), 1);
+        assert_eq!(pid, Pid::try_from(3).unwrap());
+    }
+
+    #[test]
+    fn incoming_qos2_publish_should_send_rec_to_network_and_publish_to_user() {
+        let mut mqtt = build_mqttstate();
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 1);
+
+        let (notification, request) = mqtt.handle_incoming_publish(publish).unwrap();
+
+        match notification {
+            Some(Notification::Publish(publish)) => assert_eq!(
+                publish.qospid,
+                QosPid::ExactlyOnce(Pid::try_from(1).unwrap())
+            ),
+            _ => panic!("Invalid notification: {:?}", notification),
+        }
+
+        match request {
+            Some(Packet::Pubrec(pid)) => assert_eq!(pid.get(), 1),
+            _ => panic!("Invalid network request: {:?}", request),
+        }
+    }
+
+    #[test]
+    fn incoming_puback_should_remove_correct_publish_from_queue() {
+        let mut mqtt = build_mqttstate();
+
+        let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
+        let publish2 = build_outgoing_publish(QoS::ExactlyOnce);
+
+        mqtt.handle_outgoing_publish(publish1, 5000).unwrap();
+        mqtt.handle_outgoing_publish(publish2, 5000).unwrap();
+
+        mqtt.handle_incoming_puback(Pid::try_from(2).unwrap())
+            .unwrap();
+        assert_eq!(mqtt.outgoing_pub.len(), 1);
+
+        let backup = mqtt.outgoing_pub.get(0).clone();
+        assert_eq!(
+            backup.unwrap().qospid,
+            QosPid::ExactlyOnce(Pid::try_from(3).unwrap())
+        );
+
+        mqtt.handle_incoming_puback(Pid::try_from(3).unwrap())
+            .unwrap();
+        assert_eq!(mqtt.outgoing_pub.len(), 0);
+    }
+
+    #[test]
+    fn incoming_pubrec_should_release_correct_publish_from_queue_and_add_releaseid_to_rel_queue() {
+        let mut mqtt = build_mqttstate();
+
+        let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
+        let publish2 = build_outgoing_publish(QoS::ExactlyOnce);
+
+        let _publish_out = mqtt.handle_outgoing_publish(publish1, 5000);
+        let _publish_out = mqtt.handle_outgoing_publish(publish2, 5000);
+
+        mqtt.handle_incoming_pubrec(Pid::try_from(3).unwrap())
+            .unwrap();
+        assert_eq!(mqtt.outgoing_pub.len(), 1);
+
+        // check if the remaining element's pid is 2
+        let backup = mqtt.outgoing_pub.get(0).clone();
+        assert_eq!(
+            backup.unwrap().qospid,
+            QosPid::AtLeastOnce(Pid::try_from(2).unwrap())
+        );
+
+        assert_eq!(mqtt.outgoing_rel.len(), 1);
+
+        // check if the  element's pid is 3
+        let pid = *mqtt.outgoing_rel.get(0).unwrap();
+        assert_eq!(pid, Pid::try_from(3).unwrap());
+    }
+
+    #[test]
+    fn incoming_pubrec_should_send_release_to_network_and_nothing_to_user() {
+        let mut mqtt = build_mqttstate();
+
+        let publish = build_outgoing_publish(QoS::ExactlyOnce);
+        mqtt.handle_outgoing_publish(publish, 5000).unwrap();
+
+        let (notification, request) = mqtt
+            .handle_incoming_pubrec(Pid::try_from(2).unwrap())
+            .unwrap();
+
+        match notification {
+            Some(Notification::Pubrec(pid)) => assert_eq!(pid.get(), 2),
+            _ => panic!("Invalid notification"),
+        }
+
+        match request {
+            Some(Packet::Pubrel(pid)) => assert_eq!(pid.get(), 2),
+            _ => panic!("Invalid network request: {:?}", request),
+        }
+    }
+
+    #[test]
+    fn incoming_pubrel_should_send_comp_to_network_and_nothing_to_user() {
+        let mut mqtt = build_mqttstate();
+        let publish = build_incoming_publish(QoS::ExactlyOnce, 1);
+
+        mqtt.handle_incoming_publish(publish).unwrap();
+        let (notification, request) = mqtt
+            .handle_incoming_pubrel(Pid::try_from(1).unwrap())
+            .unwrap();
+
+        match notification {
+            None => assert!(true),
+            _ => panic!("Invalid notification: {:?}", notification),
+        }
+
+        match request {
+            Some(Packet::Pubcomp(pid)) => assert_eq!(pid.get(), 1),
+            _ => panic!("Invalid network request: {:?}", request),
+        }
+    }
+
+    #[test]
+    fn incoming_pubcomp_should_release_correct_pid_from_release_queue() {
+        let mut mqtt = build_mqttstate();
+        let publish = build_outgoing_publish(QoS::ExactlyOnce);
+
+        mqtt.handle_outgoing_publish(publish, 5000).unwrap();
+        mqtt.handle_incoming_pubrec(Pid::try_from(2).unwrap())
+            .unwrap();
+
+        mqtt.handle_incoming_pubcomp(Pid::try_from(2).unwrap())
+            .unwrap();
+        assert_eq!(mqtt.outgoing_pub.len(), 0);
+    }
+
+    #[test]
+    fn outgoing_ping_handle_should_throw_errors_for_no_pingresp() {
+        let mut mqtt = build_mqttstate();
+        let mut opts = MqttOptions::new("test", Ipv4Addr::localhost(), 1883);
+        opts.set_keep_alive(10);
+        mqtt.connection_status = MqttConnectionStatus::Connected;
+        mqtt.handle_outgoing_ping(5000).unwrap();
+
+        // network activity other than pingresp
+        let publish = build_outgoing_publish(QoS::AtLeastOnce);
+        mqtt.handle_outgoing_publish(publish.into(), 5000).unwrap();
+        mqtt.handle_incoming_packet(Packet::Puback(Pid::try_from(2).unwrap()))
+            .unwrap();
+
+        // should throw error because we didn't get pingresp for previous ping
+        match mqtt.handle_outgoing_ping(5000) {
+            Ok(_) => panic!("Should throw pingresp await error"),
+            Err(StateError::AwaitPingResp) => (),
+            Err(e) => panic!("Should throw pingresp await error. Error = {:?}", e),
+        }
+    }
+
+    #[test]
+    fn outgoing_ping_handle_should_succeed_if_pingresp_is_received() {
+        let mut mqtt = build_mqttstate();
+
+        let mut opts = MqttOptions::new("test", Ipv4Addr::localhost(), 1883);
+        opts.set_keep_alive(10);
+
+        mqtt.connection_status = MqttConnectionStatus::Connected;
+
+        // should ping
+        mqtt.handle_outgoing_ping(5000).unwrap();
+        mqtt.handle_incoming_packet(Packet::Pingresp).unwrap();
+
+        // should ping
+        mqtt.handle_outgoing_ping(5000).unwrap();
     }
 }

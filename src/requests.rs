@@ -23,6 +23,10 @@ impl PublishRequest {
             payload,
         }
     }
+
+    pub fn qos(self, qos: QoS) -> Self {
+        Self { qos, ..self }
+    }
 }
 
 /// Subscribe request ([MQTT 3.8]).
