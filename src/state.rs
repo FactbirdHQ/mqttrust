@@ -126,6 +126,7 @@ where
             Packet::Pubrel(pid) => self.handle_incoming_pubrel(pid),
             Packet::Pubcomp(pid) => self.handle_incoming_pubcomp(pid),
             _ => {
+                #[cfg(feature = "logging")]
                 log::error!("Invalid incoming paket = {:?}", packet);
                 Ok((None, None))
             }
@@ -162,6 +163,7 @@ where
             self.outgoing_pub.push_back(publish.clone());
         }
 
+        #[cfg(feature = "logging")]
         log::trace!(
             "Publish. Topic = {:?}, pid = {:?}, Payload Size = {:?}",
             publish.topic_name,
@@ -191,6 +193,7 @@ where
                 Ok((notification, request))
             }
             None => {
+                #[cfg(feature = "logging")]
                 log::error!("Unsolicited puback packet: {:?}", pid);
                 Err(StateError::Unsolicited)
             }
@@ -235,6 +238,7 @@ where
                 Ok((notification, reply))
             }
             None => {
+                #[cfg(feature = "logging")]
                 log::error!("Unsolicited pubrec packet: {:?}", pid);
                 Err(StateError::Unsolicited)
             }
@@ -280,6 +284,7 @@ where
                 Ok((None, Some(reply)))
             }
             None => {
+                #[cfg(feature = "logging")]
                 log::error!("Unsolicited pubrel packet: {:?}", pid);
                 Err(StateError::Unsolicited)
             }
@@ -298,6 +303,7 @@ where
                 Ok((notification, reply))
             }
             _ => {
+                #[cfg(feature = "logging")]
                 log::error!("Unsolicited pubcomp packet: {:?}", pid);
                 Err(StateError::Unsolicited)
             }
@@ -310,6 +316,7 @@ where
     fn handle_outgoing_ping(&mut self, timeout_ms: u32) -> Result<Packet, StateError> {
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
+            #[cfg(feature = "logging")]
             log::error!("Error awaiting for last ping response");
             return Err(StateError::AwaitPingResp);
         }
@@ -317,6 +324,7 @@ where
         self.last_outgoing_timer.start(timeout_ms);
         self.await_pingresp = true;
 
+        #[cfg(feature = "logging")]
         log::trace!("Pingreq");
 
         Ok(Packet::Pingreq)
@@ -326,6 +334,7 @@ where
         &mut self,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
         self.await_pingresp = false;
+        #[cfg(feature = "logging")]
         log::trace!("Pingresp");
         Ok((None, None))
     }
@@ -342,6 +351,7 @@ where
             topics: subscribe_request.topics,
         };
 
+        #[cfg(feature = "logging")]
         log::trace!(
             "Subscribe. Topics = {:?}, pid = {:?}",
             subscription.topics,
@@ -360,7 +370,9 @@ where
         let connack = match packet {
             Packet::Connack(connack) => connack,
             packet => {
+                #[cfg(feature = "logging")]
                 log::error!("Invalid packet. Expecting connack. Received = {:?}", packet);
+
                 self.connection_status = MqttConnectionStatus::Disconnected;
                 return Err(StateError::WrongPacket);
             }
@@ -376,6 +388,7 @@ where
             ConnectReturnCode::Accepted
                 if self.connection_status != MqttConnectionStatus::Handshake =>
             {
+                #[cfg(feature = "logging")]
                 log::error!(
                     "Invalid state. Expected = {:?}, Current = {:?}",
                     MqttConnectionStatus::Handshake,
@@ -385,6 +398,7 @@ where
                 Err(StateError::InvalidState)
             }
             code => {
+                #[cfg(feature = "logging")]
                 log::error!("Connection failed. Connection error = {:?}", code);
                 self.connection_status = MqttConnectionStatus::Disconnected;
                 Err(StateError::Connect(code))
@@ -402,13 +416,13 @@ where
 mod test {
     use super::{MqttConnectionStatus, MqttState, Packet, StateError};
     use crate::{MqttOptions, Notification, PublishRequest};
+    use alloc::borrow::ToOwned;
+    use alloc::vec;
     use core::convert::TryFrom;
     use embedded_hal::timer::CountDown;
     use embedded_nal::Ipv4Addr;
     use mqttrs::*;
     use void::Void;
-
-    extern crate std;
 
     #[derive(Debug)]
     struct CdMock {

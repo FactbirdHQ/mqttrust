@@ -15,6 +15,7 @@ use std::thread;
 static mut Q: Queue<Request, consts::U10> = Queue(heapless::i::Queue::new());
 
 fn main() {
+    #[cfg(feature = "logging")]
     env_logger::builder()
         .filter_level(log::LevelFilter::Trace)
         .init();
@@ -40,12 +41,15 @@ fn main() {
         .spawn(move || loop {
             if let Ok(notification) = mqtt_eventloop.yield_event(&network) {
                 match notification {
-                    Notification::Publish(publish) => log::debug!(
-                        "[{}, {:?}]: {:?}",
-                        publish.topic_name,
-                        publish.qospid,
-                        String::from_utf8(publish.payload).unwrap()
-                    ),
+                    Notification::Publish(publish) => {
+                        #[cfg(feature = "logging")]
+                        log::debug!(
+                            "[{}, {:?}]: {:?}",
+                            publish.topic_name,
+                            publish.qospid,
+                            String::from_utf8(publish.payload).unwrap()
+                        );
+                    }
                     _ => {
                         // log::debug!("{:?}", n);
                     }

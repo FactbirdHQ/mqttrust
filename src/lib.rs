@@ -1,4 +1,4 @@
-#![cfg_attr(not(test), no_std)]
+#![no_std]
 
 extern crate alloc;
 
@@ -140,6 +140,7 @@ where
                 .handle_outgoing_packet(Packet::Pubrec(p), self.options.keep_alive_ms())
         } else if let Some(p) = self.pending_pub.pop_front() {
             // Handle pending Publish
+            #[cfg(feature = "logging")]
             log::warn!("Handle pending Publish!!");
             self.state
                 .handle_outgoing_packet(Packet::Publish(p), self.options.keep_alive_ms())
