@@ -1,7 +1,6 @@
 use embedded_nal::{Mode, SocketAddr, TcpStack};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::io::{Read, Write, ErrorKind};
-
 
 pub struct Network;
 
@@ -30,11 +29,9 @@ impl TcpStack for Network {
         buf: &mut [u8],
     ) -> Result<usize, nb::Error<<Self as TcpStack>::Error>> {
         if let Some(ref mut stream) = network.stream {
-            stream.read(buf).map_err(|e| {
-                match e.kind() {
-                    ErrorKind::WouldBlock => nb::Error::WouldBlock,
-                    _ => nb::Error::Other(())
-                }
+            stream.read(buf).map_err(|e| match e.kind() {
+                ErrorKind::WouldBlock => nb::Error::WouldBlock,
+                _ => nb::Error::Other(()),
             })
         } else {
             Err(nb::Error::Other(()))

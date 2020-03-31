@@ -8,11 +8,11 @@ mod state;
 
 use state::{MqttState, StateError};
 
+use alloc::{borrow::ToOwned, collections::VecDeque};
 use bytes::BytesMut;
-use mqttrs::{decode, encode, Packet, Pid, Suback};
 use embedded_nal::{Mode, TcpStack};
 use heapless::{spsc::Consumer, ArrayLength};
-use alloc::{borrow::ToOwned, collections::VecDeque};
+use mqttrs::{decode, encode, Packet, Pid, Suback};
 
 pub use mqttrs::{Connect, Protocol, Publish, QoS, Subscribe, SubscribeTopic, Unsubscribe};
 pub use options::MqttOptions;

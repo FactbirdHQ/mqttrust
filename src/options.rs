@@ -1,6 +1,6 @@
 use alloc::{string::String, vec::Vec};
 use mqttrs::LastWill;
-use no_std_net::{SocketAddrV4, Ipv4Addr};
+use no_std_net::{Ipv4Addr, SocketAddrV4};
 
 /// Options to configure the behaviour of mqtt connection
 #[derive(Clone, Debug)]
@@ -187,12 +187,13 @@ impl MqttOptions {
 
 #[cfg(test)]
 mod test {
-    use super::{MqttOptions, Ipv4Addr};
+    use super::{Ipv4Addr, MqttOptions};
 
     #[test]
     #[should_panic]
     fn client_id_startswith_space() {
-        let _mqtt_opts = MqttOptions::new(" client_a", Ipv4Addr::new(127, 0, 0, 1), 1883).set_clean_session(true);
+        let _mqtt_opts = MqttOptions::new(" client_a", Ipv4Addr::new(127, 0, 0, 1), 1883)
+            .set_clean_session(true);
     }
 
     #[test]

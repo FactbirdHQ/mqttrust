@@ -56,13 +56,16 @@ fn main() {
 
     p.enqueue(
         SubscribeRequest {
-            topics: vec![SubscribeTopic {
-                topic_path: String::from("mqttrust/tester/subscriber"),
-                qos: QoS::AtLeastOnce,
-            }, SubscribeTopic {
-                topic_path: String::from("mqttrust/tester/subscriber2"),
-                qos: QoS::AtLeastOnce,
-            }],
+            topics: vec![
+                SubscribeTopic {
+                    topic_path: String::from("mqttrust/tester/subscriber"),
+                    qos: QoS::AtLeastOnce,
+                },
+                SubscribeTopic {
+                    topic_path: String::from("mqttrust/tester/subscriber2"),
+                    qos: QoS::AtLeastOnce,
+                },
+            ],
         }
         .into(),
     )
