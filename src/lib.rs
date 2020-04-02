@@ -149,7 +149,8 @@ where
             // Handle pending Publish
             self.state
                 .handle_outgoing_packet(Packet::Publish(p), self.options.keep_alive_ms())
-        } else if !(self.state.outgoing_pub.len() >= self.options.inflight()) && self.requests.ready()
+        } else if !(self.state.outgoing_pub.len() >= self.options.inflight())
+            && self.requests.ready()
         {
             // Handle requests
             let request = unsafe { self.requests.dequeue_unchecked() };
@@ -199,7 +200,7 @@ where
                 Ok(_) => {
                     self.tx_buf.clear();
                     Ok(())
-                },
+                }
                 Err(_) => {
                     self.tx_buf.clear();
                     Err(EventError::Network)
@@ -223,9 +224,7 @@ where
                     Ok(())
                 }
                 Err(nb::Error::WouldBlock) => Ok(()),
-                _ => {
-                    Err(EventError::Network)
-                },
+                _ => Err(EventError::Network),
             }
         } else {
             return Err(EventError::Network);
