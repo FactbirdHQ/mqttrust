@@ -80,6 +80,7 @@ where
     options: MqttOptions,
     /// Receive buffer for incomming packets
     rx_buf: BytesMut,
+    tx_buf: BytesMut,
     /// Network socket
     socket: Option<N::TcpSocket>,
     /// Request stream
@@ -107,6 +108,7 @@ where
         MqttEvent {
             state: MqttState::new(incoming_timer, outgoing_timer),
             rx_buf: BytesMut::with_capacity(options.max_packet_size()),
+            tx_buf: BytesMut::with_capacity(options.max_packet_size()),
             options,
             socket: None,
             requests,
@@ -115,11 +117,9 @@ where
         }
     }
 
-    pub fn connect(&mut self, network: &N) -> Result<(), EventError> {
-        self.state.await_pingresp = false;
-
+    pub fn connect(&mut self, network: &N) -> nb::Result<(), EventError> {
         // connect to the broker
-        self.socket = Some(self.network_connect(network)?);
+        self.network_connect(network)?;
         self.mqtt_connect(network)?;
 
         // Handle state after reconnect events
@@ -128,10 +128,17 @@ where
         Ok(())
     }
 
-    pub fn yield_event(&mut self, network: &N) -> nb::Result<Notification, EventError> {
-        self.receive(network)?;
+    pub fn yield_event(&mut self, network: &N) -> nb::Result<Notification, ()> {
+        if let Err(e) = self.receive(network) {
+            return Ok(Notification::Abort(e.into()));
+        }
 
-        let o = if let Some(packet) = decode(&mut self.rx_buf).map_err(EventError::Encoding)? {
+        let incoming = match decode(&mut self.rx_buf) {
+            Ok(p) => p,
+            Err(e) => return Ok(Notification::Abort(e.into())),
+        };
+
+        let o = if let Some(packet) = incoming {
             // Handle incoming
             self.state.handle_incoming_packet(packet)
         } else if let Some(p) = self.pending_rel.pop_front() {
@@ -140,22 +147,18 @@ where
                 .handle_outgoing_packet(Packet::Pubrec(p), self.options.keep_alive_ms())
         } else if let Some(p) = self.pending_pub.pop_front() {
             // Handle pending Publish
-            #[cfg(feature = "logging")]
-            log::warn!("Handle pending Publish!!");
             self.state
                 .handle_outgoing_packet(Packet::Publish(p), self.options.keep_alive_ms())
-        } else if !self.state.outgoing_pub.len() >= self.options.inflight() && self.requests.ready()
+        } else if !(self.state.outgoing_pub.len() >= self.options.inflight()) && self.requests.ready()
         {
             // Handle requests
-            let request = self.requests.dequeue().unwrap();
+            let request = unsafe { self.requests.dequeue_unchecked() };
             self.state
                 .handle_outgoing_request(request, self.options.keep_alive_ms())
         } else if self.state.last_outgoing_timer.wait().is_ok() {
             // Handle ping
             self.state
                 .handle_outgoing_packet(Packet::Pingreq, self.options.keep_alive_ms())
-                .map_err(|e| nb::Error::Other(e.into()))?;
-            Ok((None, Some(Packet::Pingreq)))
         } else {
             Ok((None, None))
         };
@@ -189,14 +192,21 @@ where
     // }
 
     fn send(&mut self, network: &N, pkt: Packet) -> Result<(), EventError> {
-        let mut buf = BytesMut::with_capacity(self.options.max_packet_size());
-        encode(&pkt, &mut buf)?;
+        encode(&pkt, &mut self.tx_buf)?;
 
         if let Some(ref mut socket) = self.socket {
-            nb::block!(network.write(socket, &buf)).map_err(|_| EventError::Timeout)?;
-
-            Ok(())
+            match nb::block!(network.write(socket, &self.tx_buf)) {
+                Ok(_) => {
+                    self.tx_buf.clear();
+                    Ok(())
+                },
+                Err(_) => {
+                    self.tx_buf.clear();
+                    Err(EventError::Network)
+                }
+            }
         } else {
+            self.tx_buf.clear();
             Err(EventError::Network)
         }
     }
@@ -213,58 +223,99 @@ where
                     Ok(())
                 }
                 Err(nb::Error::WouldBlock) => Ok(()),
-                _ => Err(EventError::Network),
+                _ => {
+                    Err(EventError::Network)
+                },
             }
         } else {
             return Err(EventError::Network);
         }
     }
 
-    fn network_connect(&mut self, network: &N) -> Result<N::TcpSocket, EventError> {
-        let soc = network
+    fn network_connect(&mut self, network: &N) -> Result<(), EventError> {
+        if let Some(socket) = &self.socket {
+            if network
+                .is_connected(socket)
+                .map_err(|_e| EventError::Network)?
+            {
+                return Ok(());
+            }
+        };
+
+        let socket = network
             .open(Mode::Timeout(50))
             .map_err(|_e| EventError::Network)?;
 
-        Ok(network
-            .connect(soc, self.options.broker_address().into())
-            .map_err(|_e| EventError::Network)?)
+        self.socket = Some(
+            network
+                .connect(socket, self.options.broker_address().into())
+                .map_err(|_e| EventError::Network)?,
+        );
+
+        #[cfg(feature = "logging")]
+        log::debug!("Network connected!");
+
+        Ok(())
     }
 
-    fn mqtt_connect(&mut self, network: &N) -> Result<(), EventError> {
-        let (username, password) = if let Some((username, password)) = self.options.credentials() {
-            (Some(username), Some(password.as_bytes().to_owned()))
-        } else {
-            (None, None)
-        };
+    fn mqtt_connect(&mut self, network: &N) -> nb::Result<(), EventError> {
+        match self.state.connection_status {
+            state::MqttConnectionStatus::Connected => Ok(()),
+            state::MqttConnectionStatus::Disconnected => {
+                #[cfg(feature = "logging")]
+                log::info!("Connecting..");
+                self.state.await_pingresp = false;
 
-        let connect = Connect {
-            protocol: Protocol::MQTT311,
-            keep_alive: (self.options.keep_alive_ms() / 1000) as u16,
-            client_id: self.options.client_id(),
-            clean_session: self.options.clean_session(),
-            last_will: self.options.last_will(),
-            username,
-            password,
-        };
+                let (username, password) =
+                    if let Some((username, password)) = self.options.credentials() {
+                        (Some(username), Some(password.as_bytes().to_owned()))
+                    } else {
+                        (None, None)
+                    };
 
-        // mqtt connection with timeout
-        self.send(network, Packet::Connect(connect))?;
-        self.state.handle_outgoing_connect(5000)?;
+                let connect = Connect {
+                    protocol: Protocol::MQTT311,
+                    keep_alive: (self.options.keep_alive_ms() / 1000) as u16,
+                    client_id: self.options.client_id(),
+                    clean_session: self.options.clean_session(),
+                    last_will: self.options.last_will(),
+                    username,
+                    password,
+                };
 
-        loop {
-            if self.state.last_outgoing_timer.wait().is_ok() {
-                return Err(EventError::Timeout);
+                // mqtt connection with timeout
+                self.send(network, connect.into())?;
+                self.state
+                    .handle_outgoing_connect(5000)
+                    .map_err(|e| nb::Error::Other(e.into()))?;
+
+                Err(nb::Error::WouldBlock)
             }
+            state::MqttConnectionStatus::Handshake => {
+                if self.state.last_outgoing_timer.wait().is_ok() {
+                    self.state.connection_status = state::MqttConnectionStatus::Disconnected;
+                    self.rx_buf.clear();
 
-            self.receive(network)?;
-
-            match decode(&mut self.rx_buf).map_err(|e| EventError::Encoding(e))? {
-                Some(packet) => {
-                    self.state.handle_incoming_connack(packet)?;
-                    return Ok(());
+                    return Err(nb::Error::Other(EventError::Timeout));
                 }
-                None => {}
-            };
+
+                self.receive(network)?;
+
+                match decode(&mut self.rx_buf).map_err(|e| EventError::Encoding(e))? {
+                    Some(packet) => {
+                        self.state
+                            .handle_incoming_connack(packet)
+                            .map_err(|e| nb::Error::Other(e.into()))?;
+
+                        #[cfg(feature = "logging")]
+                        log::debug!("MQTT connected!");
+
+                        Ok(())
+                    }
+                    None => Err(nb::Error::WouldBlock),
+                }
+            }
+            state::MqttConnectionStatus::Disconnecting => Ok(()),
         }
     }
 }

@@ -32,27 +32,23 @@ fn main() {
         MqttOptions::new("mqtt_test_client_id", Ipv4Addr::new(3, 123, 239, 37), 1883),
     );
 
-    mqtt_eventloop
-        .connect(&network)
-        .expect("Failed to connect to MQTT");
+    nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");
 
     thread::Builder::new()
         .name("eventloop".to_string())
         .spawn(move || loop {
-            if let Ok(notification) = mqtt_eventloop.yield_event(&network) {
-                match notification {
-                    Notification::Publish(publish) => {
-                        #[cfg(feature = "logging")]
-                        log::debug!(
-                            "[{}, {:?}]: {:?}",
-                            publish.topic_name,
-                            publish.qospid,
-                            String::from_utf8(publish.payload).unwrap()
-                        );
-                    }
-                    _ => {
-                        // log::debug!("{:?}", n);
-                    }
+            match nb::block!(mqtt_eventloop.yield_event(&network)) {
+                Ok(Notification::Publish(publish)) => {
+                    #[cfg(feature = "logging")]
+                    log::debug!(
+                        "[{}, {:?}]: {:?}",
+                        publish.topic_name,
+                        publish.qospid,
+                        String::from_utf8(publish.payload).unwrap()
+                    );
+                }
+                _ => {
+                    // log::debug!("{:?}", n);
                 }
             }
         })
