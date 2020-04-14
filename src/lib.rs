@@ -51,10 +51,16 @@ pub enum EventError {
     MqttState(StateError),
     Timeout,
     Encoding(mqttrs::Error),
-    // Network(network::Error),
-    Network,
-    StreamDone,
-    RequestsDone,
+    Network(NetworkError),
+}
+
+#[derive(Debug)]
+pub enum NetworkError {
+    Read,
+    Write,
+    NoSocket,
+    SocketOpen,
+    SocketConnect,
 }
 
 impl From<mqttrs::Error> for EventError {
@@ -130,6 +136,7 @@ where
 
     pub fn yield_event(&mut self, network: &N) -> nb::Result<Notification, ()> {
         if let Err(e) = self.receive(network) {
+            self.disconnect(network);
             return Ok(Notification::Abort(e.into()));
         }
 
@@ -167,12 +174,14 @@ where
         let (notification, outpacket) = match o {
             Ok((n, p)) => (n, p),
             Err(e) => {
+                self.disconnect(network);
                 return Ok(Notification::Abort(e.into()));
             }
         };
 
         if let Some(p) = outpacket {
             if let Err(e) = self.send(network, p) {
+                self.disconnect(network);
                 return Ok(Notification::Abort(e.into()));
             }
         }
@@ -184,31 +193,24 @@ where
         return Err(nb::Error::WouldBlock);
     }
 
-    // fn populate_pending(&mut self) {
-    //     let mut pending_pub = core::mem::replace(&mut self.state.outgoing_pub, VecDeque::new());
-    //     self.pending_pub.append(&mut pending_pub);
+    fn populate_pending(&mut self) {
+        let mut pending_pub = core::mem::replace(&mut self.state.outgoing_pub, VecDeque::new());
+        self.pending_pub.append(&mut pending_pub);
 
-    //     let mut pending_rel = core::mem::replace(&mut self.state.outgoing_rel, VecDeque::new());
-    //     self.pending_rel.append(&mut pending_rel);
-    // }
+        let mut pending_rel = core::mem::replace(&mut self.state.outgoing_rel, VecDeque::new());
+        self.pending_rel.append(&mut pending_rel);
+    }
 
     fn send(&mut self, network: &N, pkt: Packet) -> Result<(), EventError> {
+        self.tx_buf.clear();
         encode(&pkt, &mut self.tx_buf)?;
 
         if let Some(ref mut socket) = self.socket {
-            match nb::block!(network.write(socket, &self.tx_buf)) {
-                Ok(_) => {
-                    self.tx_buf.clear();
-                    Ok(())
-                }
-                Err(_) => {
-                    self.tx_buf.clear();
-                    Err(EventError::Network)
-                }
-            }
+            nb::block!(network.write(socket, &self.tx_buf))
+                .map_err(|_| EventError::Network(NetworkError::Write))
+                .map(|_| ())
         } else {
-            self.tx_buf.clear();
-            Err(EventError::Network)
+            Err(EventError::Network(NetworkError::NoSocket))
         }
     }
 
@@ -224,10 +226,10 @@ where
                     Ok(())
                 }
                 Err(nb::Error::WouldBlock) => Ok(()),
-                _ => Err(EventError::Network),
+                _ => Err(EventError::Network(NetworkError::Read)),
             }
         } else {
-            return Err(EventError::Network);
+            return Err(EventError::Network(NetworkError::NoSocket));
         }
     }
 
@@ -235,7 +237,7 @@ where
         if let Some(socket) = &self.socket {
             if network
                 .is_connected(socket)
-                .map_err(|_e| EventError::Network)?
+                .map_err(|_e| EventError::Network(NetworkError::NoSocket))?
             {
                 return Ok(());
             }
@@ -243,12 +245,12 @@ where
 
         let socket = network
             .open(Mode::Timeout(50))
-            .map_err(|_e| EventError::Network)?;
+            .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?;
 
         self.socket = Some(
             network
                 .connect(socket, self.options.broker_address().into())
-                .map_err(|_e| EventError::Network)?,
+                .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
         );
 
         #[cfg(feature = "logging")]
@@ -257,13 +259,24 @@ where
         Ok(())
     }
 
+    fn disconnect(&mut self, network: &N) {
+        self.state.connection_status = state::MqttConnectionStatus::Disconnected;
+        if let Some(socket) = &self.socket {
+            let connected = network.is_connected(socket);
+            if connected.is_err() || !connected.unwrap() {
+                self.socket = None;
+            }
+        }
+    }
+
     fn mqtt_connect(&mut self, network: &N) -> nb::Result<(), EventError> {
         match self.state.connection_status {
             state::MqttConnectionStatus::Connected => Ok(()),
             state::MqttConnectionStatus::Disconnected => {
                 #[cfg(feature = "logging")]
-                log::info!("Connecting..");
+                log::info!("MQTT Connecting..");
                 self.state.await_pingresp = false;
+                self.rx_buf.clear();
 
                 let (username, password) =
                     if let Some((username, password)) = self.options.credentials() {
@@ -271,6 +284,7 @@ where
                     } else {
                         (None, None)
                     };
+
 
                 let connect = Connect {
                     protocol: Protocol::MQTT311,
@@ -292,9 +306,7 @@ where
             }
             state::MqttConnectionStatus::Handshake => {
                 if self.state.last_outgoing_timer.wait().is_ok() {
-                    self.state.connection_status = state::MqttConnectionStatus::Disconnected;
-                    self.rx_buf.clear();
-
+                    self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
