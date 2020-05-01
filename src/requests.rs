@@ -47,7 +47,7 @@ pub struct UnsubscribeRequest {
 
 /// Requests by the client to mqtt event loop. Request are
 /// handle one by one
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Publish(PublishRequest),
     Subscribe(SubscribeRequest),

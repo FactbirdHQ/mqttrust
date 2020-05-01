@@ -4,7 +4,7 @@ use no_std_net::{Ipv4Addr, SocketAddrV4};
 
 /// Options to configure the behaviour of mqtt connection
 #[derive(Clone, Debug)]
-pub struct MqttOptions {
+pub struct MqttOptions<'a> {
     /// broker address that you want to connect to
     broker_addr: Ipv4Addr,
     /// broker port
@@ -16,9 +16,9 @@ pub struct MqttOptions {
     /// client identifier
     client_id: String,
     /// connection method
-    ca: Option<Vec<u8>>,
+    ca: Option<&'a [u8]>,
     /// tls client_authentication
-    client_auth: Option<(Vec<u8>, Vec<u8>)>,
+    client_auth: Option<(&'a [u8], &'a [u8])>,
     /// alpn settings
     alpn: Option<Vec<Vec<u8>>>,
     /// username and password
@@ -33,9 +33,9 @@ pub struct MqttOptions {
     last_will: Option<LastWill>,
 }
 
-impl MqttOptions {
+impl<'a> MqttOptions<'a> {
     /// New mqtt options
-    pub fn new<S: Into<String>, T: Into<Ipv4Addr>>(id: S, host: T, port: u16) -> MqttOptions {
+    pub fn new<S: Into<String>, T: Into<Ipv4Addr>>(id: S, host: T, port: u16) -> MqttOptions<'a> {
         let id = id.into();
         if id.starts_with(' ') || id.is_empty() {
             panic!("Invalid client id")
@@ -63,36 +63,44 @@ impl MqttOptions {
         SocketAddrV4::new(self.broker_addr, self.port)
     }
 
-    pub fn set_last_will(&mut self, will: LastWill) -> &mut Self {
-        self.last_will = Some(will);
-        self
+    pub fn set_last_will(self, will: LastWill) -> Self {
+        Self {
+            last_will: Some(will),
+            ..self
+        }
     }
 
-    pub fn last_will(&mut self) -> Option<LastWill> {
+    pub fn last_will(&self) -> Option<LastWill> {
         self.last_will.clone()
     }
 
-    pub fn set_ca(&mut self, ca: Vec<u8>) -> &mut Self {
-        self.ca = Some(ca);
-        self
+    pub fn set_ca(self, ca: &'a [u8]) -> Self {
+        Self {
+            ca: Some(ca),
+            ..self
+        }
     }
 
-    pub fn ca(&self) -> Option<Vec<u8>> {
-        self.ca.clone()
+    pub fn ca(&self) -> Option<&[u8]> {
+        self.ca
     }
 
-    pub fn set_client_auth(&mut self, cert: Vec<u8>, key: Vec<u8>) -> &mut Self {
-        self.client_auth = Some((cert, key));
-        self
+    pub fn set_client_auth(self, cert: &'a [u8], key: &'a [u8]) -> Self {
+        Self {
+            client_auth: Some((cert, key)),
+            ..self
+        }
     }
 
-    pub fn client_auth(&self) -> Option<(Vec<u8>, Vec<u8>)> {
-        self.client_auth.clone()
+    pub fn client_auth(&self) -> Option<(&[u8], &[u8])> {
+        self.client_auth
     }
 
-    pub fn set_alpn(&mut self, alpn: Vec<Vec<u8>>) -> &mut Self {
-        self.alpn = Some(alpn);
-        self
+    pub fn set_alpn(self, alpn: Vec<Vec<u8>>) -> Self {
+        Self {
+            alpn: Some(alpn),
+            ..self
+        }
     }
 
     pub fn alpn(&self) -> Option<Vec<Vec<u8>>> {
@@ -101,13 +109,15 @@ impl MqttOptions {
 
     /// Set number of seconds after which client should ping the broker
     /// if there is no other data exchange
-    pub fn set_keep_alive(&mut self, secs: u16) -> &mut Self {
+    pub fn set_keep_alive(self, secs: u16) -> Self {
         if secs < 5 {
             panic!("Keep alives should be >= 5  secs");
         }
 
-        self.keep_alive_ms = secs as u32 * 1000;
-        self
+        Self {
+            keep_alive_ms: secs as u32 * 1000,
+            ..self
+        }
     }
 
     /// Keep alive time
@@ -121,9 +131,11 @@ impl MqttOptions {
     }
 
     /// Set packet size limit (in Kilo Bytes)
-    pub fn set_max_packet_size(&mut self, sz: usize) -> &mut Self {
-        self.max_packet_size = sz * 1024;
-        self
+    pub fn set_max_packet_size(self, max_packet_size: usize) -> Self {
+        Self {
+            max_packet_size,
+            ..self
+        }
     }
 
     /// Maximum packet size
@@ -137,9 +149,11 @@ impl MqttOptions {
     /// When set `false`, broker will hold the client state and performs pending
     /// operations on the client when reconnection with same `client_id`
     /// happens. Local queue state is also held to retransmit packets after reconnection.
-    pub fn set_clean_session(&mut self, clean_session: bool) -> &mut Self {
-        self.clean_session = clean_session;
-        self
+    pub fn set_clean_session(self, clean_session: bool) -> Self {
+        Self {
+            clean_session,
+            ..self
+        }
     }
 
     /// Clean session
@@ -148,9 +162,11 @@ impl MqttOptions {
     }
 
     /// Username and password
-    pub fn set_credentials<S: Into<String>>(&mut self, username: S, password: S) -> &mut Self {
-        self.credentials = Some((username.into(), password.into()));
-        self
+    pub fn set_credentials<S: Into<String>>(self, username: S, password: S) -> Self {
+        Self {
+            credentials: Some((username.into(), password.into())),
+            ..self
+        }
     }
 
     /// Security options
@@ -159,7 +175,7 @@ impl MqttOptions {
     }
 
     // /// Enables throttling and sets outoing message rate to the specified 'rate'
-    // pub fn set_throttle(&mut self, duration: Duration) -> &mut Self {
+    // pub fn set_throttle(self, duration: Duration) -> Self {
     //     self.throttle = duration;
     //     self
     // }
@@ -170,13 +186,12 @@ impl MqttOptions {
     // }
 
     /// Set number of concurrent in flight messages
-    pub fn set_inflight(&mut self, inflight: usize) -> &mut Self {
+    pub fn set_inflight(self, inflight: usize) -> Self {
         if inflight == 0 {
             panic!("zero in flight is not allowed")
         }
 
-        self.inflight = inflight;
-        self
+        Self { inflight, ..self }
     }
 
     /// Number of concurrent in flight messages

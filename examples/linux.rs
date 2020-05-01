@@ -28,7 +28,6 @@ fn main() {
     let mut mqtt_eventloop = MqttEvent::new(
         c,
         SysTimer::new(),
-        SysTimer::new(),
         MqttOptions::new("mqtt_test_client_id", Ipv4Addr::new(3, 123, 239, 37), 1883),
     );
 
@@ -38,13 +37,13 @@ fn main() {
         .name("eventloop".to_string())
         .spawn(move || loop {
             match nb::block!(mqtt_eventloop.yield_event(&network)) {
-                Ok(Notification::Publish(publish)) => {
+                Ok(Notification::Publish(_publish)) => {
                     #[cfg(feature = "logging")]
                     log::debug!(
                         "[{}, {:?}]: {:?}",
-                        publish.topic_name,
-                        publish.qospid,
-                        String::from_utf8(publish.payload).unwrap()
+                        _publish.topic_name,
+                        _publish.qospid,
+                        String::from_utf8(_publish.payload).unwrap()
                     );
                 }
                 _ => {

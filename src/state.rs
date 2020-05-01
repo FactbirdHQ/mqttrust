@@ -30,13 +30,11 @@ pub enum StateError {
 // This abstracts the functionality better so that it's easy to switch between synchronous code,
 // tokio (or) async/await
 #[derive(Debug, Clone)]
-pub struct MqttState<I, O> {
+pub struct MqttState<O> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
     /// Status of last ping
     pub await_pingresp: bool,
-    /// Last incoming packet time
-    pub last_incoming_timer: I,
     /// Last outgoing packet time
     pub last_outgoing_timer: O,
     /// Packet id of the last outgoing packet
@@ -49,25 +47,22 @@ pub struct MqttState<I, O> {
     pub incoming_pub: VecDeque<Pid>,
 }
 
-impl<I, O> MqttState<I, O>
+impl<O> MqttState<O>
 where
-    I: embedded_hal::timer::CountDown,
     O: embedded_hal::timer::CountDown,
-    I::Time: From<u32>,
     O::Time: From<u32>,
 {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
     /// instantiated for clean sessions
-    pub fn new(incoming_timer: I, outgoing_timer: O) -> Self {
+    pub fn new(outgoing_timer: O) -> Self {
         MqttState {
             connection_status: MqttConnectionStatus::Disconnected,
             await_pingresp: false,
-            last_incoming_timer: incoming_timer,
             last_outgoing_timer: outgoing_timer,
             last_pid: Pid::new(),
 
-            // TODO: Change these to heapless::LinearMaps?
+            // FIXME: Change these to heapless::LinearMaps?
             outgoing_pub: VecDeque::new(),
             outgoing_rel: VecDeque::new(),
             incoming_pub: VecDeque::new(),
@@ -79,11 +74,9 @@ where
     pub(crate) fn handle_outgoing_packet(
         &mut self,
         packet: Packet,
-        timeout_ms: u32,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
         let out = match packet {
-            // Packet::Publish(publish) => self.handle_outgoing_publish(publish, timeout_ms)?,
-            Packet::Pingreq => self.handle_outgoing_ping(timeout_ms)?,
+            Packet::Pingreq => self.handle_outgoing_ping()?,
             _ => unimplemented!(),
         };
 
@@ -95,13 +88,10 @@ where
     pub(crate) fn handle_outgoing_request(
         &mut self,
         request: Request,
-        timeout_ms: u32,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
         let out = match request {
-            Request::Publish(publish) => self.handle_outgoing_publish(publish, timeout_ms)?,
-            Request::Subscribe(subscribe) => {
-                self.handle_outgoing_subscribe(subscribe, timeout_ms)?
-            }
+            Request::Publish(publish) => self.handle_outgoing_publish(publish)?,
+            Request::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe)?,
             _ => unimplemented!(),
         };
 
@@ -116,9 +106,9 @@ where
         &mut self,
         packet: Packet,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
-        let out = match packet {
+        match packet {
             Packet::Pingresp => self.handle_incoming_pingresp(),
-            Packet::Publish(publish) => self.handle_incoming_publish(publish.clone()),
+            Packet::Publish(publish) => self.handle_incoming_publish(publish),
             Packet::Suback(suback) => self.handle_incoming_suback(suback),
             Packet::Unsuback(pid) => self.handle_incoming_unsuback(pid),
             Packet::Puback(pid) => self.handle_incoming_puback(pid),
@@ -130,21 +120,12 @@ where
                 log::error!("Invalid incoming paket = {:?}", packet);
                 Ok((None, None))
             }
-        };
-
-        // self.last_incoming = Instant::now();
-        out
+        }
     }
 
     /// Adds next packet identifier to QoS 1 and 2 publish packets and returns
     /// it by wrapping publish in packet
-    fn handle_outgoing_publish(
-        &mut self,
-        request: PublishRequest,
-        timeout_ms: u32,
-    ) -> Result<Packet, StateError> {
-        self.last_outgoing_timer.start(timeout_ms);
-
+    fn handle_outgoing_publish(&mut self, request: PublishRequest) -> Result<Packet, StateError> {
         let qospid = match request.qos {
             QoS::AtMostOnce => QosPid::AtMostOnce,
             QoS::AtLeastOnce => QosPid::AtLeastOnce(self.next_pid()),
@@ -313,7 +294,7 @@ where
     /// check when the last control packet/pingreq packet is received and return
     /// the status which tells if keep alive time has exceeded
     /// NOTE: status will be checked for zero keepalive times also
-    fn handle_outgoing_ping(&mut self, timeout_ms: u32) -> Result<Packet, StateError> {
+    fn handle_outgoing_ping(&mut self) -> Result<Packet, StateError> {
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
             #[cfg(feature = "logging")]
@@ -321,7 +302,6 @@ where
             return Err(StateError::AwaitPingResp);
         }
 
-        self.last_outgoing_timer.start(timeout_ms);
         self.await_pingresp = true;
 
         #[cfg(feature = "logging")]
@@ -342,10 +322,7 @@ where
     fn handle_outgoing_subscribe(
         &mut self,
         subscribe_request: SubscribeRequest,
-        timeout_ms: u32,
     ) -> Result<Packet, StateError> {
-        self.last_outgoing_timer.start(timeout_ms);
-
         let subscription = Subscribe {
             pid: self.next_pid(),
             topics: subscribe_request.topics,
@@ -360,18 +337,20 @@ where
         Ok(subscription.into())
     }
 
-    pub fn handle_outgoing_connect(&mut self, timeout_ms: u32) -> Result<(), StateError> {
+    pub fn handle_outgoing_connect(&mut self) -> Result<(), StateError> {
         self.connection_status = MqttConnectionStatus::Handshake;
-        self.last_outgoing_timer.start(timeout_ms);
         Ok(())
     }
 
     pub fn handle_incoming_connack(&mut self, packet: Packet) -> Result<(), StateError> {
         let connack = match packet {
             Packet::Connack(connack) => connack,
-            packet => {
+            _packet => {
                 #[cfg(feature = "logging")]
-                log::error!("Invalid packet. Expecting connack. Received = {:?}", packet);
+                log::error!(
+                    "Invalid packet. Expecting connack. Received = {:?}",
+                    _packet
+                );
 
                 self.connection_status = MqttConnectionStatus::Disconnected;
                 return Err(StateError::WrongPacket);
@@ -415,12 +394,11 @@ where
 #[cfg(test)]
 mod test {
     use super::{MqttConnectionStatus, MqttState, Packet, StateError};
-    use crate::{MqttOptions, Notification, PublishRequest};
+    use crate::{Notification, PublishRequest};
     use alloc::borrow::ToOwned;
     use alloc::vec;
     use core::convert::TryFrom;
     use embedded_hal::timer::CountDown;
-    use embedded_nal::Ipv4Addr;
     use mqttrs::*;
     use void::Void;
 
@@ -468,10 +446,9 @@ mod test {
         }
     }
 
-    fn build_mqttstate() -> MqttState<CdMock, CdMock> {
-        let incoming_timer = CdMock { time: 0 };
+    fn build_mqttstate() -> MqttState<CdMock> {
         let outgoing_timer = CdMock { time: 0 };
-        MqttState::new(incoming_timer, outgoing_timer)
+        MqttState::new(outgoing_timer)
     }
 
     #[test]
@@ -482,7 +459,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::AtMostOnce);
 
         // Packet id shouldn't be set and publish shouldn't be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish, 5000) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -493,7 +470,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
 
         // Packet id should be set and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone()) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -504,7 +481,7 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
         // Packet id should be incremented and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone()) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -518,7 +495,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
 
         // Packet id should be set and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone()) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -529,7 +506,7 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 3);
 
         // Packet id should be incremented and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), 5000) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone()) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -588,8 +565,8 @@ mod test {
         let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
         let publish2 = build_outgoing_publish(QoS::ExactlyOnce);
 
-        mqtt.handle_outgoing_publish(publish1, 5000).unwrap();
-        mqtt.handle_outgoing_publish(publish2, 5000).unwrap();
+        mqtt.handle_outgoing_publish(publish1).unwrap();
+        mqtt.handle_outgoing_publish(publish2).unwrap();
 
         mqtt.handle_incoming_puback(Pid::try_from(2).unwrap())
             .unwrap();
@@ -613,8 +590,8 @@ mod test {
         let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
         let publish2 = build_outgoing_publish(QoS::ExactlyOnce);
 
-        let _publish_out = mqtt.handle_outgoing_publish(publish1, 5000);
-        let _publish_out = mqtt.handle_outgoing_publish(publish2, 5000);
+        let _publish_out = mqtt.handle_outgoing_publish(publish1);
+        let _publish_out = mqtt.handle_outgoing_publish(publish2);
 
         mqtt.handle_incoming_pubrec(Pid::try_from(3).unwrap())
             .unwrap();
@@ -639,7 +616,7 @@ mod test {
         let mut mqtt = build_mqttstate();
 
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
-        mqtt.handle_outgoing_publish(publish, 5000).unwrap();
+        mqtt.handle_outgoing_publish(publish).unwrap();
 
         let (notification, request) = mqtt
             .handle_incoming_pubrec(Pid::try_from(2).unwrap())
@@ -682,7 +659,7 @@ mod test {
         let mut mqtt = build_mqttstate();
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
 
-        mqtt.handle_outgoing_publish(publish, 5000).unwrap();
+        mqtt.handle_outgoing_publish(publish).unwrap();
         mqtt.handle_incoming_pubrec(Pid::try_from(2).unwrap())
             .unwrap();
 
@@ -694,19 +671,17 @@ mod test {
     #[test]
     fn outgoing_ping_handle_should_throw_errors_for_no_pingresp() {
         let mut mqtt = build_mqttstate();
-        let mut opts = MqttOptions::new("test", Ipv4Addr::localhost(), 1883);
-        opts.set_keep_alive(10);
         mqtt.connection_status = MqttConnectionStatus::Connected;
-        mqtt.handle_outgoing_ping(5000).unwrap();
+        mqtt.handle_outgoing_ping().unwrap();
 
         // network activity other than pingresp
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
-        mqtt.handle_outgoing_publish(publish.into(), 5000).unwrap();
+        mqtt.handle_outgoing_publish(publish.into()).unwrap();
         mqtt.handle_incoming_packet(Packet::Puback(Pid::try_from(2).unwrap()))
             .unwrap();
 
         // should throw error because we didn't get pingresp for previous ping
-        match mqtt.handle_outgoing_ping(5000) {
+        match mqtt.handle_outgoing_ping() {
             Ok(_) => panic!("Should throw pingresp await error"),
             Err(StateError::AwaitPingResp) => (),
             Err(e) => panic!("Should throw pingresp await error. Error = {:?}", e),
@@ -717,16 +692,13 @@ mod test {
     fn outgoing_ping_handle_should_succeed_if_pingresp_is_received() {
         let mut mqtt = build_mqttstate();
 
-        let mut opts = MqttOptions::new("test", Ipv4Addr::localhost(), 1883);
-        opts.set_keep_alive(10);
-
         mqtt.connection_status = MqttConnectionStatus::Connected;
 
         // should ping
-        mqtt.handle_outgoing_ping(5000).unwrap();
+        mqtt.handle_outgoing_ping().unwrap();
         mqtt.handle_incoming_packet(Packet::Pingresp).unwrap();
 
         // should ping
-        mqtt.handle_outgoing_ping(5000).unwrap();
+        mqtt.handle_outgoing_ping().unwrap();
     }
 }
