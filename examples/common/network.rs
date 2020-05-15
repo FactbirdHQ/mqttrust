@@ -1,4 +1,6 @@
-use embedded_nal::{Mode, SocketAddr, TcpStack};
+use embedded_nal::{AddrType, Dns, Mode, SocketAddr, TcpStack};
+use heapless::{String, consts};
+use no_std_net::IpAddr;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 
@@ -15,19 +17,30 @@ impl TcpSocket {
     }
 }
 
+impl Dns for Network {
+    type Error = ();
+
+    fn gethostbyaddr(&self, ip_addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+        unimplemented!()
+    }
+    fn gethostbyname(&self, hostname: &str, addr_type: AddrType) -> Result<IpAddr, Self::Error> {
+        unimplemented!()
+    }
+}
+
 impl TcpStack for Network {
     type Error = ();
     type TcpSocket = TcpSocket;
 
-    fn open(&self, mode: Mode) -> Result<<Self as TcpStack>::TcpSocket, <Self as TcpStack>::Error> {
+    fn open(&self, mode: Mode) -> Result<Self::TcpSocket, Self::Error> {
         Ok(TcpSocket::new(mode))
     }
 
     fn read(
         &self,
-        network: &mut <Self as TcpStack>::TcpSocket,
+        network: &mut Self::TcpSocket,
         buf: &mut [u8],
-    ) -> Result<usize, nb::Error<<Self as TcpStack>::Error>> {
+    ) -> Result<usize, nb::Error<Self::Error>> {
         if let Some(ref mut stream) = network.stream {
             stream.read(buf).map_err(|e| match e.kind() {
                 ErrorKind::WouldBlock => nb::Error::WouldBlock,
@@ -40,9 +53,9 @@ impl TcpStack for Network {
 
     fn write(
         &self,
-        network: &mut <Self as TcpStack>::TcpSocket,
+        network: &mut Self::TcpSocket,
         buf: &[u8],
-    ) -> Result<usize, nb::Error<<Self as TcpStack>::Error>> {
+    ) -> Result<usize, nb::Error<Self::Error>> {
         if let Some(ref mut stream) = network.stream {
             Ok(stream.write(buf).map_err(|_| nb::Error::Other(()))?)
         } else {
@@ -50,18 +63,15 @@ impl TcpStack for Network {
         }
     }
 
-    fn is_connected(
-        &self,
-        _network: &<Self as TcpStack>::TcpSocket,
-    ) -> Result<bool, <Self as TcpStack>::Error> {
+    fn is_connected(&self, _network: &Self::TcpSocket) -> Result<bool, Self::Error> {
         Ok(true)
     }
 
     fn connect(
         &self,
-        network: <Self as TcpStack>::TcpSocket,
+        network: Self::TcpSocket,
         remote: SocketAddr,
-    ) -> Result<<Self as TcpStack>::TcpSocket, <Self as TcpStack>::Error> {
+    ) -> Result<Self::TcpSocket, Self::Error> {
         Ok(match TcpStream::connect(format!("{}", remote)) {
             Ok(stream) => {
                 match network.mode {
@@ -88,10 +98,7 @@ impl TcpStack for Network {
         })
     }
 
-    fn close(
-        &self,
-        _network: <Self as TcpStack>::TcpSocket,
-    ) -> Result<(), <Self as TcpStack>::Error> {
+    fn close(&self, _network: Self::TcpSocket) -> Result<(), Self::Error> {
         Ok(())
     }
 }

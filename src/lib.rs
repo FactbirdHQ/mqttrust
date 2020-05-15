@@ -8,17 +8,18 @@ mod options;
 mod requests;
 mod state;
 
+use no_std_net::SocketAddr;
 use state::{MqttState, StateError};
 
 use alloc::borrow::ToOwned;
 use bytes::{BufMut, BytesMut};
-use embedded_nal::{Mode, TcpStack};
+use embedded_nal::{AddrType, Dns, Mode, TcpStack};
 use heapless::{spsc::Consumer, ArrayLength};
 use mqttrs::{decode, encode, Packet, Pid, Suback};
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
 pub use mqttrs::{Connect, Protocol, Publish, QoS, QosPid, Subscribe, SubscribeTopic, Unsubscribe};
-pub use options::MqttOptions;
+pub use options::{Broker, MqttOptions};
 pub use requests::{PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
 /// Includes incoming packets from the network and other interesting events happening in the eventloop
@@ -65,6 +66,7 @@ pub enum NetworkError {
     SocketOpen,
     SocketConnect,
     SocketClosed,
+    DnsLookupFailed,
 }
 
 impl From<mqttrs::Error> for EventError {
@@ -82,13 +84,13 @@ impl From<StateError> for EventError {
 pub struct MqttEvent<'a, 'b, L, N, O>
 where
     L: ArrayLength<Request>,
-    N: TcpStack,
+    N: TcpStack + Dns,
 {
     /// Current state of the connection
     state: MqttState<O>,
     /// Options of the current mqtt connection
     options: MqttOptions<'b>,
-    /// Receive buffer for incomming packets
+    /// Receive buffer for incoming packets
     rx_buf: BytesMut,
     /// Network socket
     socket: Option<N::TcpSocket>,
@@ -101,9 +103,10 @@ where
 impl<'a, 'b, L, N, O> MqttEvent<'a, 'b, L, N, O>
 where
     L: ArrayLength<Request>,
-    N: TcpStack,
+    N: TcpStack + Dns,
     O: embedded_hal::timer::CountDown,
     O::Time: From<u32>,
+    N::TcpSocket: Clone
 {
     pub fn new(
         requests: Consumer<'a, Request, L>,
@@ -202,7 +205,7 @@ where
         match self.socket {
             Some(ref mut socket) => {
                 let mut tx_buf: [u8; 2048] = [0; 2048];
-                let size = encode(&pkt, &mut &mut tx_buf[..])?;
+                let size = encode(&pkt, &mut tx_buf[..])?;
                 nb::block!(network.write(socket, &tx_buf[..size]))
                     .map_err(|_| EventError::Network(NetworkError::Write))
             }
@@ -245,9 +248,29 @@ where
             .open(Mode::Timeout(50))
             .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?;
 
+        let (_hostname, socket_addr) = match self.options.broker() {
+            (Broker::Hostname(h), p) => {
+                let socket_addr = SocketAddr::new(
+                    network
+                        .gethostbyname(&h, AddrType::IPv4)
+                        .map_err(|_e| EventError::Network(NetworkError::DnsLookupFailed))?,
+                    p,
+                );
+                (h, socket_addr)
+            }
+            (Broker::IpAddr(ip), p) => {
+                let socket_addr = SocketAddr::new(ip, p);
+                let domain = network
+                    .gethostbyaddr(ip)
+                    .map_err(|_e| EventError::Network(NetworkError::DnsLookupFailed))?;
+
+                (alloc::string::String::from(domain.as_str()), socket_addr)
+            }
+        };
+
         self.socket = Some(
             network
-                .connect(socket, self.options.broker_address().into())
+                .connect(socket, socket_addr)
                 .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
         );
 
@@ -256,7 +279,7 @@ where
         // };
 
         // if let Some((certificate, private_key)) = self.options.client_auth() {
-        //     // Enable SSL for self.socket, with broker (self.options.broker_address().ip())
+        //     // Enable SSL for self.socket, with broker (hostname)
         // };
 
         #[cfg(feature = "logging")]
@@ -267,11 +290,8 @@ where
 
     fn disconnect(&mut self, network: &N) {
         self.state.connection_status = state::MqttConnectionStatus::Disconnected;
-        if let Some(socket) = &self.socket {
-            let connected = network.is_connected(socket);
-            if connected.is_err() || !connected.unwrap() {
-                self.socket = None;
-            }
+        if let Some(socket) = self.socket.take() {
+            network.close(socket).ok();
         }
     }
 

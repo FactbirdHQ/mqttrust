@@ -1,12 +1,42 @@
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String};
 use mqttrs::LastWill;
-use no_std_net::{Ipv4Addr, SocketAddrV4};
+use no_std_net::{IpAddr, Ipv4Addr};
+
+#[derive(Clone, Debug)]
+pub enum Broker {
+    Hostname(String),
+    IpAddr(IpAddr),
+}
+
+impl<'a> From<&'a str> for Broker {
+    fn from(s: &'a str) -> Self {
+        Broker::Hostname(String::from(s))
+    }
+}
+
+impl<'a> From<String> for Broker {
+    fn from(s: String) -> Self {
+        Broker::Hostname(s)
+    }
+}
+
+impl<'a> From<IpAddr> for Broker {
+    fn from(ip: IpAddr) -> Self {
+        Broker::IpAddr(ip)
+    }
+}
+
+impl<'a> From<Ipv4Addr> for Broker {
+    fn from(ip: Ipv4Addr) -> Self {
+        Broker::IpAddr(ip.into())
+    }
+}
 
 /// Options to configure the behaviour of mqtt connection
 #[derive(Clone, Debug)]
 pub struct MqttOptions<'a> {
     /// broker address that you want to connect to
-    broker_addr: Ipv4Addr,
+    broker_addr: Broker,
     /// broker port
     port: u16,
     /// keep alive time to send pingreq to broker when the connection is idle
@@ -15,12 +45,12 @@ pub struct MqttOptions<'a> {
     clean_session: bool,
     /// client identifier
     client_id: String,
-    /// connection method
+    /// certificate authority certificate
     ca: Option<&'a [u8]>,
     /// tls client_authentication
-    client_auth: Option<(&'a [u8], &'a [u8])>,
+    client_auth: Option<(&'a [u8], &'a [u8], Option<&'a [u8]>)>,
     /// alpn settings
-    alpn: Option<Vec<Vec<u8>>>,
+    // alpn: Option<Vec<Vec<u8>>>,
     /// username and password
     credentials: Option<(String, String)>,
     /// maximum packet size
@@ -35,21 +65,21 @@ pub struct MqttOptions<'a> {
 
 impl<'a> MqttOptions<'a> {
     /// New mqtt options
-    pub fn new<S: Into<String>, T: Into<Ipv4Addr>>(id: S, host: T, port: u16) -> MqttOptions<'a> {
+    pub fn new<S: Into<String>>(id: S, broker: Broker, port: u16) -> MqttOptions<'a> {
         let id = id.into();
         if id.starts_with(' ') || id.is_empty() {
             panic!("Invalid client id")
         }
 
         MqttOptions {
-            broker_addr: host.into(),
+            broker_addr: broker,
             port,
             keep_alive_ms: 60_000,
             clean_session: true,
             client_id: id,
             ca: None,
             client_auth: None,
-            alpn: None,
+            // alpn: None,
             credentials: None,
             max_packet_size: 512,
             // throttle: Duration::from_micros(0),
@@ -59,8 +89,8 @@ impl<'a> MqttOptions<'a> {
     }
 
     /// Broker address
-    pub fn broker_address(&self) -> SocketAddrV4 {
-        SocketAddrV4::new(self.broker_addr, self.port)
+    pub fn broker(&self) -> (Broker, u16) {
+        (self.broker_addr.clone(), self.port)
     }
 
     pub fn set_last_will(self, will: LastWill) -> Self {
@@ -85,27 +115,27 @@ impl<'a> MqttOptions<'a> {
         self.ca
     }
 
-    pub fn set_client_auth(self, cert: &'a [u8], key: &'a [u8]) -> Self {
+    pub fn set_client_auth(self, cert: &'a [u8], key: &'a [u8], password: Option<&'a [u8]>) -> Self {
         Self {
-            client_auth: Some((cert, key)),
+            client_auth: Some((cert, key, password)),
             ..self
         }
     }
 
-    pub fn client_auth(&self) -> Option<(&[u8], &[u8])> {
+    pub fn client_auth(&self) -> Option<(&[u8], &[u8], Option<&[u8]>)> {
         self.client_auth
     }
 
-    pub fn set_alpn(self, alpn: Vec<Vec<u8>>) -> Self {
-        Self {
-            alpn: Some(alpn),
-            ..self
-        }
-    }
+    // pub fn set_alpn(self, alpn: Vec<Vec<u8>>) -> Self {
+    //     Self {
+    //         alpn: Some(alpn),
+    //         ..self
+    //     }
+    // }
 
-    pub fn alpn(&self) -> Option<Vec<Vec<u8>>> {
-        self.alpn.clone()
-    }
+    // pub fn alpn(&self) -> Option<Vec<Vec<u8>>> {
+    //     self.alpn.clone()
+    // }
 
     /// Set number of seconds after which client should ping the broker
     /// if there is no other data exchange
@@ -207,13 +237,13 @@ mod test {
     #[test]
     #[should_panic]
     fn client_id_startswith_space() {
-        let _mqtt_opts = MqttOptions::new(" client_a", Ipv4Addr::new(127, 0, 0, 1), 1883)
+        let _mqtt_opts = MqttOptions::new(" client_a", Ipv4Addr::new(127, 0, 0, 1).into(), 1883)
             .set_clean_session(true);
     }
 
     #[test]
     #[should_panic]
     fn no_client_id() {
-        let _mqtt_opts = MqttOptions::new("", Ipv4Addr::localhost(), 1883).set_clean_session(true);
+        let _mqtt_opts = MqttOptions::new("", Ipv4Addr::localhost().into(), 1883).set_clean_session(true);
     }
 }

@@ -28,7 +28,7 @@ fn main() {
     let mut mqtt_eventloop = MqttEvent::new(
         c,
         SysTimer::new(),
-        MqttOptions::new("mqtt_test_client_id", Ipv4Addr::new(3, 123, 239, 37), 1883),
+        MqttOptions::new("mqtt_test_client_id", Ipv4Addr::new(3, 123, 239, 37).into(), 1883),
     );
 
     nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");
