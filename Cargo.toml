@@ -26,8 +26,7 @@ log = { version = "^0.4", default-features = false, optional = true }
 bytes = { version = "^0.5", default-features = false }
 no-std-net = "^0.3"
 embedded-nal = { git = "https://github.com/thejpster/embedded-nal" }
-mqttrs = { path = "../mqttrs", default-features = false, features = ["alloc"] }
-# mqttrs = { version = "0.3.0", default-features = false }
+mqttrs = { version = "^0.3", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 void = { version = "1.0.2", default-features = false }
@@ -36,6 +35,8 @@ env_logger = "0.7.1"
 [patch.'https://github.com/thejpster/embedded-nal']
 embedded-nal = { path = "../embedded-nal" }
 
+[patch.crates-io]
+mqttrs = { path = "../mqttrs" }
 
 [features]
 logging = ["log"]
