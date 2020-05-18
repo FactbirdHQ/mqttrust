@@ -1,4 +1,4 @@
-use alloc::{string::String};
+use alloc::string::String;
 use mqttrs::LastWill;
 use no_std_net::{IpAddr, Ipv4Addr};
 
@@ -115,7 +115,12 @@ impl<'a> MqttOptions<'a> {
         self.ca
     }
 
-    pub fn set_client_auth(self, cert: &'a [u8], key: &'a [u8], password: Option<&'a [u8]>) -> Self {
+    pub fn set_client_auth(
+        self,
+        cert: &'a [u8],
+        key: &'a [u8],
+        password: Option<&'a [u8]>,
+    ) -> Self {
         Self {
             client_auth: Some((cert, key, password)),
             ..self
@@ -244,6 +249,7 @@ mod test {
     #[test]
     #[should_panic]
     fn no_client_id() {
-        let _mqtt_opts = MqttOptions::new("", Ipv4Addr::localhost().into(), 1883).set_clean_session(true);
+        let _mqtt_opts =
+            MqttOptions::new("", Ipv4Addr::localhost().into(), 1883).set_clean_session(true);
     }
 }

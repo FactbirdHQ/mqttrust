@@ -1,5 +1,5 @@
 use embedded_nal::{AddrType, Dns, Mode, SocketAddr, TcpStack};
-use heapless::{String, consts};
+use heapless::{consts, String};
 use no_std_net::IpAddr;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -20,10 +20,10 @@ impl TcpSocket {
 impl Dns for Network {
     type Error = ();
 
-    fn gethostbyaddr(&self, ip_addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+    fn gethostbyaddr(&self, _ip_addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
         unimplemented!()
     }
-    fn gethostbyname(&self, hostname: &str, addr_type: AddrType) -> Result<IpAddr, Self::Error> {
+    fn gethostbyname(&self, _hostname: &str, _addr_type: AddrType) -> Result<IpAddr, Self::Error> {
         unimplemented!()
     }
 }

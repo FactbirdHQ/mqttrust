@@ -106,7 +106,6 @@ where
     N: TcpStack + Dns,
     O: embedded_hal::timer::CountDown,
     O::Time: From<u32>,
-    N::TcpSocket: Clone
 {
     pub fn new(
         requests: Consumer<'a, Request, L>,
