@@ -32,8 +32,8 @@ mqttrs = { version = "^0.3", default-features = false, features = ["alloc"] }
 void = { version = "1.0.2", default-features = false }
 env_logger = "0.7.1"
 
-[patch.'https://github.com/thejpster/embedded-nal']
-embedded-nal = { path = "../embedded-nal" }
+# [patch.'https://github.com/thejpster/embedded-nal']
+# embedded-nal = { path = "../embedded-nal" }
 
 # [patch.crates-io]
 # mqttrs = { path = "../mqttrs" }
