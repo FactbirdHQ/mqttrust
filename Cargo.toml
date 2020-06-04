@@ -35,8 +35,8 @@ env_logger = "0.7.1"
 [patch.'https://github.com/thejpster/embedded-nal']
 embedded-nal = { path = "../embedded-nal" }
 
-[patch.crates-io]
-mqttrs = { path = "../mqttrs" }
+# [patch.crates-io]
+# mqttrs = { path = "../mqttrs" }
 
 [features]
 logging = ["log"]
