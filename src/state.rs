@@ -1,6 +1,7 @@
-use crate::{Notification, PublishRequest, Request, Subscribe, SubscribeRequest};
-use alloc::collections::vec_deque::VecDeque;
+use crate::{Notification, PublishPayload, PublishRequest, Request, Subscribe, SubscribeRequest};
 use mqttrs::*;
+use alloc::collections::vec_deque::VecDeque;
+
 
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,7 +12,7 @@ pub enum MqttConnectionStatus {
     Disconnected,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum StateError {
     /// Broker's error reply to client's connect packet
     Connect(ConnectReturnCode),
@@ -71,7 +72,7 @@ where
 
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a packet which should
     /// be put on to the network by the eventloop
-    pub(crate) fn handle_outgoing_packet(
+    pub fn handle_outgoing_packet(
         &mut self,
         packet: Packet,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
@@ -85,9 +86,9 @@ where
 
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a packet which should
     /// be put on to the network by the eventloop
-    pub(crate) fn handle_outgoing_request(
+    pub fn handle_outgoing_request<P: PublishPayload>(
         &mut self,
-        request: Request,
+        request: Request<P>,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
         let out = match request {
             Request::Publish(publish) => self.handle_outgoing_publish(publish)?,
@@ -102,7 +103,7 @@ where
     /// user to consume and `Packet` which for the eventloop to put on the network
     /// E.g For incoming QoS1 publish packet, this method returns (Publish, Puback). Publish packet will
     /// be forwarded to user and Pubck packet will be written to network
-    pub(crate) fn handle_incoming_packet(
+    pub fn handle_incoming_packet(
         &mut self,
         packet: Packet,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
@@ -125,7 +126,10 @@ where
 
     /// Adds next packet identifier to QoS 1 and 2 publish packets and returns
     /// it by wrapping publish in packet
-    fn handle_outgoing_publish(&mut self, request: PublishRequest) -> Result<Packet, StateError> {
+    fn handle_outgoing_publish<P: PublishPayload>(
+        &mut self,
+        request: PublishRequest<P>,
+    ) -> Result<Packet, StateError> {
         let qospid = match request.qos {
             QoS::AtMostOnce => QosPid::AtMostOnce,
             QoS::AtLeastOnce => QosPid::AtLeastOnce(self.next_pid()),
@@ -137,7 +141,7 @@ where
             qospid,
             retain: request.retain,
             topic_name: request.topic_name,
-            payload: request.payload,
+            payload: request.payload.as_vec(),
         };
 
         if request.qos != QoS::AtMostOnce {
@@ -395,12 +399,12 @@ where
 mod test {
     use super::{MqttConnectionStatus, MqttState, Packet, StateError};
     use crate::{Notification, PublishRequest};
-    use alloc::borrow::ToOwned;
-    use alloc::vec;
     use core::convert::TryFrom;
     use embedded_hal::timer::CountDown;
     use mqttrs::*;
     use void::Void;
+    use alloc::{vec::Vec, borrow::ToOwned};
+    use alloc::vec;
 
     #[derive(Debug)]
     struct CdMock {
@@ -420,7 +424,7 @@ mod test {
         }
     }
 
-    fn build_outgoing_publish(qos: QoS) -> PublishRequest {
+    fn build_outgoing_publish(qos: QoS) -> PublishRequest<Vec<u8>> {
         let topic = "hello/world".to_owned();
         let payload = vec![1, 2, 3];
 

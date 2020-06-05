@@ -1,6 +1,7 @@
-use alloc::string::String;
 use mqttrs::LastWill;
 use no_std_net::{IpAddr, Ipv4Addr};
+
+use alloc::string::String;
 
 #[derive(Clone, Debug)]
 pub enum Broker {
@@ -83,7 +84,7 @@ impl<'a> MqttOptions<'a> {
             credentials: None,
             max_packet_size: 512,
             // throttle: Duration::from_micros(0),
-            inflight: 1,
+            inflight: 3,
             last_will: None,
         }
     }

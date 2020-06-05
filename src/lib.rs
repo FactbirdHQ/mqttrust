@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(maybe_uninit_slice_assume_init)]
+#![feature(associated_type_defaults)]
 
 extern crate alloc;
 
@@ -11,19 +12,21 @@ mod state;
 use no_std_net::SocketAddr;
 use state::{MqttState, StateError};
 
-use alloc::borrow::ToOwned;
+use alloc::{string::String, borrow::ToOwned};
 use bytes::{BufMut, BytesMut};
 use embedded_nal::{AddrType, Dns, Mode, TcpStack};
 use heapless::{spsc::Consumer, ArrayLength};
-use mqttrs::{decode, encode, Packet, Pid, Suback};
+use mqttrs::{decode, encode, Pid, Suback};
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
-pub use mqttrs::{Connect, Protocol, Publish, QoS, QosPid, Subscribe, SubscribeTopic, Unsubscribe};
+pub use mqttrs::{
+    Connect, Packet, Protocol, Publish, QoS, QosPid, Subscribe, SubscribeTopic, Unsubscribe,
+};
 pub use options::{Broker, MqttOptions};
-pub use requests::{PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
+pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
 /// Includes incoming packets from the network and other interesting events happening in the eventloop
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Notification {
     /// Incoming publish from the broker
     Publish(Publish),
@@ -50,7 +53,7 @@ pub enum MqttConnectionStatus {
 }
 
 /// Critical errors during eventloop polling
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum EventError {
     MqttState(StateError),
     Timeout,
@@ -58,7 +61,7 @@ pub enum EventError {
     Network(NetworkError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum NetworkError {
     Read,
     Write,
@@ -81,34 +84,36 @@ impl From<StateError> for EventError {
     }
 }
 
-pub struct MqttEvent<'a, 'b, L, N, O>
+pub struct MqttEvent<'a, 'b, L, N, O, P>
 where
-    L: ArrayLength<Request>,
-    N: TcpStack + Dns,
+    L: ArrayLength<Request<P>>,
+    N: TcpStack,
+    P: PublishPayload,
 {
     /// Current state of the connection
-    state: MqttState<O>,
+    pub state: MqttState<O>,
     /// Options of the current mqtt connection
-    options: MqttOptions<'b>,
+    pub options: MqttOptions<'b>,
     /// Receive buffer for incoming packets
     rx_buf: BytesMut,
     /// Network socket
-    socket: Option<N::TcpSocket>,
+    pub socket: Option<N::TcpSocket>,
     /// Request stream
-    requests: Consumer<'a, Request, L>,
+    pub requests: Consumer<'a, Request<P>, L>,
     // pending_pub: VecDeque<Publish>,
     // pending_rel: VecDeque<Pid>,
 }
 
-impl<'a, 'b, L, N, O> MqttEvent<'a, 'b, L, N, O>
+impl<'a, 'b, L, N, O, P> MqttEvent<'a, 'b, L, N, O, P>
 where
-    L: ArrayLength<Request>,
+    L: ArrayLength<Request<P>>,
     N: TcpStack + Dns,
     O: embedded_hal::timer::CountDown,
     O::Time: From<u32>,
+    P: PublishPayload,
 {
     pub fn new(
-        requests: Consumer<'a, Request, L>,
+        requests: Consumer<'a, Request<P>, L>,
         outgoing_timer: O,
         options: MqttOptions<'b>,
     ) -> Self {
@@ -200,7 +205,7 @@ where
     //     self.pending_rel.append(&mut pending_rel);
     // }
 
-    fn send(&mut self, network: &N, pkt: Packet) -> Result<usize, EventError> {
+    pub fn send(&mut self, network: &N, pkt: Packet) -> Result<usize, EventError> {
         match self.socket {
             Some(ref mut socket) => {
                 let mut tx_buf: [u8; 2048] = [0; 2048];
@@ -212,7 +217,7 @@ where
         }
     }
 
-    fn receive(&mut self, network: &N) -> Result<Option<Packet>, EventError> {
+    pub fn receive(&mut self, network: &N) -> Result<Option<Packet>, EventError> {
         match self.socket {
             Some(ref mut socket) => {
                 match network.read(socket, unsafe {
@@ -263,7 +268,7 @@ where
                     .gethostbyaddr(ip)
                     .map_err(|_e| EventError::Network(NetworkError::DnsLookupFailed))?;
 
-                (alloc::string::String::from(domain.as_str()), socket_addr)
+                (String::from(domain.as_str()), socket_addr)
             }
         };
 
@@ -287,7 +292,7 @@ where
         Ok(())
     }
 
-    fn disconnect(&mut self, network: &N) {
+    pub fn disconnect(&mut self, network: &N) {
         self.state.connection_status = state::MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.socket.take() {
             network.close(socket).ok();
