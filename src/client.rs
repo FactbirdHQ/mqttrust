@@ -1,8 +1,7 @@
 use crate::alloc::string::ToString;
 use core::cell::RefCell;
-use alloc::{vec::Vec, string::String};
 
-use heapless::{spsc::Producer, ArrayLength};
+use heapless::{spsc::Producer, ArrayLength, String, Vec};
 
 use crate::{
     requests::PublishPayload, PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic,
@@ -15,18 +14,15 @@ pub enum MqttClientError {
     Full,
 }
 
-pub trait Mqtt<P: PublishPayload = Vec<u8>>
-where
-    P: PublishPayload
-{
+pub trait Mqtt<P: PublishPayload = alloc::vec::Vec<u8>> {
 
     fn send(&self, request: Request<P>) -> Result<(), MqttClientError>;
 
     fn client_id(&self) -> &str;
 
-    fn publish(
+    fn publish<T: ArrayLength<u8>>(
         &self,
-        topic_name: String,
+        topic_name: String<T>,
         payload: P,
         qos: QoS,
     ) -> Result<(), MqttClientError> {
@@ -34,7 +30,7 @@ where
             dup: false,
             qos,
             retain: false,
-            topic_name,
+            topic_name: topic_name.to_string(),
             payload: payload.into(),
         }
         .into();
@@ -42,9 +38,9 @@ where
         self.send(req)
     }
 
-    fn subscribe(
+    fn subscribe<L: ArrayLength<SubscribeTopic>>(
         &self,
-        topics: Vec<SubscribeTopic>,
+        topics: Vec<SubscribeTopic, L>,
     ) -> Result<(), MqttClientError> {
         let req: Request<P> = SubscribeRequest {
             topics: topics.to_vec(),
@@ -53,9 +49,9 @@ where
         self.send(req)
     }
 
-    fn unsubscribe(
+    fn unsubscribe<L: ArrayLength<alloc::string::String>>(
         &self,
-        topics: Vec<String>,
+        topics: Vec<alloc::string::String, L>,
     ) -> Result<(), MqttClientError> {
         let req: Request<P> = UnsubscribeRequest {
             topics: topics.to_vec(),
@@ -65,21 +61,23 @@ where
     }
 }
 
-pub struct MqttClient<'a, L, P>
+pub struct MqttClient<'a, L, M, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
+    M: ArrayLength<u8>,
 {
-    client_id: String,
+    client_id: String<M>,
     producer: RefCell<Producer<'a, Request<P>, L>>,
 }
 
-impl<'a, L, P> MqttClient<'a, L, P>
+impl<'a, L, M, P> MqttClient<'a, L, M, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
+    M: ArrayLength<u8>,
 {
-    pub fn new(producer: Producer<'a, Request<P>, L>, client_id: String) -> Self {
+    pub fn new(producer: Producer<'a, Request<P>, L>, client_id: String<M>) -> Self {
         MqttClient {
             client_id,
             producer: RefCell::new(producer),
@@ -87,10 +85,11 @@ where
     }
 }
 
-impl<'a, L, P> Mqtt<P> for MqttClient<'a, L, P>
+impl<'a, L, M, P> Mqtt<P> for MqttClient<'a, L, M, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
+    M: ArrayLength<u8>,
 {
     fn client_id(&self) -> &str {
         &self.client_id

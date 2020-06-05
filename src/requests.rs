@@ -1,6 +1,5 @@
+use alloc::{string::String, vec::Vec};
 use mqttrs::{Connect, QoS, SubscribeTopic};
-
-use alloc::{vec::Vec, string::String};
 
 pub trait PublishPayload {
     fn as_vec(self) -> Vec<u8>;
@@ -20,10 +19,6 @@ where
         let mut v = Vec::new();
         v.extend_from_slice(&self);
         v
-        // match heapless::Vec::from_slice(&self) {
-        //     Ok(v) => v,
-        //     Err(_) => Vec::new()
-        // }
     }
 }
 
