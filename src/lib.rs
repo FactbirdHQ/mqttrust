@@ -12,10 +12,12 @@ mod state;
 use no_std_net::SocketAddr;
 use state::{MqttState, StateError};
 
-use alloc::{string::String, borrow::ToOwned};
+use core::convert::TryFrom;
+
+use alloc::{borrow::ToOwned, string::String};
 use bytes::{BufMut, BytesMut};
 use embedded_nal::{AddrType, Dns, Mode, TcpStack};
-use heapless::{spsc::Consumer, ArrayLength};
+use heapless::{consts, spsc::Consumer, ArrayLength, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrs::{decode, encode, Pid, Suback};
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
@@ -42,14 +44,6 @@ pub enum Notification {
     Unsuback(Pid),
     // Eventloop error
     Abort(EventError),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MqttConnectionStatus {
-    Handshake,
-    Connected,
-    Disconnecting,
-    Disconnected,
 }
 
 /// Critical errors during eventloop polling
@@ -87,7 +81,7 @@ impl From<StateError> for EventError {
 pub struct MqttEvent<'a, 'b, L, N, O, P>
 where
     L: ArrayLength<Request<P>>,
-    N: TcpStack,
+    N: TcpStack + Dns,
     P: PublishPayload,
 {
     /// Current state of the connection
@@ -100,8 +94,11 @@ where
     pub socket: Option<N::TcpSocket>,
     /// Request stream
     pub requests: Consumer<'a, Request<P>, L>,
-    // pending_pub: VecDeque<Publish>,
-    // pending_rel: VecDeque<Pid>,
+
+    /// Outgoing QoS 1, 2 publishes which aren't acked yet
+    pending_pub: FnvIndexMap<u16, Publish, consts::U8>,
+    /// Packet ids of released QoS 2 publishes
+    pending_rel: FnvIndexSet<u16, consts::U8>,
 }
 
 impl<'a, 'b, L, N, O, P> MqttEvent<'a, 'b, L, N, O, P>
@@ -123,18 +120,18 @@ where
             options,
             socket: None,
             requests,
-            // pending_pub: VecDeque::new(),
-            // pending_rel: VecDeque::new(),
+            pending_pub: IndexMap::new(),
+            pending_rel: IndexSet::new(),
         }
     }
 
     pub fn connect(&mut self, network: &N) -> nb::Result<(), EventError> {
         // connect to the broker
         self.network_connect(network)?;
-        self.mqtt_connect(network)?;
-
-        // Handle state after reconnect events
-        // self.populate_pending();
+        if self.mqtt_connect(network)? {
+            // Handle state after reconnect events
+            self.populate_pending();
+        }
 
         Ok(())
     }
@@ -152,14 +149,12 @@ where
         let o = if let Some(packet) = incoming {
             // Handle incoming
             self.state.handle_incoming_packet(packet)
-        // } else if let Some(p) = self.pending_rel.pop_front() {
-        //     // Handle pending PubRec
-        //     self.state
-        //         .handle_outgoing_packet(Packet::Pubrec(p))
-        // } else if let Some(p) = self.pending_pub.pop_front() {
-        //     // Handle pending Publish
-        //     self.state
-        //         .handle_outgoing_packet(Packet::Publish(p))
+        } else if let Some(p) = self.get_pending_rel() {
+            // Handle pending PubRec
+            self.state.handle_outgoing_packet(Packet::Pubrec(p))
+        } else if let Some(publish) = self.get_pending_pub() {
+            // Handle pending Publish
+            self.state.handle_outgoing_packet(Packet::Publish(publish))
         } else if self.state.outgoing_pub.len() < self.options.inflight() && self.requests.ready() {
             // Handle requests
             let request = unsafe { self.requests.dequeue_unchecked() };
@@ -197,13 +192,31 @@ where
         }
     }
 
-    // fn populate_pending(&mut self) {
-    //     let mut pending_pub = core::mem::replace(&mut self.state.outgoing_pub, VecDeque::new());
-    //     self.pending_pub.append(&mut pending_pub);
+    fn get_pending_rel(&mut self) -> Option<Pid> {
+        let p = match self.pending_rel.iter().next() {
+            Some(p) => *p,
+            None => return None,
+        };
+        self.pending_rel.remove(&p);
+        Pid::try_from(p).ok()
+    }
 
-    //     let mut pending_rel = core::mem::replace(&mut self.state.outgoing_rel, VecDeque::new());
-    //     self.pending_rel.append(&mut pending_rel);
-    // }
+    fn get_pending_pub(&mut self) -> Option<Publish> {
+        let pid = match self.pending_pub.keys().next() {
+            Some(p) => *p,
+            None => return None,
+        };
+        self.pending_pub.remove(&pid)
+    }
+
+    fn populate_pending(&mut self) {
+        let pending_pub = core::mem::replace(&mut self.state.outgoing_pub, IndexMap::new());
+        self.pending_pub
+            .extend(pending_pub.iter().map(|(&key, value)| (key, value.clone())));
+
+        let pending_rel = core::mem::replace(&mut self.state.outgoing_rel, IndexSet::new());
+        self.pending_rel.extend(pending_rel.iter());
+    }
 
     pub fn send(&mut self, network: &N, pkt: Packet) -> Result<usize, EventError> {
         match self.socket {
@@ -299,9 +312,9 @@ where
         }
     }
 
-    fn mqtt_connect(&mut self, network: &N) -> nb::Result<(), EventError> {
+    fn mqtt_connect(&mut self, network: &N) -> nb::Result<bool, EventError> {
         match self.state.connection_status {
-            state::MqttConnectionStatus::Connected => Ok(()),
+            state::MqttConnectionStatus::Connected => Ok(false),
             state::MqttConnectionStatus::Disconnected => {
                 #[cfg(feature = "logging")]
                 log::info!("MQTT connecting..");
@@ -359,12 +372,186 @@ where
                         #[cfg(feature = "logging")]
                         log::debug!("MQTT connected!");
 
-                        Ok(())
+                        Ok(true)
                     }
                     None => Err(nb::Error::WouldBlock),
                 }
             }
-            state::MqttConnectionStatus::Disconnecting => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_hal::timer::CountDown;
+    use heapless::spsc::Queue;
+    use mqttrs::{Connack, ConnectReturnCode};
+    use void::Void;
+
+    #[derive(Debug)]
+    struct CdMock {
+        time: u32,
+    }
+
+    impl CountDown for CdMock {
+        type Time = u32;
+        fn start<T>(&mut self, count: T)
+        where
+            T: Into<Self::Time>,
+        {
+            self.time = count.into();
+        }
+        fn wait(&mut self) -> nb::Result<(), Void> {
+            // Never let timer run out, as this is NOT supposed to test
+            // ping/pong logic of MQTT
+            Err(nb::Error::WouldBlock)
+        }
+    }
+
+    struct MockNetwork {
+        pub should_fail_read: bool,
+        pub should_fail_write: bool,
+    }
+
+    impl Dns for MockNetwork {
+        type Error = ();
+
+        fn gethostbyname(
+            &self,
+            _hostname: &str,
+            _addr_type: embedded_nal::AddrType,
+        ) -> Result<embedded_nal::IpAddr, Self::Error> {
+            unimplemented!()
+        }
+        fn gethostbyaddr(
+            &self,
+            _addr: embedded_nal::IpAddr,
+        ) -> Result<heapless::String<consts::U256>, Self::Error> {
+            unimplemented!()
+        }
+    }
+
+    impl TcpStack for MockNetwork {
+        type TcpSocket = ();
+        type Error = ();
+
+        fn open(&self, _mode: embedded_nal::Mode) -> Result<Self::TcpSocket, Self::Error> {
+            Ok(())
+        }
+        fn connect(
+            &self,
+            _socket: Self::TcpSocket,
+            _remote: embedded_nal::SocketAddr,
+        ) -> Result<Self::TcpSocket, Self::Error> {
+            Ok(())
+        }
+        fn is_connected(&self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+        fn write(
+            &self,
+            _socket: &mut Self::TcpSocket,
+            buffer: &[u8],
+        ) -> nb::Result<usize, Self::Error> {
+            if self.should_fail_write {
+                Err(nb::Error::Other(()))
+            } else {
+                Ok(buffer.len())
+            }
+        }
+        fn read(
+            &self,
+            _socket: &mut Self::TcpSocket,
+            buffer: &mut [u8],
+        ) -> nb::Result<usize, Self::Error> {
+            if self.should_fail_read {
+                Err(nb::Error::Other(()))
+            } else {
+                let connack = Packet::Connack(Connack {
+                    session_present: false,
+                    code: ConnectReturnCode::Accepted,
+                });
+                let size = encode(&connack, &mut buffer[..]).unwrap();
+                Ok(size)
+            }
+        }
+        fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn retry_behaviour() {
+        static mut Q: Queue<Request, consts::U5> = Queue(heapless::i::Queue::new());
+
+        let network = MockNetwork {
+            should_fail_read: false,
+            should_fail_write: false,
+        };
+
+        let (_p, c) = unsafe { Q.split() };
+        let mut event = MqttEvent::<_, MockNetwork, _, _>::new(
+            c,
+            CdMock { time: 0 },
+            MqttOptions::new("client", Broker::Hostname("".into()), 8883),
+        );
+
+        event
+            .state
+            .outgoing_pub
+            .insert(
+                2,
+                Publish {
+                    dup: false,
+                    qospid: QosPid::AtLeastOnce(Pid::try_from(2).unwrap()),
+                    retain: false,
+                    topic_name: "some/topic/name2".into(),
+                    payload: alloc::vec::Vec::new(),
+                },
+            )
+            .unwrap();
+
+        event
+            .state
+            .outgoing_pub
+            .insert(
+                3,
+                Publish {
+                    dup: false,
+                    qospid: QosPid::AtLeastOnce(Pid::try_from(3).unwrap()),
+                    retain: false,
+                    topic_name: "some/topic/name3".into(),
+                    payload: alloc::vec::Vec::new(),
+                },
+            )
+            .unwrap();
+
+        event
+            .state
+            .outgoing_pub
+            .insert(
+                4,
+                Publish {
+                    dup: false,
+                    qospid: QosPid::AtLeastOnce(Pid::try_from(4).unwrap()),
+                    retain: false,
+                    topic_name: "some/topic/name4".into(),
+                    payload: alloc::vec::Vec::new(),
+                },
+            )
+            .unwrap();
+
+        event.state.connection_status = state::MqttConnectionStatus::Handshake;
+        event.socket = Some(());
+
+        event.connect(&network).unwrap();
+
+        assert_eq!(event.pending_pub.len(), 3);
+
+        let mut key_iter = event.pending_pub.keys();
+        assert_eq!(key_iter.next(), Some(&2));
+        assert_eq!(key_iter.next(), Some(&3));
+        assert_eq!(key_iter.next(), Some(&4));
     }
 }

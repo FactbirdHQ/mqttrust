@@ -15,7 +15,6 @@ pub enum MqttClientError {
 }
 
 pub trait Mqtt<P: PublishPayload = alloc::vec::Vec<u8>> {
-
     fn send(&self, request: Request<P>) -> Result<(), MqttClientError>;
 
     fn client_id(&self) -> &str;
@@ -31,7 +30,7 @@ pub trait Mqtt<P: PublishPayload = alloc::vec::Vec<u8>> {
             qos,
             retain: false,
             topic_name: topic_name.to_string(),
-            payload: payload.into(),
+            payload,
         }
         .into();
 

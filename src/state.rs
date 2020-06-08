@@ -1,14 +1,12 @@
 use crate::{Notification, PublishPayload, PublishRequest, Request, Subscribe, SubscribeRequest};
+use heapless::{consts, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrs::*;
-use alloc::collections::vec_deque::VecDeque;
-
 
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MqttConnectionStatus {
     Handshake,
     Connected,
-    Disconnecting,
     Disconnected,
 }
 
@@ -30,7 +28,7 @@ pub enum StateError {
 // Methods will just modify the state of the object without doing any network operations
 // This abstracts the functionality better so that it's easy to switch between synchronous code,
 // tokio (or) async/await
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MqttState<O> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
@@ -40,12 +38,12 @@ pub struct MqttState<O> {
     pub last_outgoing_timer: O,
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
-    // Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub outgoing_pub: VecDeque<Publish>,
-    // /// Packet ids of released QoS 2 publishes
-    pub outgoing_rel: VecDeque<Pid>,
-    // /// Packet ids on incoming QoS 2 publishes
-    pub incoming_pub: VecDeque<Pid>,
+    /// Outgoing QoS 1, 2 publishes which aren't acked yet
+    pub outgoing_pub: FnvIndexMap<u16, Publish, consts::U8>,
+    /// Packet ids of released QoS 2 publishes
+    pub outgoing_rel: FnvIndexSet<u16, consts::U8>,
+    /// Packet ids on incoming QoS 2 publishes
+    pub incoming_pub: FnvIndexSet<u16, consts::U8>,
 }
 
 impl<O> MqttState<O>
@@ -63,10 +61,9 @@ where
             last_outgoing_timer: outgoing_timer,
             last_pid: Pid::new(),
 
-            // FIXME: Change these to heapless::LinearMaps?
-            outgoing_pub: VecDeque::new(),
-            outgoing_rel: VecDeque::new(),
-            incoming_pub: VecDeque::new(),
+            outgoing_pub: IndexMap::new(),
+            outgoing_rel: IndexSet::new(),
+            incoming_pub: IndexSet::new(),
         }
     }
 
@@ -144,8 +141,18 @@ where
             payload: request.payload.as_vec(),
         };
 
-        if request.qos != QoS::AtMostOnce {
-            self.outgoing_pub.push_back(publish.clone());
+        match qospid {
+            QosPid::AtMostOnce => {}
+            QosPid::AtLeastOnce(pid) => {
+                self.outgoing_pub
+                    .insert(pid.get(), publish.clone())
+                    .map_err(|_| StateError::InvalidState)?;
+            }
+            QosPid::ExactlyOnce(pid) => {
+                self.outgoing_pub
+                    .insert(pid.get(), publish.clone())
+                    .map_err(|_| StateError::InvalidState)?;
+            }
         }
 
         #[cfg(feature = "logging")]
@@ -167,21 +174,16 @@ where
         &mut self,
         pid: Pid,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
-        match self.outgoing_pub.iter().position(|x| {
-            x.qospid == QosPid::AtLeastOnce(pid) || x.qospid == QosPid::ExactlyOnce(pid)
-        }) {
-            Some(index) => {
-                let _publish = self.outgoing_pub.remove(index).expect("Wrong index");
+        if self.outgoing_pub.contains_key(&pid.get()) {
+            let _publish = self.outgoing_pub.remove(&pid.get());
 
-                let request = None;
-                let notification = Some(Notification::Puback(pid));
-                Ok((notification, request))
-            }
-            None => {
-                #[cfg(feature = "logging")]
-                log::error!("Unsolicited puback packet: {:?}", pid);
-                Err(StateError::Unsolicited)
-            }
+            let request = None;
+            let notification = Some(Notification::Puback(pid));
+            Ok((notification, request))
+        } else {
+            #[cfg(feature = "logging")]
+            log::error!("Unsolicited puback packet: {:?}", pid);
+            Err(StateError::Unsolicited)
         }
     }
 
@@ -211,22 +213,19 @@ where
         &mut self,
         pid: Pid,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
-        match self.outgoing_pub.iter().position(|x| {
-            x.qospid == QosPid::AtLeastOnce(pid) || x.qospid == QosPid::ExactlyOnce(pid)
-        }) {
-            Some(index) => {
-                let _ = self.outgoing_pub.remove(index);
-                self.outgoing_rel.push_back(pid);
+        if self.outgoing_pub.contains_key(&pid.get()) {
+            let _publish = self.outgoing_pub.remove(&pid.get());
+            self.outgoing_rel
+                .insert(pid.get())
+                .map_err(|_| StateError::InvalidState)?;
 
-                let reply = Some(Packet::Pubrel(pid));
-                let notification = Some(Notification::Pubrec(pid));
-                Ok((notification, reply))
-            }
-            None => {
-                #[cfg(feature = "logging")]
-                log::error!("Unsolicited pubrec packet: {:?}", pid);
-                Err(StateError::Unsolicited)
-            }
+            let reply = Some(Packet::Pubrel(pid));
+            let notification = Some(Notification::Pubrec(pid));
+            Ok((notification, reply))
+        } else {
+            #[cfg(feature = "logging")]
+            log::error!("Unsolicited pubrec packet: {:?}", pid);
+            Err(StateError::Unsolicited)
         }
     }
 
@@ -252,7 +251,9 @@ where
                 let reply = Packet::Pubrec(pid);
                 let notification = Notification::Publish(publish);
 
-                self.incoming_pub.push_back(pid);
+                self.incoming_pub
+                    .insert(pid.get())
+                    .map_err(|_| StateError::InvalidState)?;
                 Ok((Some(notification), Some(reply)))
             }
         }
@@ -262,17 +263,14 @@ where
         &mut self,
         pid: Pid,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
-        match self.incoming_pub.iter().position(|x| *x == pid) {
-            Some(index) => {
-                let _ = self.incoming_pub.remove(index);
-                let reply = Packet::Pubcomp(pid);
-                Ok((None, Some(reply)))
-            }
-            None => {
-                #[cfg(feature = "logging")]
-                log::error!("Unsolicited pubrel packet: {:?}", pid);
-                Err(StateError::Unsolicited)
-            }
+        if self.incoming_pub.contains(&pid.get()) {
+            self.incoming_pub.remove(&pid.get());
+            let reply = Packet::Pubcomp(pid);
+            Ok((None, Some(reply)))
+        } else {
+            #[cfg(feature = "logging")]
+            log::error!("Unsolicited pubrel packet: {:?}", pid);
+            Err(StateError::Unsolicited)
         }
     }
 
@@ -280,18 +278,15 @@ where
         &mut self,
         pid: Pid,
     ) -> Result<(Option<Notification>, Option<Packet>), StateError> {
-        match self.outgoing_rel.iter().position(|x| *x == pid) {
-            Some(index) => {
-                self.outgoing_rel.remove(index).expect("Wrong index");
-                let notification = Some(Notification::Pubcomp(pid));
-                let reply = None;
-                Ok((notification, reply))
-            }
-            _ => {
-                #[cfg(feature = "logging")]
-                log::error!("Unsolicited pubcomp packet: {:?}", pid);
-                Err(StateError::Unsolicited)
-            }
+        if self.outgoing_rel.contains(&pid.get()) {
+            self.outgoing_rel.remove(&pid.get());
+            let notification = Some(Notification::Pubcomp(pid));
+            let reply = None;
+            Ok((notification, reply))
+        } else {
+            #[cfg(feature = "logging")]
+            log::error!("Unsolicited pubcomp packet: {:?}", pid);
+            Err(StateError::Unsolicited)
         }
     }
 
@@ -399,12 +394,12 @@ where
 mod test {
     use super::{MqttConnectionStatus, MqttState, Packet, StateError};
     use crate::{Notification, PublishRequest};
+    use alloc::vec;
+    use alloc::{borrow::ToOwned, vec::Vec};
     use core::convert::TryFrom;
     use embedded_hal::timer::CountDown;
     use mqttrs::*;
     use void::Void;
-    use alloc::{vec::Vec, borrow::ToOwned};
-    use alloc::vec;
 
     #[derive(Debug)]
     struct CdMock {
@@ -534,11 +529,9 @@ mod test {
         mqtt.handle_incoming_publish(publish2).unwrap();
         mqtt.handle_incoming_publish(publish3).unwrap();
 
-        let pid = *mqtt.incoming_pub.get(0).unwrap();
-
         // only qos2 publish should be add to queue
         assert_eq!(mqtt.incoming_pub.len(), 1);
-        assert_eq!(pid, Pid::try_from(3).unwrap());
+        assert!(mqtt.incoming_pub.contains(&3));
     }
 
     #[test]
@@ -576,7 +569,7 @@ mod test {
             .unwrap();
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
-        let backup = mqtt.outgoing_pub.get(0).clone();
+        let backup = mqtt.outgoing_pub.get(&3);
         assert_eq!(
             backup.unwrap().qospid,
             QosPid::ExactlyOnce(Pid::try_from(3).unwrap())
@@ -602,7 +595,7 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
         // check if the remaining element's pid is 2
-        let backup = mqtt.outgoing_pub.get(0).clone();
+        let backup = mqtt.outgoing_pub.get(&2);
         assert_eq!(
             backup.unwrap().qospid,
             QosPid::AtLeastOnce(Pid::try_from(2).unwrap())
@@ -611,8 +604,7 @@ mod test {
         assert_eq!(mqtt.outgoing_rel.len(), 1);
 
         // check if the  element's pid is 3
-        let pid = *mqtt.outgoing_rel.get(0).unwrap();
-        assert_eq!(pid, Pid::try_from(3).unwrap());
+        assert!(mqtt.outgoing_rel.contains(&3));
     }
 
     #[test]

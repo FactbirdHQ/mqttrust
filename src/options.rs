@@ -33,6 +33,10 @@ impl<'a> From<Ipv4Addr> for Broker {
     }
 }
 
+type Certificate<'a> = &'a [u8];
+type PrivateKey<'a> = &'a [u8];
+type Password<'a> = &'a [u8];
+
 /// Options to configure the behaviour of mqtt connection
 #[derive(Clone, Debug)]
 pub struct MqttOptions<'a> {
@@ -49,7 +53,7 @@ pub struct MqttOptions<'a> {
     /// certificate authority certificate
     ca: Option<&'a [u8]>,
     /// tls client_authentication
-    client_auth: Option<(&'a [u8], &'a [u8], Option<&'a [u8]>)>,
+    client_auth: Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)>,
     /// alpn settings
     // alpn: Option<Vec<Vec<u8>>>,
     /// username and password
@@ -118,9 +122,9 @@ impl<'a> MqttOptions<'a> {
 
     pub fn set_client_auth(
         self,
-        cert: &'a [u8],
-        key: &'a [u8],
-        password: Option<&'a [u8]>,
+        cert: Certificate<'a>,
+        key: PrivateKey<'a>,
+        password: Option<Password<'a>>,
     ) -> Self {
         Self {
             client_auth: Some((cert, key, password)),
@@ -128,7 +132,7 @@ impl<'a> MqttOptions<'a> {
         }
     }
 
-    pub fn client_auth(&self) -> Option<(&[u8], &[u8], Option<&[u8]>)> {
+    pub fn client_auth(&self) -> Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)> {
         self.client_auth
     }
 
