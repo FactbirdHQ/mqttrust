@@ -1,37 +1,48 @@
 #![no_std]
-#![feature(maybe_uninit_slice_assume_init)]
-#![feature(associated_type_defaults)]
-
-extern crate alloc;
 
 mod client;
 mod options;
 mod requests;
 mod state;
 
+use mqttrs::clone_packet;
 use no_std_net::SocketAddr;
 use state::{MqttState, StateError};
 
 use core::convert::TryFrom;
 
-use alloc::{borrow::ToOwned, string::String};
-use bytes::{BufMut, BytesMut};
 use embedded_nal::{AddrType, Dns, Mode, TcpStack};
-use heapless::{consts, spsc::Consumer, ArrayLength, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
-use mqttrs::{decode, encode, Pid, Suback};
+use heapless::{
+    consts, spsc, ArrayLength, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet, String, Vec,
+};
+use mqttrs::{decode_slice, encode_slice, Pid, Suback};
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
 pub use mqttrs::{
-    Connect, Packet, Protocol, Publish, QoS, QosPid, Subscribe, SubscribeTopic, Unsubscribe,
+    Connect, Packet, Protocol, Publish, QoS, QosPid, Subscribe, SubscribeReturnCodes,
+    SubscribeTopic, Unsubscribe,
 };
 pub use options::{Broker, MqttOptions};
 pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
-/// Includes incoming packets from the network and other interesting events happening in the eventloop
+#[cfg(any(test, feature = "alloc"))]
+extern crate alloc;
+
+#[derive(Debug, PartialEq)]
+pub struct PublishNotification {
+    pub dup: bool,
+    pub qospid: QosPid,
+    pub retain: bool,
+    pub topic_name: String<consts::U128>,
+    pub payload: Vec<u8, consts::U2048>,
+}
+
+/// Includes incoming packets from the network and other interesting events
+/// happening in the eventloop
 #[derive(Debug, PartialEq)]
 pub enum Notification {
     /// Incoming publish from the broker
-    Publish(Publish),
+    Publish(PublishNotification),
     /// Incoming puback from the broker
     Puback(Pid),
     /// Incoming pubrec from the broker
@@ -46,6 +57,20 @@ pub enum Notification {
     Abort(EventError),
 }
 
+impl<'a> TryFrom<Publish<'a>> for PublishNotification {
+    type Error = StateError;
+
+    fn try_from(p: Publish<'a>) -> Result<Self, Self::Error> {
+        Ok(PublishNotification {
+            dup: p.dup,
+            qospid: p.qospid,
+            retain: p.retain,
+            topic_name: String::from(p.topic_name),
+            payload: Vec::from_slice(p.payload).map_err(|_| StateError::PayloadEncoding)?,
+        })
+    }
+}
+
 /// Critical errors during eventloop polling
 #[derive(Debug, PartialEq)]
 pub enum EventError {
@@ -53,6 +78,7 @@ pub enum EventError {
     Timeout,
     Encoding(mqttrs::Error),
     Network(NetworkError),
+    BufferSize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -85,20 +111,18 @@ where
     P: PublishPayload,
 {
     /// Current state of the connection
-    pub state: MqttState<O>,
+    pub state: MqttState<O, P>,
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
-    /// Receive buffer for incoming packets
-    rx_buf: BytesMut,
     /// Network socket
     pub socket: Option<N::TcpSocket>,
     /// Request stream
-    pub requests: Consumer<'a, Request<P>, L>,
+    pub requests: spsc::Consumer<'a, Request<P>, L>,
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pending_pub: FnvIndexMap<u16, Publish, consts::U8>,
+    pending_pub: FnvIndexMap<u16, PublishRequest<P>, consts::U4>,
     /// Packet ids of released QoS 2 publishes
-    pending_rel: FnvIndexSet<u16, consts::U8>,
+    pending_rel: FnvIndexSet<u16, consts::U4>,
 }
 
 impl<'a, 'b, L, N, O, P> MqttEvent<'a, 'b, L, N, O, P>
@@ -107,16 +131,15 @@ where
     N: TcpStack + Dns,
     O: embedded_hal::timer::CountDown,
     O::Time: From<u32>,
-    P: PublishPayload,
+    P: PublishPayload + Clone,
 {
     pub fn new(
-        requests: Consumer<'a, Request<P>, L>,
+        requests: spsc::Consumer<'a, Request<P>, L>,
         outgoing_timer: O,
         options: MqttOptions<'b>,
     ) -> Self {
         MqttEvent {
             state: MqttState::new(outgoing_timer),
-            rx_buf: BytesMut::with_capacity(options.max_packet_size()),
             options,
             socket: None,
             requests,
@@ -130,14 +153,16 @@ where
         self.network_connect(network)?;
         if self.mqtt_connect(network)? {
             // Handle state after reconnect events
-            self.populate_pending();
+            // self.populate_pending();
         }
 
         Ok(())
     }
 
     pub fn yield_event(&mut self, network: &N) -> nb::Result<Notification, ()> {
-        let incoming = match self.receive(network) {
+        let packet_buf = &mut [0u8; 2048];
+
+        let incoming = match self.receive(network, packet_buf) {
             Ok(p) => p,
             Err(EventError::Encoding(e)) => return Ok(Notification::Abort(e.into())),
             Err(e) => {
@@ -154,11 +179,12 @@ where
             self.state.handle_outgoing_packet(Packet::Pubrec(p))
         } else if let Some(publish) = self.get_pending_pub() {
             // Handle pending Publish
-            self.state.handle_outgoing_packet(Packet::Publish(publish))
+            self.state
+                .handle_outgoing_request(publish.into(), packet_buf)
         } else if self.state.outgoing_pub.len() < self.options.inflight() && self.requests.ready() {
             // Handle requests
             let request = unsafe { self.requests.dequeue_unchecked() };
-            self.state.handle_outgoing_request(request)
+            self.state.handle_outgoing_request(request, packet_buf)
         } else if self.state.last_outgoing_timer.wait().is_ok() {
             // Handle ping
             self.state.handle_outgoing_packet(Packet::Pingreq)
@@ -192,7 +218,7 @@ where
         }
     }
 
-    fn get_pending_rel(&mut self) -> Option<Pid> {
+    pub fn get_pending_rel(&mut self) -> Option<Pid> {
         let p = match self.pending_rel.iter().next() {
             Some(p) => *p,
             None => return None,
@@ -201,7 +227,7 @@ where
         Pid::try_from(p).ok()
     }
 
-    fn get_pending_pub(&mut self) -> Option<Publish> {
+    pub fn get_pending_pub(&mut self) -> Option<PublishRequest<P>> {
         let pid = match self.pending_pub.keys().next() {
             Some(p) => *p,
             None => return None,
@@ -211,18 +237,29 @@ where
 
     fn populate_pending(&mut self) {
         let pending_pub = core::mem::replace(&mut self.state.outgoing_pub, IndexMap::new());
-        self.pending_pub
-            .extend(pending_pub.iter().map(|(&key, value)| (key, value.clone())));
+
+        #[cfg(feature = "logging")]
+        log::info!("Populating pending publish: {}", pending_pub.len());
+
+        self.pending_pub.extend(
+            pending_pub
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
 
         let pending_rel = core::mem::replace(&mut self.state.outgoing_rel, IndexSet::new());
+
+        #[cfg(feature = "logging")]
+        log::info!("populating pending rel: {}", pending_rel.len());
+
         self.pending_rel.extend(pending_rel.iter());
     }
 
-    pub fn send(&mut self, network: &N, pkt: Packet) -> Result<usize, EventError> {
+    pub fn send<'d>(&mut self, network: &N, pkt: Packet<'d>) -> Result<usize, EventError> {
         match self.socket {
             Some(ref mut socket) => {
                 let mut tx_buf: [u8; 2048] = [0; 2048];
-                let size = encode(&pkt, &mut tx_buf[..])?;
+                let size = encode_slice(&pkt, &mut tx_buf)?;
                 nb::block!(network.write(socket, &tx_buf[..size]))
                     .map_err(|_| EventError::Network(NetworkError::Write))
             }
@@ -230,18 +267,22 @@ where
         }
     }
 
-    pub fn receive(&mut self, network: &N) -> Result<Option<Packet>, EventError> {
+    pub fn receive<'d>(
+        &mut self,
+        network: &N,
+        packet_buf: &'d mut [u8],
+    ) -> Result<Option<Packet<'d>>, EventError> {
         match self.socket {
             Some(ref mut socket) => {
-                match network.read(socket, unsafe {
-                    core::mem::MaybeUninit::slice_get_mut(self.rx_buf.bytes_mut())
-                }) {
-                    Ok(size) => {
-                        // Should always be safe, as we are only writing to "remaining" bytes
-                        unsafe { self.rx_buf.advance_mut(size) };
-                        decode(&mut self.rx_buf).map_err(EventError::Encoding)
+                match network.read_with(socket, |a, b| {
+                    if let Some(buf) = b {
+                        #[cfg(feature = "logging")]
+                        log::info!("b is set!");
                     }
-                    Err(nb::Error::WouldBlock) => Ok(None),
+                    clone_packet(a, packet_buf).unwrap_or(0)
+                }) {
+                    Ok(0) | Err(nb::Error::WouldBlock) => Ok(None),
+                    Ok(size) => decode_slice(&packet_buf[..size]).map_err(EventError::Encoding),
                     _ => Err(EventError::Network(NetworkError::Read)),
                 }
             }
@@ -269,11 +310,11 @@ where
             (Broker::Hostname(h), p) => {
                 let socket_addr = SocketAddr::new(
                     network
-                        .gethostbyname(&h, AddrType::IPv4)
+                        .gethostbyname(h, AddrType::IPv4)
                         .map_err(|_e| EventError::Network(NetworkError::DnsLookupFailed))?,
                     p,
                 );
-                (h, socket_addr)
+                (heapless::String::from(h), socket_addr)
             }
             (Broker::IpAddr(ip), p) => {
                 let socket_addr = SocketAddr::new(ip, p);
@@ -281,7 +322,7 @@ where
                     .gethostbyaddr(ip)
                     .map_err(|_e| EventError::Network(NetworkError::DnsLookupFailed))?;
 
-                (String::from(domain.as_str()), socket_addr)
+                (domain, socket_addr)
             }
         };
 
@@ -319,14 +360,8 @@ where
                 #[cfg(feature = "logging")]
                 log::info!("MQTT connecting..");
                 self.state.await_pingresp = false;
-                self.rx_buf.clear();
 
-                let (username, password) =
-                    if let Some((username, password)) = self.options.credentials() {
-                        (Some(username), Some(password.as_bytes().to_owned()))
-                    } else {
-                        (None, None)
-                    };
+                let (username, password) = self.options.credentials();
 
                 let connect = Connect {
                     protocol: Protocol::MQTT311,
@@ -362,9 +397,9 @@ where
                     self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
-
-                match self.receive(network)? {
-                    Some(packet) => {
+                let packet_buf = &mut [0u8; 4];
+                match self.receive(network, packet_buf) {
+                    Ok(Some(packet)) => {
                         self.state
                             .handle_incoming_connack(packet)
                             .map_err(|e| nb::Error::Other(e.into()))?;
@@ -374,7 +409,8 @@ where
 
                         Ok(true)
                     }
-                    None => Err(nb::Error::WouldBlock),
+                    Ok(None) => Err(nb::Error::WouldBlock),
+                    Err(e) => Err(nb::Error::Other(e)),
                 }
             }
         }
@@ -385,7 +421,7 @@ where
 mod tests {
     use super::*;
     use embedded_hal::timer::CountDown;
-    use heapless::spsc::Queue;
+    use heapless::{consts, spsc::Queue, String, Vec};
     use mqttrs::{Connack, ConnectReturnCode};
     use void::Void;
 
@@ -472,10 +508,20 @@ mod tests {
                     session_present: false,
                     code: ConnectReturnCode::Accepted,
                 });
-                let size = encode(&connack, &mut buffer[..]).unwrap();
+                let size = encode_slice(&connack, buffer).unwrap();
                 Ok(size)
             }
         }
+
+        fn read_with<F>(&self, socket: &mut Self::TcpSocket, f: F) -> nb::Result<usize, Self::Error>
+        where
+            F: FnOnce(&[u8], Option<&[u8]>) -> usize,
+        {
+            let buf = &mut [0u8; 64];
+            self.read(socket, buf)?;
+            Ok(f(buf, None))
+        }
+
         fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
             Ok(())
         }
@@ -483,7 +529,8 @@ mod tests {
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: Queue<Request, consts::U5> = Queue(heapless::i::Queue::new());
+        static mut Q: Queue<Request<Vec<u8, consts::U10>>, consts::U5> =
+            Queue(heapless::i::Queue::new());
 
         let network = MockNetwork {
             should_fail_read: false,
@@ -494,7 +541,7 @@ mod tests {
         let mut event = MqttEvent::<_, MockNetwork, _, _>::new(
             c,
             CdMock { time: 0 },
-            MqttOptions::new("client", Broker::Hostname("".into()), 8883),
+            MqttOptions::new("client", Broker::Hostname(""), 8883),
         );
 
         event
@@ -502,12 +549,12 @@ mod tests {
             .outgoing_pub
             .insert(
                 2,
-                Publish {
+                PublishRequest {
                     dup: false,
-                    qospid: QosPid::AtLeastOnce(Pid::try_from(2).unwrap()),
+                    qos: QoS::AtLeastOnce,
                     retain: false,
-                    topic_name: "some/topic/name2".into(),
-                    payload: alloc::vec::Vec::new(),
+                    topic_name: String::from("some/topic/name2"),
+                    payload: Vec::new(),
                 },
             )
             .unwrap();
@@ -517,12 +564,12 @@ mod tests {
             .outgoing_pub
             .insert(
                 3,
-                Publish {
+                PublishRequest {
                     dup: false,
-                    qospid: QosPid::AtLeastOnce(Pid::try_from(3).unwrap()),
+                    qos: QoS::AtLeastOnce,
                     retain: false,
-                    topic_name: "some/topic/name3".into(),
-                    payload: alloc::vec::Vec::new(),
+                    topic_name: String::from("some/topic/name3"),
+                    payload: Vec::new(),
                 },
             )
             .unwrap();
@@ -532,12 +579,12 @@ mod tests {
             .outgoing_pub
             .insert(
                 4,
-                Publish {
+                PublishRequest {
                     dup: false,
-                    qospid: QosPid::AtLeastOnce(Pid::try_from(4).unwrap()),
+                    qos: QoS::AtLeastOnce,
                     retain: false,
-                    topic_name: "some/topic/name4".into(),
-                    payload: alloc::vec::Vec::new(),
+                    topic_name: String::from("some/topic/name4"),
+                    payload: Vec::new(),
                 },
             )
             .unwrap();

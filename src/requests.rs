@@ -1,24 +1,46 @@
-use alloc::{string::String, vec::Vec};
-use mqttrs::{Connect, QoS, SubscribeTopic};
+use heapless::{consts, ArrayLength, String, Vec};
+use mqttrs::{QoS, SubscribeTopic};
 
 pub trait PublishPayload {
-    fn as_vec(self) -> Vec<u8>;
+    fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()>;
+    fn from_bytes(v: &[u8]) -> Self;
 }
 
-impl PublishPayload for Vec<u8> {
-    fn as_vec(self) -> Vec<u8> {
-        self
+#[cfg(any(test, feature = "alloc"))]
+impl PublishPayload for alloc::vec::Vec<u8> {
+    fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()> {
+        let len = self.len();
+        if buffer.len() < len {
+            return Err(());
+        }
+
+        buffer[..len].copy_from_slice(self.as_slice());
+        Ok(len)
+    }
+
+    fn from_bytes(v: &[u8]) -> Self {
+        let mut vec = alloc::vec::Vec::new();
+        vec.extend_from_slice(v);
+        vec
     }
 }
 
-impl<L> PublishPayload for heapless::Vec<u8, L>
+impl<L> PublishPayload for Vec<u8, L>
 where
-    L: heapless::ArrayLength<u8>,
+    L: ArrayLength<u8>,
 {
-    fn as_vec(self) -> Vec<u8> {
-        let mut v = Vec::new();
-        v.extend_from_slice(&self);
-        v
+    fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()> {
+        let len = self.len();
+        if buffer.len() < len {
+            return Err(());
+        }
+
+        buffer[..len].copy_from_slice(self.as_ref());
+        Ok(len)
+    }
+
+    fn from_bytes(v: &[u8]) -> Self {
+        Vec::from_slice(v).expect("Failed to do from_slice! [from_bytes()]")
     }
 }
 
@@ -26,11 +48,11 @@ where
 ///
 /// [MQTT 3.3]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718037
 #[derive(Debug, Clone, PartialEq)]
-pub struct PublishRequest<P = Vec<u8>> {
+pub struct PublishRequest<P> {
     pub dup: bool,
     pub qos: QoS,
     pub retain: bool,
-    pub topic_name: String,
+    pub topic_name: String<consts::U128>,
     pub payload: P,
 }
 
@@ -38,7 +60,7 @@ impl<P> PublishRequest<P>
 where
     P: PublishPayload,
 {
-    pub fn new(topic_name: String, payload: P) -> Self {
+    pub fn new(topic_name: String<consts::U128>, payload: P) -> Self {
         PublishRequest {
             dup: false,
             qos: QoS::AtLeastOnce,
@@ -58,28 +80,29 @@ where
 /// [MQTT 3.8]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718063
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubscribeRequest {
-    pub topics: Vec<SubscribeTopic>,
+    pub topics: Vec<SubscribeTopic, consts::U5>,
 }
+
 
 /// Unsubscribe request ([MQTT 3.10]).
 ///
 /// [MQTT 3.10]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718072
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnsubscribeRequest {
-    pub topics: Vec<String>,
+    pub topics: Vec<String<consts::U128>, consts::U5>,
 }
 
 /// Requests by the client to mqtt event loop. Request are
 /// handle one by one
 #[derive(Debug, Clone, PartialEq)]
-pub enum Request<P = Vec<u8>>
+pub enum Request<P>
 where
     P: PublishPayload,
 {
     Publish(PublishRequest<P>),
     Subscribe(SubscribeRequest),
     Unsubscribe(UnsubscribeRequest),
-    Reconnect(Connect),
+    // Reconnect(Connect),
     Disconnect,
 }
 

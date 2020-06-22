@@ -1,6 +1,6 @@
 [package]
 name = "mqttrust"
-version = "0.0.1"
+version = "0.0.5"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "MQTT Client "
 readme = "README.md"
@@ -20,27 +20,19 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 embedded-hal = "^0.2"
 nb = "^0.1"
-ufmt = "^0.1"
 heapless = { version = "^0.5.5", features = ["serde"] }
 log = { version = "^0.4", default-features = false, optional = true }
-bytes = { version = "^0.5", default-features = false }
 no-std-net = "^0.3"
-embedded-nal = { git = "https://github.com/thejpster/embedded-nal" }
-mqttrs = { version = "^0.3", default-features = false, features = ["alloc"] }
+embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird_mini" }
+mqttrs = { path = "../mqttrs", default-features = false }
 
 [dev-dependencies]
 void = { version = "1.0.2", default-features = false }
 env_logger = "0.7.1"
-
-[patch.'https://github.com/thejpster/embedded-nal']
-embedded-nal = { path = "../embedded-nal" }
-
-[patch.crates-io]
-mqttrs = { path = "../mqttrs" }
+dns-lookup = "1.0.3"
 
 [features]
-default = ["persistence"]
+default = []
 
-logging = ["log"]
-persistence = []
 alloc = []
+logging = ["log"]
