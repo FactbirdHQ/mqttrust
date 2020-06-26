@@ -1,7 +1,5 @@
 mod common;
 
-use embedded_nal::Ipv4Addr;
-
 use mqttrust::{
     MqttEvent, MqttOptions, Notification, PublishRequest, QoS, Request, SubscribeRequest,
     SubscribeTopic,
@@ -9,10 +7,11 @@ use mqttrust::{
 
 use common::network::Network;
 use common::timer::SysTimer;
-use heapless::{consts, spsc::Queue};
+use heapless::{consts, spsc::Queue, String, Vec};
 use std::thread;
 
-static mut Q: Queue<Request, consts::U10> = Queue(heapless::i::Queue::new());
+static mut Q: Queue<Request<Vec<u8, consts::U128>>, consts::U10, u8> =
+    Queue(heapless::i::Queue::u8());
 
 fn main() {
     #[cfg(feature = "logging")]
@@ -28,14 +27,16 @@ fn main() {
     let mut mqtt_eventloop = MqttEvent::new(
         c,
         SysTimer::new(),
-        MqttOptions::new(
-            "mqtt_test_client_id",
-            Ipv4Addr::new(3, 123, 239, 37).into(),
-            1883,
-        ),
+        MqttOptions::new("mqtt_test_client_id", "broker.hivemq.com".into(), 1883),
     );
 
+    #[cfg(feature = "logging")]
+    log::info!("eventloop created");
+
     nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");
+
+    #[cfg(feature = "logging")]
+    log::info!("Connected");
 
     thread::Builder::new()
         .name("eventloop".to_string())
@@ -50,8 +51,9 @@ fn main() {
                         String::from_utf8(_publish.payload).unwrap()
                     );
                 }
-                _ => {
-                    // log::debug!("{:?}", n);
+                _n => {
+                    #[cfg(feature = "logging")]
+                    log::debug!("{:?}", _n);
                 }
             }
         })
@@ -59,7 +61,7 @@ fn main() {
 
     p.enqueue(
         SubscribeRequest {
-            topics: vec![
+            topics: Vec::from_slice(&[
                 SubscribeTopic {
                     topic_path: String::from("mqttrust/tester/subscriber"),
                     qos: QoS::AtLeastOnce,
@@ -68,7 +70,8 @@ fn main() {
                     topic_path: String::from("mqttrust/tester/subscriber2"),
                     qos: QoS::AtLeastOnce,
                 },
-            ],
+            ])
+            .unwrap(),
         }
         .into(),
     )
@@ -77,12 +80,14 @@ fn main() {
     loop {
         p.enqueue(
             PublishRequest::new(
-                "mqttrust/tester/whatup".to_owned(),
-                "{\"key\": \"value\"}".as_bytes().to_owned(),
+                String::from("mqttrust/tester/whatup"),
+                Vec::from_slice(b"{\"key\": \"value\"}").unwrap(),
             )
             .into(),
         )
         .expect("Failed to publish!");
+        #[cfg(feature = "logging")]
+        log::info!("Publishing");
         thread::sleep(std::time::Duration::from_millis(5000));
     }
 }

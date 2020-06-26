@@ -4,6 +4,8 @@ use no_std_net::IpAddr;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 
+use dns_lookup::{lookup_addr, lookup_host};
+
 pub struct Network;
 
 pub struct TcpSocket {
@@ -20,11 +22,14 @@ impl TcpSocket {
 impl Dns for Network {
     type Error = ();
 
-    fn gethostbyaddr(&self, _ip_addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
-        unimplemented!()
+    fn gethostbyaddr(&self, ip_addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+        let ip: std::net::IpAddr = format!("{}", ip_addr).parse().unwrap();
+        let host = lookup_addr(&ip).unwrap();
+        Ok(String::from(host.as_str()))
     }
-    fn gethostbyname(&self, _hostname: &str, _addr_type: AddrType) -> Result<IpAddr, Self::Error> {
-        unimplemented!()
+    fn gethostbyname(&self, hostname: &str, _addr_type: AddrType) -> Result<IpAddr, Self::Error> {
+        let mut ips: Vec<std::net::IpAddr> = lookup_host(hostname).unwrap();
+        format!("{}", ips.pop().unwrap()).parse().map_err(|_| ())
     }
 }
 
@@ -34,6 +39,15 @@ impl TcpStack for Network {
 
     fn open(&self, mode: Mode) -> Result<Self::TcpSocket, Self::Error> {
         Ok(TcpSocket::new(mode))
+    }
+
+    fn read_with<F>(&self, network: &mut Self::TcpSocket, f: F) -> nb::Result<usize, Self::Error>
+    where
+        F: FnOnce(&[u8], Option<&[u8]>) -> usize,
+    {
+        let buf = &mut [0u8; 512];
+        let len = self.read(network, buf)?;
+        Ok(f(&mut buf[..len], None))
     }
 
     fn read(

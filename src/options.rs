@@ -1,42 +1,51 @@
-use alloc::string::String;
 use mqttrs::LastWill;
 use no_std_net::{IpAddr, Ipv4Addr};
 
+// use heapless::{String, ArrayLength};
+
 #[derive(Clone, Debug)]
-pub enum Broker {
-    Hostname(String),
+pub enum Broker<'a> {
+    Hostname(&'a str),
     IpAddr(IpAddr),
 }
 
-impl<'a> From<&'a str> for Broker {
+impl<'a> From<&'a str> for Broker<'a> {
     fn from(s: &'a str) -> Self {
-        Broker::Hostname(String::from(s))
-    }
-}
-
-impl<'a> From<String> for Broker {
-    fn from(s: String) -> Self {
         Broker::Hostname(s)
     }
 }
 
-impl<'a> From<IpAddr> for Broker {
+// impl<'a, L: ArrayLength<u8>> From<String<L>> for Broker<'a> {
+//     fn from(s: String<L>) -> Self {
+//         Broker::Hostname(s.as_ref())
+//     }
+// }
+
+impl<'a> From<IpAddr> for Broker<'a> {
     fn from(ip: IpAddr) -> Self {
         Broker::IpAddr(ip)
     }
 }
 
-impl<'a> From<Ipv4Addr> for Broker {
+impl<'a> From<Ipv4Addr> for Broker<'a> {
     fn from(ip: Ipv4Addr) -> Self {
         Broker::IpAddr(ip.into())
     }
 }
 
+type Certificate<'a> = &'a [u8];
+type PrivateKey<'a> = &'a [u8];
+type Password<'a> = &'a [u8];
+
 /// Options to configure the behaviour of mqtt connection
+///
+/// **Lifetimes**:
+/// - 'a: The lifetime of option fields, not referenced in any MQTT packets at any point
+/// - 'b: The lifetime of the packet fields, backed by a slice buffer
 #[derive(Clone, Debug)]
 pub struct MqttOptions<'a> {
     /// broker address that you want to connect to
-    broker_addr: Broker,
+    broker_addr: Broker<'a>,
     /// broker port
     port: u16,
     /// keep alive time to send pingreq to broker when the connection is idle
@@ -44,29 +53,26 @@ pub struct MqttOptions<'a> {
     /// clean (or) persistent session
     clean_session: bool,
     /// client identifier
-    client_id: String,
+    client_id: &'a str,
     /// certificate authority certificate
     ca: Option<&'a [u8]>,
     /// tls client_authentication
-    client_auth: Option<(&'a [u8], &'a [u8], Option<&'a [u8]>)>,
+    client_auth: Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)>,
     /// alpn settings
     // alpn: Option<Vec<Vec<u8>>>,
     /// username and password
-    credentials: Option<(String, String)>,
-    /// maximum packet size
-    max_packet_size: usize,
+    credentials: Option<(&'a str, &'a [u8])>,
     /// Minimum delay time between consecutive outgoing packets
     // throttle: Duration,
     /// maximum number of outgoing inflight messages
     inflight: usize,
     /// Last will that will be issued on unexpected disconnect
-    last_will: Option<LastWill>,
+    last_will: Option<LastWill<'a>>,
 }
 
 impl<'a> MqttOptions<'a> {
     /// New mqtt options
-    pub fn new<S: Into<String>>(id: S, broker: Broker, port: u16) -> MqttOptions<'a> {
-        let id = id.into();
+    pub fn new(id: &'a str, broker: Broker<'a>, port: u16) -> MqttOptions<'a> {
         if id.starts_with(' ') || id.is_empty() {
             panic!("Invalid client id")
         }
@@ -81,9 +87,8 @@ impl<'a> MqttOptions<'a> {
             client_auth: None,
             // alpn: None,
             credentials: None,
-            max_packet_size: 512,
             // throttle: Duration::from_micros(0),
-            inflight: 1,
+            inflight: 3,
             last_will: None,
         }
     }
@@ -93,14 +98,14 @@ impl<'a> MqttOptions<'a> {
         (self.broker_addr.clone(), self.port)
     }
 
-    pub fn set_last_will(self, will: LastWill) -> Self {
+    pub fn set_last_will(self, will: LastWill<'a>) -> Self {
         Self {
             last_will: Some(will),
             ..self
         }
     }
 
-    pub fn last_will(&self) -> Option<LastWill> {
+    pub fn last_will(&self) -> Option<LastWill<'a>> {
         self.last_will.clone()
     }
 
@@ -117,9 +122,9 @@ impl<'a> MqttOptions<'a> {
 
     pub fn set_client_auth(
         self,
-        cert: &'a [u8],
-        key: &'a [u8],
-        password: Option<&'a [u8]>,
+        cert: Certificate<'a>,
+        key: PrivateKey<'a>,
+        password: Option<Password<'a>>,
     ) -> Self {
         Self {
             client_auth: Some((cert, key, password)),
@@ -127,7 +132,7 @@ impl<'a> MqttOptions<'a> {
         }
     }
 
-    pub fn client_auth(&self) -> Option<(&[u8], &[u8], Option<&[u8]>)> {
+    pub fn client_auth(&self) -> Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)> {
         self.client_auth
     }
 
@@ -161,21 +166,8 @@ impl<'a> MqttOptions<'a> {
     }
 
     /// Client identifier
-    pub fn client_id(&self) -> String {
-        self.client_id.clone()
-    }
-
-    /// Set packet size limit (in Kilo Bytes)
-    pub fn set_max_packet_size(self, max_packet_size: usize) -> Self {
-        Self {
-            max_packet_size,
-            ..self
-        }
-    }
-
-    /// Maximum packet size
-    pub fn max_packet_size(&self) -> usize {
-        self.max_packet_size
+    pub fn client_id(&self) -> &'a str {
+        self.client_id
     }
 
     /// `clean_session = true` removes all the state from queues & instructs the broker
@@ -197,16 +189,20 @@ impl<'a> MqttOptions<'a> {
     }
 
     /// Username and password
-    pub fn set_credentials<S: Into<String>>(self, username: S, password: S) -> Self {
+    pub fn set_credentials(self, username: &'a str, password: &'a [u8]) -> Self {
         Self {
-            credentials: Some((username.into(), password.into())),
+            credentials: Some((username, password)),
             ..self
         }
     }
 
     /// Security options
-    pub fn credentials(&self) -> Option<(String, String)> {
-        self.credentials.clone()
+    pub fn credentials(&self) -> (Option<&'a str>, Option<&'a [u8]>) {
+        if let Some((username, password)) = self.credentials {
+            (Some(username), Some(password))
+        } else {
+            (None, None)
+        }
     }
 
     // /// Enables throttling and sets outoing message rate to the specified 'rate'

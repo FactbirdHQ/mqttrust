@@ -1,79 +1,88 @@
-use crate::alloc::string::ToString;
+use crate::{
+    requests::PublishPayload, PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic,
+    UnsubscribeRequest,
+};
 use core::cell::RefCell;
+use heapless::{consts, spsc::Producer, ArrayLength, String, Vec};
 
-use heapless::{spsc::Producer, ArrayLength, String, Vec};
-
-use crate::{PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic, UnsubscribeRequest};
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MqttClientError {
     Busy,
     Full,
 }
 
-pub trait Mqtt {
-    fn send(&self, request: Request) -> Result<(), MqttClientError>;
+pub trait Mqtt<P: PublishPayload> {
+    type Error;
+
+    fn send(&self, request: Request<P>) -> Result<(), Self::Error>;
 
     fn client_id(&self) -> &str;
 
-    fn publish<T: ArrayLength<u8>, L: ArrayLength<u8>>(
+    fn publish(
         &self,
-        topic_name: String<T>,
-        payload: Vec<u8, L>,
+        topic_name: String<consts::U256>,
+        payload: P,
         qos: QoS,
-    ) -> Result<(), MqttClientError> {
-        self.send(
-            PublishRequest {
-                dup: false,
-                qos,
-                retain: false,
-                topic_name: topic_name.to_string(),
-                payload: payload.to_vec(),
-            }
-            .into(),
-        )
+    ) -> Result<(), Self::Error> {
+        let req: Request<P> = PublishRequest {
+            dup: false,
+            qos,
+            retain: false,
+            topic_name,
+            payload,
+        }
+        .into();
+
+        self.send(req)
     }
 
-    fn subscribe<L: ArrayLength<SubscribeTopic>>(
-        &self,
-        topics: Vec<SubscribeTopic, L>,
-    ) -> Result<(), MqttClientError> {
-        self.send(
-            SubscribeRequest {
-                topics: topics.to_vec(),
-            }
-            .into(),
-        )
+    fn subscribe(&self, topics: Vec<SubscribeTopic, consts::U5>) -> Result<(), Self::Error> {
+        let req: Request<P> = SubscribeRequest { topics }.into();
+        self.send(req)
     }
 
-    fn unsubscribe<L: ArrayLength<alloc::string::String>>(
+    fn unsubscribe(
         &self,
-        topics: Vec<alloc::string::String, L>,
-    ) -> Result<(), MqttClientError> {
-        self.send(
-            UnsubscribeRequest {
-                topics: topics.to_vec(),
-            }
-            .into(),
-        )
+        topics: Vec<String<consts::U256>, consts::U5>,
+    ) -> Result<(), Self::Error> {
+        let req: Request<P> = UnsubscribeRequest { topics }.into();
+        self.send(req)
     }
 }
 
-pub struct MqttClient<'a, L, M>
+/// MQTT Client
+///
+/// This client is meerly a convenience wrapper around a
+/// `heapless::spsc::Producer`, making it easier to send certain MQTT packet
+/// types, and maintaining a common reference to a client id. Also it implements
+/// the [`Mqtt`] trait.
+///
+/// **Lifetimes**:
+/// - 'a: The lifetime of the queue exhanging packets between the client and the
+///   event loop. This must have the same lifetime as the corresponding
+///   Consumer. Usually 'static.
+/// - 'b: The lifetime of the packet fields, backed by a slice buffer
+///
+/// **Generics**:
+/// - L: The length of the queue, exhanging packets between the client and the
+///   event loop. Length in number of request packets
+/// - P: The type of the payload field of publish requests. This **must**
+///   implement the [`PublishPayload`] trait
+pub struct MqttClient<'a, 'b, L, P>
 where
-    L: ArrayLength<Request>,
-    M: ArrayLength<u8>,
+    P: PublishPayload,
+    L: ArrayLength<Request<P>>,
 {
-    client_id: String<M>,
-    producer: RefCell<Producer<'a, Request, L>>,
+    client_id: &'b str,
+    producer: RefCell<Producer<'a, Request<P>, L, u8>>,
 }
 
-impl<'a, L, M> MqttClient<'a, L, M>
+impl<'a, 'b, L, P> MqttClient<'a, 'b, L, P>
 where
-    L: ArrayLength<Request>,
-    M: ArrayLength<u8>,
+    P: PublishPayload,
+    L: ArrayLength<Request<P>>,
 {
-    pub fn new(producer: Producer<'a, Request, L>, client_id: String<M>) -> Self {
+    pub fn new(producer: Producer<'a, Request<P>, L, u8>, client_id: &'b str) -> Self {
         MqttClient {
             client_id,
             producer: RefCell::new(producer),
@@ -81,16 +90,18 @@ where
     }
 }
 
-impl<'a, L, M> Mqtt for MqttClient<'a, L, M>
+impl<'a, 'b, L, P> Mqtt<P> for MqttClient<'a, 'b, L, P>
 where
-    L: ArrayLength<Request>,
-    M: ArrayLength<u8>,
+    P: PublishPayload,
+    L: ArrayLength<Request<P>>,
 {
+    type Error = MqttClientError;
+
     fn client_id(&self) -> &str {
         &self.client_id
     }
 
-    fn send(&self, request: Request) -> Result<(), MqttClientError> {
+    fn send(&self, request: Request<P>) -> Result<(), Self::Error> {
         self.producer
             .try_borrow_mut()
             .map_err(|_e| MqttClientError::Busy)?
