@@ -10,7 +10,8 @@ use common::timer::SysTimer;
 use heapless::{consts, spsc::Queue, String, Vec};
 use std::thread;
 
-static mut Q: Queue<Request<Vec<u8, consts::U128>>, consts::U10, u8> = Queue(heapless::i::Queue::u8());
+static mut Q: Queue<Request<Vec<u8, consts::U128>>, consts::U10, u8> =
+    Queue(heapless::i::Queue::u8());
 
 fn main() {
     #[cfg(feature = "logging")]

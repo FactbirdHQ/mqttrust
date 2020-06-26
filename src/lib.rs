@@ -274,9 +274,7 @@ where
     ) -> Result<Option<Packet<'d>>, EventError> {
         match self.socket {
             Some(ref mut socket) => {
-                match network.read_with(socket, |a, b| {
-                    clone_packet(a, packet_buf).unwrap_or(0)
-                }) {
+                match network.read_with(socket, |a, b| clone_packet(a, packet_buf).unwrap_or(0)) {
                     Ok(0) | Err(nb::Error::WouldBlock) => Ok(None),
                     Ok(size) => decode_slice(&packet_buf[..size]).map_err(EventError::Encoding),
                     _ => Err(EventError::Network(NetworkError::Read)),
@@ -380,9 +378,7 @@ where
                             .handle_outgoing_connect()
                             .map_err(|e| nb::Error::Other(e.into()))?;
 
-                        self.state
-                            .last_outgoing_timer
-                            .start(5000);
+                        self.state.last_outgoing_timer.start(5000);
                     }
                     Err(e) => {
                         self.disconnect(network);

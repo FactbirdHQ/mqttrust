@@ -83,7 +83,6 @@ pub struct SubscribeRequest {
     pub topics: Vec<SubscribeTopic, consts::U5>,
 }
 
-
 /// Unsubscribe request ([MQTT 3.10]).
 ///
 /// [MQTT 3.10]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718072
