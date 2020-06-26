@@ -215,7 +215,7 @@ where
         suback: Suback,
     ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
         let request = None;
-        let notification = Some(Notification::Suback(suback.into()));
+        let notification = Some(Notification::Suback(suback));
         Ok((notification, request))
     }
 

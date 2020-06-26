@@ -244,7 +244,7 @@ where
         self.pending_pub.extend(
             pending_pub
                 .iter()
-                .map(|(key, value)| (key.clone(), value.clone())),
+                .map(|(key, value)| (*key, value.clone())),
         );
 
         let pending_rel = core::mem::replace(&mut self.state.outgoing_rel, IndexSet::new());
