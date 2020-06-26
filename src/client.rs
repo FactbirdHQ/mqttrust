@@ -20,7 +20,7 @@ pub trait Mqtt<P: PublishPayload> {
 
     fn publish(
         &self,
-        topic_name: String<consts::U128>,
+        topic_name: String<consts::U256>,
         payload: P,
         qos: QoS,
     ) -> Result<(), Self::Error> {
@@ -43,7 +43,7 @@ pub trait Mqtt<P: PublishPayload> {
 
     fn unsubscribe(
         &self,
-        topics: Vec<String<consts::U128>, consts::U5>,
+        topics: Vec<String<consts::U256>, consts::U5>,
     ) -> Result<(), Self::Error> {
         let req: Request<P> = UnsubscribeRequest { topics }.into();
         self.send(req)
@@ -74,7 +74,7 @@ where
     L: ArrayLength<Request<P>>,
 {
     client_id: &'b str,
-    producer: RefCell<Producer<'a, Request<P>, L>>,
+    producer: RefCell<Producer<'a, Request<P>, L, u8>>,
 }
 
 impl<'a, 'b, L, P> MqttClient<'a, 'b, L, P>
@@ -82,7 +82,7 @@ where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
 {
-    pub fn new(producer: Producer<'a, Request<P>, L>, client_id: &'b str) -> Self {
+    pub fn new(producer: Producer<'a, Request<P>, L, u8>, client_id: &'b str) -> Self {
         MqttClient {
             client_id,
             producer: RefCell::new(producer),

@@ -33,7 +33,7 @@ pub struct PublishNotification {
     pub dup: bool,
     pub qospid: QosPid,
     pub retain: bool,
-    pub topic_name: String<consts::U128>,
+    pub topic_name: String<consts::U256>,
     pub payload: Vec<u8, consts::U2048>,
 }
 
@@ -117,7 +117,7 @@ where
     /// Network socket
     pub socket: Option<N::TcpSocket>,
     /// Request stream
-    pub requests: spsc::Consumer<'a, Request<P>, L>,
+    pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
     pending_pub: FnvIndexMap<u16, PublishRequest<P>, consts::U4>,
@@ -134,7 +134,7 @@ where
     P: PublishPayload + Clone,
 {
     pub fn new(
-        requests: spsc::Consumer<'a, Request<P>, L>,
+        requests: spsc::Consumer<'a, Request<P>, L, u8>,
         outgoing_timer: O,
         options: MqttOptions<'b>,
     ) -> Self {
@@ -153,7 +153,7 @@ where
         self.network_connect(network)?;
         if self.mqtt_connect(network)? {
             // Handle state after reconnect events
-            // self.populate_pending();
+            self.populate_pending();
         }
 
         Ok(())
@@ -275,10 +275,6 @@ where
         match self.socket {
             Some(ref mut socket) => {
                 match network.read_with(socket, |a, b| {
-                    if let Some(buf) = b {
-                        #[cfg(feature = "logging")]
-                        log::info!("b is set!");
-                    }
                     clone_packet(a, packet_buf).unwrap_or(0)
                 }) {
                     Ok(0) | Err(nb::Error::WouldBlock) => Ok(None),
@@ -309,18 +305,22 @@ where
         let (_hostname, socket_addr) = match self.options.broker() {
             (Broker::Hostname(h), p) => {
                 let socket_addr = SocketAddr::new(
-                    network
-                        .gethostbyname(h, AddrType::IPv4)
-                        .map_err(|_e| EventError::Network(NetworkError::DnsLookupFailed))?,
+                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
+                        #[cfg(feature = "logging")]
+                        log::info!("Failed to resolve IP! {:?}", _e);
+                        EventError::Network(NetworkError::DnsLookupFailed)
+                    })?,
                     p,
                 );
                 (heapless::String::from(h), socket_addr)
             }
             (Broker::IpAddr(ip), p) => {
                 let socket_addr = SocketAddr::new(ip, p);
-                let domain = network
-                    .gethostbyaddr(ip)
-                    .map_err(|_e| EventError::Network(NetworkError::DnsLookupFailed))?;
+                let domain = network.gethostbyaddr(ip).map_err(|_e| {
+                    #[cfg(feature = "logging")]
+                    log::info!("Failed to resolve hostname! {:?}", _e);
+                    EventError::Network(NetworkError::DnsLookupFailed)
+                })?;
 
                 (domain, socket_addr)
             }
@@ -382,7 +382,7 @@ where
 
                         self.state
                             .last_outgoing_timer
-                            .start(self.options.keep_alive_ms());
+                            .start(5000);
                     }
                     Err(e) => {
                         self.disconnect(network);
@@ -397,6 +397,7 @@ where
                     self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
+
                 let packet_buf = &mut [0u8; 4];
                 match self.receive(network, packet_buf) {
                     Ok(Some(packet)) => {
@@ -529,8 +530,8 @@ mod tests {
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: Queue<Request<Vec<u8, consts::U10>>, consts::U5> =
-            Queue(heapless::i::Queue::new());
+        static mut Q: Queue<Request<Vec<u8, consts::U10>>, consts::U5, u8> =
+            Queue(heapless::i::Queue::u8());
 
         let network = MockNetwork {
             should_fail_read: false,

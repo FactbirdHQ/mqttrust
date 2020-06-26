@@ -161,7 +161,7 @@ where
         };
 
         let topic_len = request.topic_name.len();
-        buf[0..topic_len].copy_from_slice(request.topic_name.as_str().as_bytes());
+        buf[..topic_len].copy_from_slice(request.topic_name.as_str().as_bytes());
 
         let len = request
             .payload
@@ -345,10 +345,10 @@ where
         &mut self,
         subscribe_request: SubscribeRequest,
     ) -> Result<Packet<'a>, StateError> {
+        #[cfg(feature = "logging")]
+        log::trace!("Subscribe. Topics = {:?}", subscribe_request.topics);
         let subscription = Subscribe::new(self.next_pid(), subscribe_request.topics);
 
-        #[cfg(feature = "logging")]
-        log::trace!("Subscribe. Topics = {:?}", subscription);
         Ok(subscription.into())
     }
 

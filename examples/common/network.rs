@@ -43,11 +43,11 @@ impl TcpStack for Network {
 
     fn read_with<F>(&self, network: &mut Self::TcpSocket, f: F) -> nb::Result<usize, Self::Error>
     where
-        F: FnOnce(&mut [u8]) -> usize,
+        F: FnOnce(&[u8], Option<&[u8]>) -> usize,
     {
         let buf = &mut [0u8; 512];
         let len = self.read(network, buf)?;
-        Ok(f(&mut buf[..len]))
+        Ok(f(&mut buf[..len], None))
     }
 
     fn read(
