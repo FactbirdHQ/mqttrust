@@ -241,11 +241,8 @@ where
         #[cfg(feature = "logging")]
         log::info!("Populating pending publish: {}", pending_pub.len());
 
-        self.pending_pub.extend(
-            pending_pub
-                .iter()
-                .map(|(key, value)| (*key, value.clone())),
-        );
+        self.pending_pub
+            .extend(pending_pub.iter().map(|(key, value)| (*key, value.clone())));
 
         let pending_rel = core::mem::replace(&mut self.state.outgoing_rel, IndexSet::new());
 
