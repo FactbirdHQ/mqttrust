@@ -525,6 +525,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn retry_behaviour() {
         static mut Q: Queue<Request<Vec<u8, consts::U10>>, consts::U5, u8> =
             Queue(heapless::i::Queue::u8());
