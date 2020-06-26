@@ -153,7 +153,7 @@ where
         self.network_connect(network)?;
         if self.mqtt_connect(network)? {
             // Handle state after reconnect events
-            self.populate_pending();
+            // self.populate_pending();
         }
 
         Ok(())
