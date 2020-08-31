@@ -23,7 +23,7 @@ nb = "^0.1"
 heapless = { version = "^0.5.5", features = ["serde"] }
 log = { version = "^0.4", default-features = false, optional = true }
 no-std-net = "^0.3"
-embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird_mini" }
+embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", rev = "456401d" }
 mqttrs = { git = "https://github.com/MathiasKoch/mqttrs", branch = "wip/alloc-free-encode", default-features = false }
 
 [dev-dependencies]
