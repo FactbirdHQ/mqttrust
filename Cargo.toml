@@ -21,14 +21,14 @@ maintenance = { status = "actively-developed" }
 embedded-hal = "^0.2"
 nb = "^0.1"
 heapless = { version = "^0.5.5", features = ["serde"] }
-log = { version = "^0.4", default-features = false, optional = true }
 no-std-net = "^0.3"
 embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird_mini" }
 mqttrs = { git = "https://github.com/MathiasKoch/mqttrs", branch = "wip/alloc-free-encode", default-features = false }
 
+defmt = { git = "https://github.com/knurling-rs/defmt", branch = "main" }
+
 [dev-dependencies]
 void = { version = "1.0.2", default-features = false }
-env_logger = "0.7.1"
 dns-lookup = "1.0.3"
 
 
@@ -36,4 +36,10 @@ dns-lookup = "1.0.3"
 default = []
 
 alloc = []
-logging = ["log"]
+
+defmt-default = []
+defmt-trace = []
+defmt-debug = []
+defmt-info = []
+defmt-warn = []
+defmt-error = []

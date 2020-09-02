@@ -14,11 +14,6 @@ static mut Q: Queue<Request<Vec<u8, consts::U128>>, consts::U10, u8> =
     Queue(heapless::i::Queue::u8());
 
 fn main() {
-    #[cfg(feature = "logging")]
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
-        .init();
-
     let (mut p, c) = unsafe { Q.split() };
 
     let network = Network;
@@ -30,30 +25,30 @@ fn main() {
         MqttOptions::new("mqtt_test_client_id", "broker.hivemq.com".into(), 1883),
     );
 
-    #[cfg(feature = "logging")]
-    log::info!("eventloop created");
+    // #[cfg(feature = "logging")]
+    // log::info!("eventloop created");
 
     nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");
 
-    #[cfg(feature = "logging")]
-    log::info!("Connected");
+    // #[cfg(feature = "logging")]
+    // log::info!("Connected");
 
     thread::Builder::new()
         .name("eventloop".to_string())
         .spawn(move || loop {
             match nb::block!(mqtt_eventloop.yield_event(&network)) {
                 Ok(Notification::Publish(_publish)) => {
-                    #[cfg(feature = "logging")]
-                    log::debug!(
-                        "[{}, {:?}]: {:?}",
-                        _publish.topic_name,
-                        _publish.qospid,
-                        String::from_utf8(_publish.payload).unwrap()
-                    );
+                    // #[cfg(feature = "logging")]
+                    // log::debug!(
+                    //     "[{}, {:?}]: {:?}",
+                    //     _publish.topic_name,
+                    //     _publish.qospid,
+                    //     String::from_utf8(_publish.payload).unwrap()
+                    // );
                 }
                 _n => {
-                    #[cfg(feature = "logging")]
-                    log::debug!("{:?}", _n);
+                    // #[cfg(feature = "logging")]
+                    // log::debug!("{:?}", _n);
                 }
             }
         })
@@ -86,8 +81,8 @@ fn main() {
             .into(),
         )
         .expect("Failed to publish!");
-        #[cfg(feature = "logging")]
-        log::info!("Publishing");
+        // #[cfg(feature = "logging")]
+        // log::info!("Publishing");
         thread::sleep(std::time::Duration::from_millis(5000));
     }
 }
