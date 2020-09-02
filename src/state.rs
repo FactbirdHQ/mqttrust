@@ -5,7 +5,7 @@ use heapless::{consts, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrs::*;
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum MqttConnectionStatus {
     Handshake,
     Connected,
@@ -128,8 +128,7 @@ where
             Packet::Pubrel(pid) => self.handle_incoming_pubrel(pid),
             Packet::Pubcomp(pid) => self.handle_incoming_pubcomp(pid),
             _ => {
-                #[cfg(feature = "logging")]
-                log::error!("Invalid incoming paket = {:?}", packet);
+                defmt::error!("Invalid incoming packet!");
                 Ok((None, None))
             }
         }
@@ -177,11 +176,10 @@ where
             payload: &buf[topic_len..topic_len + len],
         };
 
-        #[cfg(feature = "logging")]
-        log::trace!(
-            "Publish. Topic = {:?}, pid = {:?}, Payload Size = {:?}",
+        defmt::trace!(
+            "Publish. Topic = {:str}, pid = {:?}, Payload Size = {:?}",
             publish.topic_name,
-            publish.qospid,
+            publish.qospid.pid().unwrap().get(),
             publish.payload.len()
         );
 
@@ -204,8 +202,7 @@ where
             let notification = Some(Notification::Puback(pid));
             Ok((notification, request))
         } else {
-            #[cfg(feature = "logging")]
-            log::error!("Unsolicited puback packet: {:?}", pid);
+            defmt::error!("Unsolicited puback packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -246,8 +243,7 @@ where
             let notification = Some(Notification::Pubrec(pid));
             Ok((notification, reply))
         } else {
-            #[cfg(feature = "logging")]
-            log::error!("Unsolicited pubrec packet: {:?}", pid);
+            defmt::error!("Unsolicited pubrec packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -291,8 +287,7 @@ where
             let reply = Packet::Pubcomp(pid);
             Ok((None, Some(reply)))
         } else {
-            #[cfg(feature = "logging")]
-            log::error!("Unsolicited pubrel packet: {:?}", pid);
+            defmt::error!("Unsolicited pubrel packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -307,8 +302,7 @@ where
             let reply = None;
             Ok((notification, reply))
         } else {
-            #[cfg(feature = "logging")]
-            log::error!("Unsolicited pubcomp packet: {:?}", pid);
+            defmt::error!("Unsolicited pubcomp packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -319,15 +313,13 @@ where
     fn handle_outgoing_ping<'a>(&mut self) -> Result<Packet<'a>, StateError> {
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
-            #[cfg(feature = "logging")]
-            log::error!("Error awaiting for last ping response");
+            defmt::error!("Error awaiting for last ping response");
             return Err(StateError::AwaitPingResp);
         }
 
         self.await_pingresp = true;
 
-        #[cfg(feature = "logging")]
-        log::trace!("Pingreq");
+        defmt::trace!("Pingreq");
 
         Ok(Packet::Pingreq)
     }
@@ -336,8 +328,7 @@ where
         &mut self,
     ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
         self.await_pingresp = false;
-        #[cfg(feature = "logging")]
-        log::trace!("Pingresp");
+        defmt::trace!("Pingresp");
         Ok((None, None))
     }
 
@@ -345,8 +336,10 @@ where
         &mut self,
         subscribe_request: SubscribeRequest,
     ) -> Result<Packet<'a>, StateError> {
-        #[cfg(feature = "logging")]
-        log::trace!("Subscribe. Topics = {:?}", subscribe_request.topics);
+        defmt::trace!("Subscribe. Topics = ");
+        for topic in &subscribe_request.topics {
+            defmt::trace!("{:str}", topic.topic_path.as_str());
+        }
         let subscription = Subscribe::new(self.next_pid(), subscribe_request.topics);
 
         Ok(subscription.into())
@@ -356,10 +349,11 @@ where
         &mut self,
         unsubscribe_request: UnsubscribeRequest,
     ) -> Result<Packet<'a>, StateError> {
+        defmt::trace!("Unsubscribe. Topics = ");
+        for topic in &unsubscribe_request.topics {
+            defmt::trace!("{:str}", topic.as_str());
+        }
         let unsubscription = Unsubscribe::new(self.next_pid(), unsubscribe_request.topics);
-
-        #[cfg(feature = "logging")]
-        log::trace!("Unsubscribe. Topics = {:?}", unsubscription);
         Ok(unsubscription.into())
     }
 
@@ -372,11 +366,7 @@ where
         let connack = match packet {
             Packet::Connack(connack) => connack,
             _packet => {
-                #[cfg(feature = "logging")]
-                log::error!(
-                    "Invalid packet. Expecting connack. Received = {:?}",
-                    _packet
-                );
+                defmt::error!("Invalid packet. Expecting connack!",);
 
                 self.connection_status = MqttConnectionStatus::Disconnected;
                 return Err(StateError::WrongPacket);
@@ -393,8 +383,7 @@ where
             ConnectReturnCode::Accepted
                 if self.connection_status != MqttConnectionStatus::Handshake =>
             {
-                #[cfg(feature = "logging")]
-                log::error!(
+                defmt::error!(
                     "Invalid state. Expected = {:?}, Current = {:?}",
                     MqttConnectionStatus::Handshake,
                     self.connection_status
@@ -403,8 +392,7 @@ where
                 Err(StateError::InvalidState)
             }
             code => {
-                #[cfg(feature = "logging")]
-                log::error!("Connection failed. Connection error = {:?}", code);
+                defmt::error!("Connection failed. Connection error = {:?}", code as u8);
                 self.connection_status = MqttConnectionStatus::Disconnected;
                 Err(StateError::Connect(code))
             }

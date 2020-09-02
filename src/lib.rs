@@ -238,16 +238,14 @@ where
     fn populate_pending(&mut self) {
         let pending_pub = core::mem::replace(&mut self.state.outgoing_pub, IndexMap::new());
 
-        #[cfg(feature = "logging")]
-        log::info!("Populating pending publish: {}", pending_pub.len());
+        defmt::info!("Populating pending publish: {:?}", pending_pub.len());
 
         self.pending_pub
             .extend(pending_pub.iter().map(|(key, value)| (*key, value.clone())));
 
         let pending_rel = core::mem::replace(&mut self.state.outgoing_rel, IndexSet::new());
 
-        #[cfg(feature = "logging")]
-        log::info!("populating pending rel: {}", pending_rel.len());
+        defmt::info!("populating pending rel: {:?}", pending_rel.len());
 
         self.pending_rel.extend(pending_rel.iter());
     }
@@ -301,8 +299,7 @@ where
             (Broker::Hostname(h), p) => {
                 let socket_addr = SocketAddr::new(
                     network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
-                        #[cfg(feature = "logging")]
-                        log::info!("Failed to resolve IP! {:?}", _e);
+                        defmt::info!("Failed to resolve IP!");
                         EventError::Network(NetworkError::DnsLookupFailed)
                     })?,
                     p,
@@ -312,8 +309,7 @@ where
             (Broker::IpAddr(ip), p) => {
                 let socket_addr = SocketAddr::new(ip, p);
                 let domain = network.gethostbyaddr(ip).map_err(|_e| {
-                    #[cfg(feature = "logging")]
-                    log::info!("Failed to resolve hostname! {:?}", _e);
+                    defmt::info!("Failed to resolve hostname!");
                     EventError::Network(NetworkError::DnsLookupFailed)
                 })?;
 
@@ -335,8 +331,7 @@ where
         //     // Enable SSL for self.socket, with broker (hostname)
         // };
 
-        #[cfg(feature = "logging")]
-        log::debug!("Network connected!");
+        defmt::debug!("Network connected!");
 
         Ok(())
     }
@@ -352,8 +347,7 @@ where
         match self.state.connection_status {
             state::MqttConnectionStatus::Connected => Ok(false),
             state::MqttConnectionStatus::Disconnected => {
-                #[cfg(feature = "logging")]
-                log::info!("MQTT connecting..");
+                defmt::info!("MQTT connecting..");
                 self.state.await_pingresp = false;
 
                 let (username, password) = self.options.credentials();
@@ -398,8 +392,7 @@ where
                             .handle_incoming_connack(packet)
                             .map_err(|e| nb::Error::Other(e.into()))?;
 
-                        #[cfg(feature = "logging")]
-                        log::debug!("MQTT connected!");
+                        defmt::debug!("MQTT connected!");
 
                         Ok(true)
                     }
