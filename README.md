@@ -4,7 +4,9 @@
 
 > no_std, no_alloc crate implementing secure MQTT Client capabilities.
 
-![CI][workflow]
+![Test][test]
+[![Code coverage][codecov-badge]][codecov]
+![No Std][no-std-badge]
 <!--
 [![Crates.io Version][crates-io-badge]][crates-io]
 [![Crates.io Downloads][crates-io-download-badge]][crates-io-download]
@@ -32,7 +34,10 @@ dual licensed as above, without any additional terms or conditions.
 
 
 <!-- Badges -->
-[workflow]: https://github.com/BlackbirdHQ/mqttrust/workflows/CI/badge.svg
+[test]: https://github.com/BlackbirdHQ/mqttrust/workflows/Test/badge.svg
+[no-std-badge]: https://img.shields.io/badge/no__std-yes-blue
+[codecov-badge]: https://codecov.io/gh/BlackbirdHQ/mqttrust/branch/master/graph/badge.svg
+[codecov]: https://codecov.io/gh/BlackbirdHQ/mqttrust
 <!--
 [crates-io]: https://crates.io/crates/mqttrust
 [crates-io-badge]: https://img.shields.io/crates/v/mqttrust.svg?maxAge=3600
