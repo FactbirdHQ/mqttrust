@@ -6,25 +6,6 @@ pub trait PublishPayload {
     fn from_bytes(v: &[u8]) -> Self;
 }
 
-#[cfg(any(test, feature = "alloc"))]
-impl PublishPayload for alloc::vec::Vec<u8> {
-    fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()> {
-        let len = self.len();
-        if buffer.len() < len {
-            return Err(());
-        }
-
-        buffer[..len].copy_from_slice(self.as_slice());
-        Ok(len)
-    }
-
-    fn from_bytes(v: &[u8]) -> Self {
-        let mut vec = alloc::vec::Vec::new();
-        vec.extend_from_slice(v);
-        vec
-    }
-}
-
 impl<L> PublishPayload for Vec<u8, L>
 where
     L: ArrayLength<u8>,

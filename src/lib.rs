@@ -22,9 +22,6 @@ pub use mqttrs::{
 pub use options::{Broker, MqttOptions};
 pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
-#[cfg(any(test, feature = "alloc"))]
-extern crate alloc;
-
 #[derive(Debug, PartialEq)]
 pub struct PublishNotification {
     pub dup: bool,

@@ -34,8 +34,6 @@ dns-lookup = "1.0.3"
 [features]
 default = []
 
-alloc = []
-
 defmt-default = []
 defmt-trace = []
 defmt-debug = []

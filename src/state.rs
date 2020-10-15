@@ -177,9 +177,8 @@ where
         };
 
         defmt::trace!(
-            "Publish. Topic = {:str}, pid = {:?}, Payload Size = {:?}",
+            "Publish. Topic = {:str}, Payload Size = {:?}",
             publish.topic_name,
-            publish.qospid.pid().unwrap().get(),
             publish.payload.len()
         );
 
