@@ -104,9 +104,15 @@ where
     fn send(&self, request: Request<P>) -> Result<(), Self::Error> {
         self.producer
             .try_borrow_mut()
-            .map_err(|_e| MqttClientError::Busy)?
+            .map_err(|_e| {
+                defmt::error!("MQTT BUSY!");
+                MqttClientError::Busy
+            })?
             .enqueue(request)
-            .map_err(|_e| MqttClientError::Full)?;
+            .map_err(|_e| {
+                defmt::error!("MQTT FULL!");
+                MqttClientError::Full
+            })?;
         Ok(())
     }
 }

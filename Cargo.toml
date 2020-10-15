@@ -18,17 +18,16 @@ name = "mqttrust"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-embedded-hal = "^0.2"
-nb = "^0.1"
+embedded-hal = { git = "https://github.com/MathiasKoch/embedded-hal", branch = "feature/alternative-storage" }
+nb = "^1"
 heapless = { version = "^0.5.5", features = ["serde"] }
-no-std-net = "*"
-embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird_mini" }
+no-std-net = "0.4.0"
+embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird-mini-1.0" }
 mqttrs = { git = "https://github.com/MathiasKoch/mqttrs", branch = "wip/alloc-free-encode", default-features = false }
 
 defmt = { git = "https://github.com/knurling-rs/defmt", branch = "main" }
 
 [dev-dependencies]
-void = { version = "1.0.2", default-features = false }
 dns-lookup = "1.0.3"
 
 
