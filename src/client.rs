@@ -105,12 +105,12 @@ where
         self.producer
             .try_borrow_mut()
             .map_err(|_e| {
-                defmt::error!("MQTT BUSY!");
+                // defmt::error!("MQTT BUSY!");
                 MqttClientError::Busy
             })?
             .enqueue(request)
             .map_err(|_e| {
-                defmt::error!("MQTT FULL!");
+                // defmt::error!("MQTT FULL!");
                 MqttClientError::Full
             })?;
         Ok(())

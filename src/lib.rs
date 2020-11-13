@@ -98,10 +98,9 @@ impl From<StateError> for EventError {
     }
 }
 
-pub struct MqttEvent<'a, 'b, L, N, O, P>
+pub struct MqttEvent<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
-    N: TcpStack + Dns,
     P: PublishPayload,
 {
     /// Current state of the connection
@@ -109,7 +108,7 @@ where
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
     /// Network socket
-    pub socket: Option<N::TcpSocket>,
+    pub socket: Option<S>,
     /// Request stream
     pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
     // Outgoing QoS 1, 2 publishes which aren't acked yet
@@ -118,10 +117,9 @@ where
     // pending_rel: FnvIndexSet<u16, consts::U4>,
 }
 
-impl<'a, 'b, L, N, O, P> MqttEvent<'a, 'b, L, N, O, P>
+impl<'a, 'b, L, S, O, P> MqttEvent<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
-    N: TcpStack + Dns,
     O: embedded_hal::timer::CountDown,
     O::Time: From<u32>,
     P: PublishPayload + Clone,
@@ -141,7 +139,7 @@ where
         }
     }
 
-    pub fn connect(&mut self, network: &N) -> nb::Result<(), EventError> {
+    pub fn connect<N: Dns + TcpStack<TcpSocket = S>>(&mut self, network: &N) -> nb::Result<(), EventError> {
         // connect to the broker
         self.network_connect(network)?;
         if self.mqtt_connect(network)? {
@@ -168,7 +166,7 @@ where
         }
     }
 
-    pub fn yield_event(&mut self, network: &N) -> nb::Result<Notification, ()> {
+    pub fn yield_event<N: TcpStack<TcpSocket = S>>(&mut self, network: &N) -> nb::Result<Notification, ()> {
         let packet_buf = &mut [0u8; 1024];
 
         let o = if self.should_handle_request() {
@@ -264,7 +262,7 @@ where
     //     self.pending_rel.extend(pending_rel.iter());
     // }
 
-    pub fn send<'d>(&mut self, network: &N, pkt: Packet<'d>) -> Result<usize, EventError> {
+    pub fn send<'d, N: TcpStack<TcpSocket = S>>(&mut self, network: &N, pkt: Packet<'d>) -> Result<usize, EventError> {
         match self.socket {
             Some(ref mut socket) => {
                 let mut tx_buf: [u8; 1024] = [0; 1024];
@@ -278,7 +276,7 @@ where
         }
     }
 
-    pub fn receive<'d>(
+    pub fn receive<'d, N: TcpStack<TcpSocket = S>>(
         &mut self,
         network: &N,
         packet_buf: &'d mut [u8],
@@ -302,7 +300,7 @@ where
         }
     }
 
-    fn network_connect(&mut self, network: &N) -> Result<(), EventError> {
+    fn network_connect<N: Dns + TcpStack<TcpSocket = S>>(&mut self, network: &N) -> Result<(), EventError> {
         if let Some(socket) = &self.socket {
             match network.is_connected(socket) {
                 Ok(true) => return Ok(()),
@@ -313,6 +311,8 @@ where
                 Ok(false) => {}
             }
         };
+
+        self.state.connection_status = state::MqttConnectionStatus::Disconnected;
 
         let socket = network
             .open(Mode::Timeout(50))
@@ -359,19 +359,20 @@ where
         Ok(())
     }
 
-    pub fn disconnect(&mut self, network: &N) {
+    pub fn disconnect<N: TcpStack<TcpSocket = S>>(&mut self, network: &N) {
         self.state.connection_status = state::MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.socket.take() {
             network.close(socket).ok();
         }
     }
 
-    fn mqtt_connect(&mut self, network: &N) -> nb::Result<bool, EventError> {
+    fn mqtt_connect<N: TcpStack<TcpSocket = S>>(&mut self, network: &N) -> nb::Result<bool, EventError> {
         match self.state.connection_status {
             state::MqttConnectionStatus::Connected => Ok(false),
             state::MqttConnectionStatus::Disconnected => {
                 defmt::info!("MQTT connecting..");
                 self.state.await_pingresp = false;
+                self.state.outgoing_pub.clear();
 
                 let (username, password) = self.options.credentials();
 
@@ -392,7 +393,7 @@ where
                             .handle_outgoing_connect()
                             .map_err(|e| nb::Error::Other(e.into()))?;
 
-                        self.state.last_outgoing_timer.try_start(5000).ok();
+                        self.state.last_outgoing_timer.try_start(50000).ok();
                     }
                     Err(e) => {
                         defmt::debug!("Disconnecting from send error!");
@@ -831,7 +832,7 @@ mod tests {
         };
 
         let (_p, c) = unsafe { Q.split() };
-        let mut event = MqttEvent::<_, MockNetwork, _, _>::new(
+        let mut event = MqttEvent::<_, (), _, _>::new(
             c,
             CdMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
