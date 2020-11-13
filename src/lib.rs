@@ -139,7 +139,10 @@ where
         }
     }
 
-    pub fn connect<N: Dns + TcpStack<TcpSocket = S>>(&mut self, network: &N) -> nb::Result<(), EventError> {
+    pub fn connect<N: Dns + TcpStack<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> nb::Result<(), EventError> {
         // connect to the broker
         self.network_connect(network)?;
         if self.mqtt_connect(network)? {
@@ -166,7 +169,10 @@ where
         }
     }
 
-    pub fn yield_event<N: TcpStack<TcpSocket = S>>(&mut self, network: &N) -> nb::Result<Notification, ()> {
+    pub fn yield_event<N: TcpStack<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> nb::Result<Notification, ()> {
         let packet_buf = &mut [0u8; 1024];
 
         let o = if self.should_handle_request() {
@@ -262,7 +268,11 @@ where
     //     self.pending_rel.extend(pending_rel.iter());
     // }
 
-    pub fn send<'d, N: TcpStack<TcpSocket = S>>(&mut self, network: &N, pkt: Packet<'d>) -> Result<usize, EventError> {
+    pub fn send<'d, N: TcpStack<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+        pkt: Packet<'d>,
+    ) -> Result<usize, EventError> {
         match self.socket {
             Some(ref mut socket) => {
                 let mut tx_buf: [u8; 1024] = [0; 1024];
@@ -300,7 +310,10 @@ where
         }
     }
 
-    fn network_connect<N: Dns + TcpStack<TcpSocket = S>>(&mut self, network: &N) -> Result<(), EventError> {
+    fn network_connect<N: Dns + TcpStack<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> Result<(), EventError> {
         if let Some(socket) = &self.socket {
             match network.is_connected(socket) {
                 Ok(true) => return Ok(()),
@@ -366,7 +379,10 @@ where
         }
     }
 
-    fn mqtt_connect<N: TcpStack<TcpSocket = S>>(&mut self, network: &N) -> nb::Result<bool, EventError> {
+    fn mqtt_connect<N: TcpStack<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> nb::Result<bool, EventError> {
         match self.state.connection_status {
             state::MqttConnectionStatus::Connected => Ok(false),
             state::MqttConnectionStatus::Disconnected => {
