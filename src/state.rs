@@ -53,7 +53,7 @@ pub struct MqttState<O, P> {
     /// Packet ids of released QoS 2 publishes
     pub outgoing_rel: FnvIndexSet<u16, consts::U4>,
     /// Packet ids on incoming QoS 2 publishes
-    pub incoming_pub: FnvIndexSet<u16, consts::U4>,
+    pub incoming_pub: FnvIndexSet<u16, consts::U2>,
 }
 
 impl<O, P> MqttState<O, P>
@@ -177,9 +177,8 @@ where
         };
 
         defmt::trace!(
-            "Publish. Topic = {:str}, pid = {:?}, Payload Size = {:?}",
+            "Publish. Topic = {:str}, Payload Size = {:?}",
             publish.topic_name,
-            publish.qospid.pid().unwrap().get(),
             publish.payload.len()
         );
 
@@ -413,7 +412,6 @@ mod test {
     use embedded_hal::timer::CountDown;
     use heapless::{consts, String, Vec};
     use mqttrs::*;
-    use void::Void;
 
     #[derive(Debug)]
     struct CdMock {
@@ -421,14 +419,16 @@ mod test {
     }
 
     impl CountDown for CdMock {
+        type Error = core::convert::Infallible;
         type Time = u32;
-        fn start<T>(&mut self, count: T)
+        fn try_start<T>(&mut self, count: T) -> Result<(), Self::Error>
         where
             T: Into<Self::Time>,
         {
             self.time = count.into();
+            Ok(())
         }
-        fn wait(&mut self) -> nb::Result<(), Void> {
+        fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
             Ok(())
         }
     }
