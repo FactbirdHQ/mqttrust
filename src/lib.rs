@@ -142,15 +142,16 @@ where
     pub fn connect<N: Dns + TcpStack<TcpSocket = S>>(
         &mut self,
         network: &N,
-    ) -> nb::Result<(), EventError> {
+    ) -> nb::Result<bool, EventError> {
         // connect to the broker
         self.network_connect(network)?;
         if self.mqtt_connect(network)? {
             // Handle state after reconnect events
             // self.populate_pending();
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
     fn should_handle_request(&mut self) -> bool {
@@ -310,6 +311,33 @@ where
         }
     }
 
+    fn lookup_host<N: Dns + TcpStack<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> Result<(heapless::String<heapless::consts::U256>, SocketAddr), EventError> {
+        match self.options.broker() {
+            (Broker::Hostname(h), p) => {
+                let socket_addr = SocketAddr::new(
+                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
+                        defmt::info!("Failed to resolve IP!");
+                        EventError::Network(NetworkError::DnsLookupFailed)
+                    })?,
+                    p,
+                );
+                Ok((heapless::String::from(h), socket_addr))
+            }
+            (Broker::IpAddr(ip), p) => {
+                let socket_addr = SocketAddr::new(ip, p);
+                let domain = network.gethostbyaddr(ip).map_err(|_e| {
+                    defmt::info!("Failed to resolve hostname!");
+                    EventError::Network(NetworkError::DnsLookupFailed)
+                })?;
+
+                Ok((domain, socket_addr))
+            }
+        }
+    }
+
     fn network_connect<N: Dns + TcpStack<TcpSocket = S>>(
         &mut self,
         network: &N,
@@ -328,48 +356,37 @@ where
         self.state.connection_status = state::MqttConnectionStatus::Disconnected;
 
         let socket = network
-            .open(Mode::Timeout(50))
+            .open(Mode::Blocking)
             .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?;
 
-        let (_hostname, socket_addr) = match self.options.broker() {
-            (Broker::Hostname(h), p) => {
-                let socket_addr = SocketAddr::new(
-                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
-                        defmt::info!("Failed to resolve IP!");
-                        EventError::Network(NetworkError::DnsLookupFailed)
-                    })?,
-                    p,
+        match self.lookup_host(network) {
+            Ok((_hostname, socket_addr)) => {
+                self.socket = Some(
+                    network
+                        .connect(socket, socket_addr)
+                        .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
                 );
-                (heapless::String::from(h), socket_addr)
+
+                // if let Some(root_ca) = self.options.ca() {
+                //     // Add root CA
+                // };
+
+                // if let Some((certificate, private_key)) = self.options.client_auth() {
+                //     // Enable SSL for self.socket, with broker (hostname)
+                // };
+
+                defmt::debug!("Network connected!");
+
+                Ok(())
             }
-            (Broker::IpAddr(ip), p) => {
-                let socket_addr = SocketAddr::new(ip, p);
-                let domain = network.gethostbyaddr(ip).map_err(|_e| {
-                    defmt::info!("Failed to resolve hostname!");
-                    EventError::Network(NetworkError::DnsLookupFailed)
-                })?;
-
-                (domain, socket_addr)
+            Err(e) => {
+                // Make sure to cleanup socket, in case we fail DNS lookup for some reason
+                network
+                    .close(socket)
+                    .map_err(|_e| EventError::Network(NetworkError::SocketClosed))?;
+                Err(e)
             }
-        };
-
-        self.socket = Some(
-            network
-                .connect(socket, socket_addr)
-                .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
-        );
-
-        // if let Some(root_ca) = self.options.ca() {
-        //     // Add root CA
-        // };
-
-        // if let Some((certificate, private_key)) = self.options.client_auth() {
-        //     // Enable SSL for self.socket, with broker (hostname)
-        // };
-
-        defmt::debug!("Network connected!");
-
-        Ok(())
+        }
     }
 
     pub fn disconnect<N: TcpStack<TcpSocket = S>>(&mut self, network: &N) {

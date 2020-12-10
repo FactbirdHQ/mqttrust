@@ -2,24 +2,22 @@ use crate::{
     requests::PublishPayload, PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic,
     UnsubscribeRequest,
 };
-use core::cell::RefCell;
 use heapless::{consts, spsc::Producer, ArrayLength, String, Vec};
 
 #[derive(Debug, Clone)]
 pub enum MqttClientError {
-    Busy,
     Full,
 }
 
 pub trait Mqtt<P: PublishPayload> {
     type Error;
 
-    fn send(&self, request: Request<P>) -> Result<(), Self::Error>;
+    fn send(&mut self, request: Request<P>) -> Result<(), Self::Error>;
 
     fn client_id(&self) -> &str;
 
     fn publish(
-        &self,
+        &mut self,
         topic_name: String<consts::U256>,
         payload: P,
         qos: QoS,
@@ -36,13 +34,13 @@ pub trait Mqtt<P: PublishPayload> {
         self.send(req)
     }
 
-    fn subscribe(&self, topics: Vec<SubscribeTopic, consts::U5>) -> Result<(), Self::Error> {
+    fn subscribe(&mut self, topics: Vec<SubscribeTopic, consts::U5>) -> Result<(), Self::Error> {
         let req: Request<P> = SubscribeRequest { topics }.into();
         self.send(req)
     }
 
     fn unsubscribe(
-        &self,
+        &mut self,
         topics: Vec<String<consts::U256>, consts::U5>,
     ) -> Result<(), Self::Error> {
         let req: Request<P> = UnsubscribeRequest { topics }.into();
@@ -74,7 +72,7 @@ where
     L: ArrayLength<Request<P>>,
 {
     client_id: &'b str,
-    producer: RefCell<Producer<'a, Request<P>, L, u8>>,
+    producer: Producer<'a, Request<P>, L, u8>,
 }
 
 impl<'a, 'b, L, P> MqttClient<'a, 'b, L, P>
@@ -85,7 +83,7 @@ where
     pub fn new(producer: Producer<'a, Request<P>, L, u8>, client_id: &'b str) -> Self {
         MqttClient {
             client_id,
-            producer: RefCell::new(producer),
+            producer,
         }
     }
 }
@@ -101,18 +99,10 @@ where
         &self.client_id
     }
 
-    fn send(&self, request: Request<P>) -> Result<(), Self::Error> {
+    fn send(&mut self, request: Request<P>) -> Result<(), Self::Error> {
         self.producer
-            .try_borrow_mut()
-            .map_err(|_e| {
-                // defmt::error!("MQTT BUSY!");
-                MqttClientError::Busy
-            })?
             .enqueue(request)
-            .map_err(|_e| {
-                // defmt::error!("MQTT FULL!");
-                MqttClientError::Full
-            })?;
+            .map_err(|_| MqttClientError::Full)?;
         Ok(())
     }
 }

@@ -23,7 +23,8 @@ nb = "^1"
 heapless = { version = "^0.5.5", features = ["serde"] }
 no-std-net = "0.4.0"
 embedded-nal = { git = "https://github.com/MathiasKoch/embedded-nal", branch = "factbird-mini-1.0" }
-mqttrs = { git = "https://github.com/MathiasKoch/mqttrs", branch = "wip/alloc-free-encode", default-features = false }
+mqttrs = { version = "0.4.0", default-features = false }
+
 
 defmt = { version = "^0.1" }
 
