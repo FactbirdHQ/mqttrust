@@ -9,7 +9,7 @@ use no_std_net::SocketAddr;
 use state::{MqttState, StateError};
 
 use core::convert::TryFrom;
-
+use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, Mode, TcpStack};
 use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Pid, Suback};
@@ -542,6 +542,66 @@ fn parse_header(a: &[u8], b: Option<&[u8]>, output: &mut [u8]) -> usize {
     }
     // Continuation byte == 1 four times, that's illegal.
     0
+}
+
+// Proposes an alternative ownership-based approach to the call-back based
+// `read_with`. It holds a buffer and construct a packet incrementally. Given
+// that underlying TcpStack throws WouldBlock properly, its packet construction
+// won't block either.
+#[allow(dead_code)]
+struct PacketBuf {
+    range: RangeTo<usize>,
+    buffer: Vec<u8, consts::U1024>,
+}
+
+impl PacketBuf {
+    #[allow(dead_code)]
+    fn new() -> Self {
+        let range = ..0;
+        let buffer = Vec::new();
+        Self { range, buffer }
+    }
+
+    // Fills the buffer with all 0s
+    #[allow(dead_code)]
+    fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
+    // Returns a remaining fresh part of the buffer.
+    fn buffer(&mut self) -> &mut [u8] {
+        let range = self.range.end..;
+        self.buffer[range].as_mut()
+    }
+
+    // Assuming the buffer contains a possibly half-done packet. If a complete
+    // packet is found, returns it. Post condition is that range is set to 0
+    // when the encoder constructs a full-packet or raises an error.
+    fn response(&mut self) -> Result<Option<Packet<'_>>, EventError> {
+        let packet = decode_slice(self.buffer.as_ref());
+        if packet.as_ref().map(Option::as_ref).transpose().is_some() {
+            self.range.end = 0;
+        }
+        packet.map_err(EventError::Encoding)
+    }
+
+    // If incoming bytes found, the range gets extended covering them.
+    #[allow(dead_code)]
+    fn receive_neither_block_nor_copy<N, S>(
+        &mut self,
+        socket: &mut S,
+        network: &N,
+    ) -> nb::Result<Option<Packet<'_>>, EventError>
+    where
+        N: TcpStack<TcpSocket = S>,
+    {
+        let buffer = self.buffer();
+        let len = network
+            .read(socket, buffer)
+            .map_err(|e| e.map(|_| EventError::Network(NetworkError::Read)))?;
+        self.range.end += len;
+        self.response().map_err(nb::Error::from)
+    }
 }
 
 #[cfg(test)]
