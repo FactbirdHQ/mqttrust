@@ -29,6 +29,7 @@ defmt = { version = "^0.1" }
 
 [dev-dependencies]
 dns-lookup = "1.0.3"
+std-embedded-nal = "0.0.1"
 
 
 [features]

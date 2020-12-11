@@ -17,6 +17,7 @@ fn main() {
     let (mut p, c) = unsafe { Q.split() };
 
     let network = Network;
+    // let network = std_embedded_nal::STACK;
 
     // Connect to broker.hivemq.com:1883
     let mut mqtt_eventloop = MqttEvent::new(
@@ -25,21 +26,14 @@ fn main() {
         MqttOptions::new("mqtt_test_client_id", "broker.hivemq.com".into(), 1883),
     );
 
-    // #[cfg(feature = "logging")]
-    // log::info!("eventloop created");
-
     nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");
-
-    // #[cfg(feature = "logging")]
-    // log::info!("Connected");
 
     thread::Builder::new()
         .name("eventloop".to_string())
         .spawn(move || loop {
             match nb::block!(mqtt_eventloop.yield_event(&network)) {
                 Ok(Notification::Publish(_publish)) => {
-                    // #[cfg(feature = "logging")]
-                    // log::debug!(
+                    // defmt::debug!(
                     //     "[{}, {:?}]: {:?}",
                     //     _publish.topic_name,
                     //     _publish.qospid,
@@ -47,8 +41,7 @@ fn main() {
                     // );
                 }
                 _n => {
-                    // #[cfg(feature = "logging")]
-                    // log::debug!("{:?}", _n);
+                    // defmt::debug!("{:?}", _n);
                 }
             }
         })
@@ -81,8 +74,6 @@ fn main() {
             .into(),
         )
         .expect("Failed to publish!");
-        // #[cfg(feature = "logging")]
-        // log::info!("Publishing");
         thread::sleep(std::time::Duration::from_millis(5000));
     }
 }
