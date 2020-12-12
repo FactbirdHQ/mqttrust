@@ -117,7 +117,7 @@ where
     pub fn handle_incoming_packet<'a>(
         &mut self,
         packet: Packet<'a>,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         match packet {
             Packet::Pingresp => self.handle_incoming_pingresp(),
             Packet::Publish(publish) => self.handle_incoming_publish(publish),
@@ -190,10 +190,10 @@ where
     /// This should be usually ok in case of acks due to ack ordering in normal
     /// conditions. But in cases where the broker doesn't guarantee the order of
     /// acks, the performance won't be optimal
-    fn handle_incoming_puback<'a>(
+    fn handle_incoming_puback(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.outgoing_pub.contains_key(&pid.get()) {
             let _publish = self.outgoing_pub.remove(&pid.get());
 
@@ -206,19 +206,19 @@ where
         }
     }
 
-    fn handle_incoming_suback<'a>(
+    fn handle_incoming_suback(
         &mut self,
         suback: Suback,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let request = None;
         let notification = Some(Notification::Suback(suback));
         Ok((notification, request))
     }
 
-    fn handle_incoming_unsuback<'a>(
+    fn handle_incoming_unsuback(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let request = None;
         let notification = Some(Notification::Unsuback(pid));
         Ok((notification, request))
@@ -228,10 +228,10 @@ where
     /// matching packet identifier. Removal is now a O(n) operation. This should be
     /// usually ok in case of acks due to ack ordering in normal conditions. But in cases
     /// where the broker doesn't guarantee the order of acks, the performance won't be optimal
-    fn handle_incoming_pubrec<'a>(
+    fn handle_incoming_pubrec(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.outgoing_pub.contains_key(&pid.get()) {
             let _publish = self.outgoing_pub.remove(&pid.get());
             self.outgoing_rel
@@ -252,7 +252,7 @@ where
     fn handle_incoming_publish<'a>(
         &mut self,
         publish: Publish<'a>,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let qospid = publish.qospid;
 
         match qospid {
@@ -277,10 +277,10 @@ where
         }
     }
 
-    fn handle_incoming_pubrel<'a>(
+    fn handle_incoming_pubrel(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.incoming_pub.contains(&pid.get()) {
             self.incoming_pub.remove(&pid.get());
             let reply = Packet::Pubcomp(pid);
@@ -291,10 +291,10 @@ where
         }
     }
 
-    fn handle_incoming_pubcomp<'a>(
+    fn handle_incoming_pubcomp(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.outgoing_rel.contains(&pid.get()) {
             self.outgoing_rel.remove(&pid.get());
             let notification = Some(Notification::Pubcomp(pid));
@@ -323,9 +323,9 @@ where
         Ok(Packet::Pingreq)
     }
 
-    fn handle_incoming_pingresp<'a>(
+    fn handle_incoming_pingresp(
         &mut self,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         self.await_pingresp = false;
         defmt::trace!("Pingresp");
         Ok((None, None))
