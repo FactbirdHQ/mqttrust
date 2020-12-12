@@ -19,10 +19,10 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 embedded-hal = { version = "1.0.0-alpha.4" }
+embedded-nal = "0.2.0"
 nb = "^1"
 heapless = { version = "^0.5.5", features = ["serde"] }
 no-std-net = "0.4.0"
-embedded-nal = { git = "https://github.com/BlackbirdHQ/embedded-nal", branch = "factbird-mini-1.0" }
 mqttrs = { version = "0.4.0", default-features = false }
 
 defmt = { version = "^0.1" }

@@ -10,7 +10,7 @@ use state::{MqttState, StateError};
 
 use core::convert::TryFrom;
 
-use embedded_nal::{AddrType, Dns, Mode, TcpStack};
+use embedded_nal::{AddrType, Dns, TcpClient};
 use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Pid, Suback};
 
@@ -139,7 +139,7 @@ where
         }
     }
 
-    pub fn connect<N: Dns + TcpStack<TcpSocket = S>>(
+    pub fn connect<N: Dns + TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<bool, EventError> {
@@ -170,7 +170,7 @@ where
         }
     }
 
-    pub fn yield_event<N: TcpStack<TcpSocket = S>>(
+    pub fn yield_event<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<Notification, ()> {
@@ -269,7 +269,7 @@ where
     //     self.pending_rel.extend(pending_rel.iter());
     // }
 
-    pub fn send<'d, N: TcpStack<TcpSocket = S>>(
+    pub fn send<'d, N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
         pkt: Packet<'d>,
@@ -278,7 +278,7 @@ where
             Some(ref mut socket) => {
                 let mut tx_buf: [u8; 1024] = [0; 1024];
                 let size = encode_slice(&pkt, &mut tx_buf)?;
-                nb::block!(network.write(socket, &tx_buf[..size])).map_err(|_| {
+                nb::block!(network.send(socket, &tx_buf[..size])).map_err(|_| {
                     defmt::error!("[send] NetworkError::Write");
                     EventError::Network(NetworkError::Write)
                 })
@@ -287,14 +287,14 @@ where
         }
     }
 
-    pub fn receive<'d, N: TcpStack<TcpSocket = S>>(
+    pub fn receive<'d, N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
         packet_buf: &'d mut [u8],
     ) -> Result<Option<Packet<'d>>, EventError> {
         match self.socket {
             Some(ref mut socket) => {
-                match network.read_with(socket, |a, b| parse_header(a, b, packet_buf)) {
+                match network.receive(socket, packet_buf) {
                     Ok(0) | Err(nb::Error::WouldBlock) => Ok(None),
                     Ok(size) => {
                         let p = decode_slice(&packet_buf[..size]).map_err(EventError::Encoding);
@@ -311,7 +311,7 @@ where
         }
     }
 
-    fn lookup_host<N: Dns + TcpStack<TcpSocket = S>>(
+    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> Result<(heapless::String<heapless::consts::U256>, SocketAddr), EventError> {
@@ -338,7 +338,7 @@ where
         }
     }
 
-    fn network_connect<N: Dns + TcpStack<TcpSocket = S>>(
+    fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> Result<(), EventError> {
@@ -355,15 +355,19 @@ where
 
         self.state.connection_status = state::MqttConnectionStatus::Disconnected;
 
-        let socket = network
-            .open(Mode::Blocking)
-            .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?;
+        self.socket = network
+            .socket()
+            .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
+            .into();
 
         match self.lookup_host(network) {
             Ok((_hostname, socket_addr)) => {
-                self.socket = Some(
+                Some(
                     network
-                        .connect(socket, socket_addr)
+                        .connect(
+                            self.socket.as_mut().unwrap_or_else(|| unreachable!()),
+                            socket_addr,
+                        )
                         .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
                 );
 
@@ -381,22 +385,20 @@ where
             }
             Err(e) => {
                 // Make sure to cleanup socket, in case we fail DNS lookup for some reason
-                network
-                    .close(socket)
-                    .map_err(|_e| EventError::Network(NetworkError::SocketClosed))?;
+                self.disconnect(network);
                 Err(e)
             }
         }
     }
 
-    pub fn disconnect<N: TcpStack<TcpSocket = S>>(&mut self, network: &N) {
+    pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
         self.state.connection_status = state::MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.socket.take() {
             network.close(socket).ok();
         }
     }
 
-    fn mqtt_connect<N: TcpStack<TcpSocket = S>>(
+    fn mqtt_connect<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<bool, EventError> {
@@ -463,87 +465,6 @@ where
     }
 }
 
-fn valid_header(hd: u8) -> bool {
-    match hd >> 4 {
-        3 => true,
-        6 | 8 | 10 => hd & 0x0F == 0x02,
-        1..=2 | 4..=5 | 7 | 9 | 11..=14 => hd.trailing_zeros() >= 4,
-        _ => false,
-    }
-}
-
-fn parse_header(a: &[u8], b: Option<&[u8]>, output: &mut [u8]) -> usize {
-    if a.is_empty() || !valid_header(a[0]) {
-        return 0;
-    }
-
-    let mut len: usize = 0;
-    for pos in 0..=3 {
-        match b {
-            Some(b) if a.len() + b.len() > pos + 1 => {
-                // a contains atleast partial header, a + b contains rest of packet
-                let byte = if a.len() > pos + 1 {
-                    a[pos + 1]
-                } else {
-                    b[pos + 1 - a.len()]
-                };
-                len += (byte as usize & 0x7F) << (pos * 7);
-                if (byte & 0x80) == 0 {
-                    // Continuation bit == 0, length is parsed
-                    let packet_len = 2 + pos + len;
-                    if a.len() + b.len() < packet_len {
-                        // a+b does not contain the full payload
-                        return 0;
-                    } else {
-                        if output.len() < packet_len {
-                            defmt::error!(
-                                "Output buffer too small! {:?} < {:?}",
-                                output.len(),
-                                packet_len
-                            );
-                            return 0;
-                        }
-
-                        let a_copy = core::cmp::min(a.len(), packet_len);
-                        output[..a_copy].copy_from_slice(&a[..a_copy]);
-                        if packet_len > a_copy {
-                            output[a_copy..packet_len].copy_from_slice(&b[..packet_len - a_copy]);
-                        }
-                        return packet_len;
-                    }
-                }
-            }
-            None if a.len() > pos + 1 => {
-                // a contains the full packet
-                let byte = a[pos + 1];
-                len += (byte as usize & 0x7F) << (pos * 7);
-                if (byte & 0x80) == 0 {
-                    // Continuation bit == 0, length is parsed
-                    let packet_len = 2 + pos + len;
-                    if a.len() < packet_len {
-                        // a does not contain the full payload
-                        return 0;
-                    }
-
-                    if output.len() < packet_len {
-                        defmt::error!(
-                            "Output buffer too small! {:?} < {:?}",
-                            output.len(),
-                            packet_len
-                        );
-                        return 0;
-                    }
-                    output[..packet_len].copy_from_slice(&a[..packet_len]);
-                    return packet_len;
-                }
-            }
-            _ => return 0,
-        }
-    }
-    // Continuation byte == 1 four times, that's illegal.
-    0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,24 +515,27 @@ mod tests {
         }
     }
 
-    impl TcpStack for MockNetwork {
+    impl TcpClient for MockNetwork {
         type TcpSocket = ();
         type Error = ();
 
-        fn open(&self, _mode: embedded_nal::Mode) -> Result<Self::TcpSocket, Self::Error> {
+        fn socket(&self) -> Result<Self::TcpSocket, Self::Error> {
             Ok(())
         }
+
         fn connect(
             &self,
-            _socket: Self::TcpSocket,
+            _socket: &mut Self::TcpSocket,
             _remote: embedded_nal::SocketAddr,
-        ) -> Result<Self::TcpSocket, Self::Error> {
+        ) -> nb::Result<(), Self::Error> {
             Ok(())
         }
+
         fn is_connected(&self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
             Ok(true)
         }
-        fn write(
+
+        fn send(
             &self,
             _socket: &mut Self::TcpSocket,
             buffer: &[u8],
@@ -622,7 +546,8 @@ mod tests {
                 Ok(buffer.len())
             }
         }
-        fn read(
+
+        fn receive(
             &self,
             _socket: &mut Self::TcpSocket,
             buffer: &mut [u8],
@@ -639,218 +564,9 @@ mod tests {
             }
         }
 
-        fn read_with<F>(&self, socket: &mut Self::TcpSocket, f: F) -> nb::Result<usize, Self::Error>
-        where
-            F: FnOnce(&[u8], Option<&[u8]>) -> usize,
-        {
-            let buf = &mut [0u8; 64];
-            self.read(socket, buf)?;
-            Ok(f(buf, None))
-        }
-
         fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
             Ok(())
         }
-    }
-
-    #[test]
-    fn test_parse_header_puback() {
-        let mut out = [0u8; 128];
-        let a = &[0b01000000, 0b00000010, 0, 10];
-
-        let len = parse_header(a, None, &mut out);
-        assert_eq!(len, 4);
-        assert_eq!(&out[..len], &a[..]);
-        assert_eq!(
-            decode_slice(&out[..len]).unwrap(),
-            Some(Packet::Puback(Pid::try_from(10).unwrap()))
-        );
-    }
-
-    #[test]
-    fn test_parse_header_simple() {
-        let mut out = [0u8; 128];
-        let a = &[
-            0b00010000, 39, 0x00, 0x04, 'M' as u8, 'Q' as u8, 'T' as u8, 'T' as u8, 0x04,
-            0b11001110, // +username, +password, -will retain, will qos=1, +last_will, +clean_session
-            0x00, 0x0a, // 10 sec
-            0x00, 0x04, 't' as u8, 'e' as u8, 's' as u8, 't' as u8, // client_id
-            0x00, 0x02, '/' as u8, 'a' as u8, // will topic = '/a'
-            0x00, 0x07, 'o' as u8, 'f' as u8, 'f' as u8, 'l' as u8, 'i' as u8, 'n' as u8,
-            'e' as u8, // will msg = 'offline'
-            0x00, 0x04, 'r' as u8, 'u' as u8, 's' as u8, 't' as u8, // username = 'rust'
-            0x00, 0x02, 'm' as u8, 'q' as u8, // password = 'mq'
-        ];
-
-        let len = parse_header(a, None, &mut out);
-        assert_eq!(len, 41);
-        assert_eq!(&out[..len], &a[..]);
-        assert_eq!(
-            decode_slice(&out[..len]).unwrap(),
-            Some(Packet::Connect(Connect {
-                protocol: Protocol::MQTT311,
-                keep_alive: 10,
-                client_id: "test".into(),
-                clean_session: true,
-                last_will: Some(mqttrs::LastWill {
-                    topic: "/a".into(),
-                    message: b"offline",
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                }),
-                username: Some("rust".into()),
-                password: Some(b"mq"),
-            }))
-        );
-    }
-
-    #[test]
-    fn test_parse_header_additional() {
-        let mut out = [0u8; 128];
-        let a = &[
-            0b00010000, 39, 0x00, 0x04, 'M' as u8, 'Q' as u8, 'T' as u8, 'T' as u8, 0x04,
-            0b11001110, // +username, +password, -will retain, will qos=1, +last_will, +clean_session
-            0x00, 0x0a, // 10 sec
-            0x00, 0x04, 't' as u8, 'e' as u8, 's' as u8, 't' as u8, // client_id
-            0x00, 0x02, '/' as u8, 'a' as u8, // will topic = '/a'
-            0x00, 0x07, 'o' as u8, 'f' as u8, 'f' as u8, 'l' as u8, 'i' as u8, 'n' as u8,
-            'e' as u8, // will msg = 'offline'
-            0x00, 0x04, 'r' as u8, 'u' as u8, 's' as u8, 't' as u8, // username = 'rust'
-            0x00, 0x02, 'm' as u8, 'q' as u8, // password = 'mq'
-            0x00, 0x01, // additional bytes
-            0x00, 0x01, // additional bytes
-            0x00, 0x01, // additional bytes
-        ];
-
-        let len = parse_header(a, None, &mut out);
-        assert_eq!(len, 41);
-        assert_eq!(&out[..len], &a[..len]);
-        assert_eq!(
-            decode_slice(&out[..len]).unwrap(),
-            Some(Packet::Connect(Connect {
-                protocol: Protocol::MQTT311,
-                keep_alive: 10,
-                client_id: "test".into(),
-                clean_session: true,
-                last_will: Some(mqttrs::LastWill {
-                    topic: "/a".into(),
-                    message: b"offline",
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                }),
-                username: Some("rust".into()),
-                password: Some(b"mq"),
-            }))
-        );
-    }
-
-    #[test]
-    fn test_parse_header_wrapped_simple() {
-        let mut out = [0u8; 128];
-        let a = &[
-            0b00010000, 39, 0x00, 0x04, 'M' as u8, 'Q' as u8, 'T' as u8, 'T' as u8, 0x04,
-        ];
-
-        let b = &[
-            0b11001110, // +username, +password, -will retain, will qos=1, +last_will, +clean_session
-            0x00, 0x0a, // 10 sec
-            0x00, 0x04, 't' as u8, 'e' as u8, 's' as u8, 't' as u8, // client_id
-            0x00, 0x02, '/' as u8, 'a' as u8, // will topic = '/a'
-            0x00, 0x07, 'o' as u8, 'f' as u8, 'f' as u8, 'l' as u8, 'i' as u8, 'n' as u8,
-            'e' as u8, // will msg = 'offline'
-            0x00, 0x04, 'r' as u8, 'u' as u8, 's' as u8, 't' as u8, // username = 'rust'
-            0x00, 0x02, 'm' as u8, 'q' as u8, // password = 'mq'
-            0x00, 0x01, // additional bytes
-            0x00, 0x01, // additional bytes
-            0x00, 0x01, // additional bytes
-        ];
-
-        let expected = &[
-            0b00010000, 39, 0x00, 0x04, 'M' as u8, 'Q' as u8, 'T' as u8, 'T' as u8, 0x04,
-            0b11001110, // +username, +password, -will retain, will qos=1, +last_will, +clean_session
-            0x00, 0x0a, // 10 sec
-            0x00, 0x04, 't' as u8, 'e' as u8, 's' as u8, 't' as u8, // client_id
-            0x00, 0x02, '/' as u8, 'a' as u8, // will topic = '/a'
-            0x00, 0x07, 'o' as u8, 'f' as u8, 'f' as u8, 'l' as u8, 'i' as u8, 'n' as u8,
-            'e' as u8, // will msg = 'offline'
-            0x00, 0x04, 'r' as u8, 'u' as u8, 's' as u8, 't' as u8, // username = 'rust'
-            0x00, 0x02, 'm' as u8, 'q' as u8, // password = 'mq'
-        ];
-
-        let len = parse_header(a, Some(b), &mut out);
-        assert_eq!(len, 41);
-        assert_eq!(&out[..len], &expected[..]);
-        assert_eq!(
-            decode_slice(&out[..len]).unwrap(),
-            Some(Packet::Connect(Connect {
-                protocol: Protocol::MQTT311,
-                keep_alive: 10,
-                client_id: "test".into(),
-                clean_session: true,
-                last_will: Some(mqttrs::LastWill {
-                    topic: "/a".into(),
-                    message: b"offline",
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                }),
-                username: Some("rust".into()),
-                password: Some(b"mq"),
-            }))
-        );
-    }
-
-    #[test]
-    fn test_parse_header_wrapped_header() {
-        let mut out = [0u8; 128];
-        let a = &[0b00010000];
-
-        let b = &[
-            39, 0x00, 0x04, 'M' as u8, 'Q' as u8, 'T' as u8, 'T' as u8, 0x04,
-            0b11001110, // +username, +password, -will retain, will qos=1, +last_will, +clean_session
-            0x00, 0x0a, // 10 sec
-            0x00, 0x04, 't' as u8, 'e' as u8, 's' as u8, 't' as u8, // client_id
-            0x00, 0x02, '/' as u8, 'a' as u8, // will topic = '/a'
-            0x00, 0x07, 'o' as u8, 'f' as u8, 'f' as u8, 'l' as u8, 'i' as u8, 'n' as u8,
-            'e' as u8, // will msg = 'offline'
-            0x00, 0x04, 'r' as u8, 'u' as u8, 's' as u8, 't' as u8, // username = 'rust'
-            0x00, 0x02, 'm' as u8, 'q' as u8, // password = 'mq'
-            0x00, 0x01, // additional bytes
-            0x00, 0x01, // additional bytes
-            0x00, 0x01, // additional bytes
-        ];
-
-        let expected = &[
-            0b00010000, 39, 0x00, 0x04, 'M' as u8, 'Q' as u8, 'T' as u8, 'T' as u8, 0x04,
-            0b11001110, // +username, +password, -will retain, will qos=1, +last_will, +clean_session
-            0x00, 0x0a, // 10 sec
-            0x00, 0x04, 't' as u8, 'e' as u8, 's' as u8, 't' as u8, // client_id
-            0x00, 0x02, '/' as u8, 'a' as u8, // will topic = '/a'
-            0x00, 0x07, 'o' as u8, 'f' as u8, 'f' as u8, 'l' as u8, 'i' as u8, 'n' as u8,
-            'e' as u8, // will msg = 'offline'
-            0x00, 0x04, 'r' as u8, 'u' as u8, 's' as u8, 't' as u8, // username = 'rust'
-            0x00, 0x02, 'm' as u8, 'q' as u8, // password = 'mq'
-        ];
-
-        let len = parse_header(a, Some(b), &mut out);
-        assert_eq!(len, 41);
-        assert_eq!(&out[..len], &expected[..]);
-        assert_eq!(
-            decode_slice(&out[..len]).unwrap(),
-            Some(Packet::Connect(Connect {
-                protocol: Protocol::MQTT311,
-                keep_alive: 10,
-                client_id: "test".into(),
-                clean_session: true,
-                last_will: Some(mqttrs::LastWill {
-                    topic: "/a".into(),
-                    message: b"offline",
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                }),
-                username: Some("rust".into()),
-                password: Some(b"mq"),
-            }))
-        );
     }
 
     #[test]
