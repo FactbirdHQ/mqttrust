@@ -361,17 +361,7 @@ where
         Ok(())
     }
 
-    pub fn handle_incoming_connack<'a>(&mut self, packet: Packet<'a>) -> Result<(), StateError> {
-        let connack = match packet {
-            Packet::Connack(connack) => connack,
-            _packet => {
-                defmt::error!("Invalid packet. Expecting connack!",);
-
-                self.connection_status = MqttConnectionStatus::Disconnected;
-                return Err(StateError::WrongPacket);
-            }
-        };
-
+    pub fn handle_incoming_connack<'a>(&mut self, connack: Connack) -> Result<(), StateError> {
         match connack.code {
             ConnectReturnCode::Accepted
                 if self.connection_status == MqttConnectionStatus::Handshake =>
