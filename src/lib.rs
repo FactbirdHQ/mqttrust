@@ -5,14 +5,13 @@ mod options;
 mod requests;
 mod state;
 
-use no_std_net::SocketAddr;
-use state::{MqttState, StateError};
-
 use core::convert::TryFrom;
-
+use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, TcpClient};
 use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Pid, Suback};
+use no_std_net::SocketAddr;
+use state::{MqttState, StateError};
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
 pub use mqttrs::{
@@ -111,10 +110,8 @@ where
     pub socket: Option<S>,
     /// Request stream
     pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
-    // Outgoing QoS 1, 2 publishes which aren't acked yet
-    // pending_pub: FnvIndexMap<u16, PublishRequest<P>, consts::U3>,
-    // Packet ids of released QoS 2 publishes
-    // pending_rel: FnvIndexSet<u16, consts::U4>,
+    tx_buf: Vec<u8, consts::U1024>,
+    rx_buf: PacketBuffer,
 }
 
 impl<'a, 'b, L, S, O, P> MqttEvent<'a, 'b, L, S, O, P>
@@ -134,8 +131,8 @@ where
             options,
             socket: None,
             requests,
-            // pending_pub: IndexMap::new(),
-            // pending_rel: IndexSet::new(),
+            tx_buf: Vec::new(),
+            rx_buf: PacketBuffer::new(),
         }
     }
 
@@ -146,8 +143,6 @@ where
         // connect to the broker
         self.network_connect(network)?;
         if self.mqtt_connect(network)? {
-            // Handle state after reconnect events
-            // self.populate_pending();
             return Ok(true);
         }
 
@@ -175,37 +170,19 @@ where
         network: &N,
     ) -> nb::Result<Notification, ()> {
         let packet_buf = &mut [0u8; 1024];
-
         let o = if self.should_handle_request() {
             // Handle requests
             let request = unsafe { self.requests.dequeue_unchecked() };
-            self.state.handle_outgoing_request(request, packet_buf)
-        } else if let Some(packet) = match self.receive(network, packet_buf) {
-            Ok(p) => p,
-            Err(EventError::Encoding(e)) => {
-                defmt::debug!("Encoding error!");
-                return Ok(Notification::Abort(e.into()));
-            }
-            Err(e) => {
-                defmt::debug!("Disconnecting from receive error!");
-                self.disconnect(network);
-                return Ok(Notification::Abort(e));
-            }
-        } {
-            // Handle incoming
-            self.state.handle_incoming_packet(packet)
-        // } else if let Some(p) = self.get_pending_rel() {
-        //     // Handle pending PubRec
-        //     self.state.handle_outgoing_packet(Packet::Pubrec(p))
-        // } else if let Some(publish) = self.get_pending_pub() {
-        //     // Handle pending Publish
-        //     self.state
-        //         .handle_outgoing_request(publish.into(), packet_buf)
+            self.state
+                .handle_outgoing_request(request, packet_buf)
+                .map_err(EventError::from)
         } else if self.state.last_outgoing_timer.try_wait().is_ok() {
             // Handle ping
-            self.state.handle_outgoing_packet(Packet::Pingreq)
+            self.state
+                .handle_outgoing_packet(Packet::Pingreq)
+                .map_err(EventError::from)
         } else {
-            Ok((None, None))
+            self.receive_notification(network)
         };
 
         let (notification, outpacket) = match o {
@@ -213,7 +190,7 @@ where
             Err(e) => {
                 defmt::debug!("Disconnecting from handling error!");
                 self.disconnect(network);
-                return Ok(Notification::Abort(e.into()));
+                return Ok(Notification::Abort(e));
             }
         };
 
@@ -237,38 +214,6 @@ where
         }
     }
 
-    // pub fn get_pending_rel(&mut self) -> Option<Pid> {
-    //     let p = match self.pending_rel.iter().next() {
-    //         Some(p) => *p,
-    //         None => return None,
-    //     };
-    //     self.pending_rel.remove(&p);
-    //     Pid::try_from(p).ok()
-    // }
-
-    // pub fn get_pending_pub(&mut self) -> Option<PublishRequest<P>> {
-    //     let pid = match self.pending_pub.keys().next() {
-    //         Some(p) => *p,
-    //         None => return None,
-    //     };
-    //     self.pending_pub.remove(&pid)
-    // }
-
-    // fn populate_pending(&mut self) {
-    //     let pending_pub = core::mem::replace(&mut self.state.outgoing_pub, IndexMap::new());
-
-    //     defmt::info!("Populating pending publish: {:?}", pending_pub.len());
-
-    //     self.pending_pub
-    //         .extend(pending_pub.iter().map(|(key, value)| (*key, value.clone())));
-
-    //     let pending_rel = core::mem::replace(&mut self.state.outgoing_rel, IndexSet::new());
-
-    //     defmt::info!("populating pending rel: {:?}", pending_rel.len());
-
-    //     self.pending_rel.extend(pending_rel.iter());
-    // }
-
     pub fn send<'d, N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
@@ -276,9 +221,13 @@ where
     ) -> Result<usize, EventError> {
         match self.socket {
             Some(ref mut socket) => {
-                let mut tx_buf: [u8; 1024] = [0; 1024];
-                let size = encode_slice(&pkt, &mut tx_buf)?;
-                nb::block!(network.send(socket, &tx_buf[..size])).map_err(|_| {
+                let capacity = self.tx_buf.capacity();
+                self.tx_buf.clear();
+                self.tx_buf.resize(capacity, 0x00u8).unwrap_or_else(|()| {
+                    unreachable!("Input length equals to the current capacity.")
+                });
+                let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
+                nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
                     defmt::error!("[send] NetworkError::Write");
                     EventError::Network(NetworkError::Write)
                 })
@@ -287,28 +236,42 @@ where
         }
     }
 
-    pub fn receive<'d, N: TcpClient<TcpSocket = S>>(
+    pub fn receive_notification<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
-        packet_buf: &'d mut [u8],
-    ) -> Result<Option<Packet<'d>>, EventError> {
-        match self.socket {
-            Some(ref mut socket) => {
-                match network.receive(socket, packet_buf) {
-                    Ok(0) | Err(nb::Error::WouldBlock) => Ok(None),
-                    Ok(size) => {
-                        let p = decode_slice(&packet_buf[..size]).map_err(EventError::Encoding);
-
-                        // if let Ok(Some(Packet::Puback(pid))) = p {
-                        //     defmt::info!("Got Puback! {:?}", pid.get());
-                        // }
-                        p
-                    }
-                    _ => Err(EventError::Network(NetworkError::Read)),
-                }
-            }
-            _ => Err(EventError::Network(NetworkError::NoSocket)),
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(EventError::Network(NetworkError::NoSocket))?;
+        if let Some(packet) = self.rx_buf.receive(socket, network).or_else(|e| match e {
+            nb::Error::WouldBlock => Ok(None),
+            _ => Err(EventError::Network(NetworkError::Read)),
+        })? {
+            self.state
+                .handle_incoming_packet(packet)
+                .map(|out| {
+                    self.rx_buf.clear();
+                    out
+                })
+                .map_err(EventError::from)
+        } else {
+            Ok((None, None))
         }
+    }
+
+    pub fn receive<N: TcpClient<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> Result<Option<Packet<'_>>, EventError> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(EventError::Network(NetworkError::NoSocket))?;
+        self.rx_buf.receive(socket, network).or_else(|e| match e {
+            nb::Error::WouldBlock => Ok(None),
+            _ => Err(EventError::Network(NetworkError::Read)),
+        })
     }
 
     fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
@@ -446,22 +409,78 @@ where
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                let packet_buf = &mut [0u8; 4];
-                match self.receive(network, packet_buf) {
-                    Ok(Some(packet)) => {
+                match self.receive(network) {
+                    Ok(Some(Packet::Connack(connack))) => {
                         self.state
-                            .handle_incoming_connack(packet)
+                            .handle_incoming_connack(connack)
                             .map_err(|e| nb::Error::Other(e.into()))?;
 
                         defmt::debug!("MQTT connected!");
 
                         Ok(true)
                     }
+                    Ok(Some(_)) => Err(nb::Error::WouldBlock),
                     Ok(None) => Err(nb::Error::WouldBlock),
                     Err(e) => Err(nb::Error::Other(e)),
                 }
             }
         }
+    }
+}
+
+// A placeholder that keeps a buffer and constructs a packet incrementally.
+// Given that underlying TcpClient throws WouldBlock in a non-blocking manner,
+// its packet construction won't block either.
+struct PacketBuffer {
+    range: RangeTo<usize>,
+    buffer: Vec<u8, consts::U1024>,
+}
+
+impl PacketBuffer {
+    fn new() -> Self {
+        let range = ..0;
+        let buffer = Vec::new();
+        Self { range, buffer }
+    }
+
+    // Fills the buffer with all 0s
+    fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
+    // Returns a remaining fresh part of the buffer.
+    fn buffer(&mut self) -> &mut [u8] {
+        let range = self.range.end..;
+        self.buffer[range].as_mut()
+    }
+
+    // Assuming the buffer contains a possibly half-done packet. If a complete
+    // packet is found, returns it. Post condition is that range is set to 0
+    // when the encoder constructs a full-packet or raises an error.
+    fn response(&mut self) -> Result<Option<Packet<'_>>, EventError> {
+        let buffer = self.buffer[self.range].as_mut();
+        let packet = decode_slice(buffer);
+        if packet.as_ref().map(Option::as_ref).transpose().is_some() {
+            self.range.end = 0;
+        }
+        packet.map_err(EventError::Encoding)
+    }
+
+    // If incoming bytes found, the range gets extended covering them.
+    fn receive<N, S>(
+        &mut self,
+        socket: &mut S,
+        network: &N,
+    ) -> nb::Result<Option<Packet<'_>>, EventError>
+    where
+        N: TcpClient<TcpSocket = S>,
+    {
+        let buffer = self.buffer();
+        let len = network
+            .receive(socket, buffer)
+            .map_err(|e| e.map(|_| EventError::Network(NetworkError::Read)))?;
+        self.range.end += len;
+        self.response().map_err(nb::Error::from)
     }
 }
 
