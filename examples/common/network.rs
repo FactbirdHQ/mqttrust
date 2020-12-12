@@ -1,4 +1,4 @@
-use embedded_nal::{AddrType, Dns, Mode, SocketAddr, TcpStack};
+use embedded_nal::{AddrType, Dns, SocketAddr, TcpClient};
 use heapless::{consts, String};
 use no_std_net::IpAddr;
 use std::io::{ErrorKind, Read, Write};
@@ -10,12 +10,11 @@ pub struct Network;
 
 pub struct TcpSocket {
     pub stream: Option<TcpStream>,
-    mode: Mode,
 }
 
 impl TcpSocket {
-    pub fn new(mode: Mode) -> Self {
-        TcpSocket { stream: None, mode }
+    pub fn new() -> Self {
+        TcpSocket { stream: None }
     }
 }
 
@@ -33,24 +32,15 @@ impl Dns for Network {
     }
 }
 
-impl TcpStack for Network {
+impl TcpClient for Network {
     type Error = ();
     type TcpSocket = TcpSocket;
 
-    fn open(&self, mode: Mode) -> Result<Self::TcpSocket, Self::Error> {
-        Ok(TcpSocket::new(mode))
+    fn socket(&self) -> Result<Self::TcpSocket, Self::Error> {
+        Ok(TcpSocket::new())
     }
 
-    fn read_with<F>(&self, network: &mut Self::TcpSocket, f: F) -> nb::Result<usize, Self::Error>
-    where
-        F: FnOnce(&[u8], Option<&[u8]>) -> usize,
-    {
-        let buf = &mut [0u8; 512];
-        let len = self.read(network, buf)?;
-        Ok(f(&mut buf[..len], None))
-    }
-
-    fn read(
+    fn receive(
         &self,
         network: &mut Self::TcpSocket,
         buf: &mut [u8],
@@ -65,7 +55,7 @@ impl TcpStack for Network {
         }
     }
 
-    fn write(
+    fn send(
         &self,
         network: &mut Self::TcpSocket,
         buf: &[u8],
@@ -83,33 +73,12 @@ impl TcpStack for Network {
 
     fn connect(
         &self,
-        network: Self::TcpSocket,
+        network: &mut Self::TcpSocket,
         remote: SocketAddr,
-    ) -> Result<Self::TcpSocket, Self::Error> {
-        Ok(match TcpStream::connect(format!("{}", remote)) {
-            Ok(stream) => {
-                match network.mode {
-                    Mode::Blocking => {
-                        stream.set_write_timeout(None).unwrap();
-                        stream.set_read_timeout(None).unwrap();
-                    }
-                    Mode::NonBlocking => panic!("Nonblocking socket mode not supported!"),
-                    Mode::Timeout(t) => {
-                        stream
-                            .set_write_timeout(Some(std::time::Duration::from_millis(t as u64)))
-                            .unwrap();
-                        stream
-                            .set_read_timeout(Some(std::time::Duration::from_millis(t as u64)))
-                            .unwrap();
-                    }
-                };
-                TcpSocket {
-                    stream: Some(stream),
-                    mode: network.mode,
-                }
-            }
-            Err(_e) => return Err(()),
-        })
+    ) -> nb::Result<(), Self::Error> {
+        TcpStream::connect(format!("{}", remote))
+            .map(|stream| drop(network.stream.replace(stream)))
+            .map_err(|_| ().into())
     }
 
     fn close(&self, _network: Self::TcpSocket) -> Result<(), Self::Error> {
