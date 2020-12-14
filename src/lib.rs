@@ -458,7 +458,8 @@ impl PacketBuffer {
     // packet is found, returns it. Post condition is that range is set to 0
     // when the encoder constructs a full-packet or raises an error.
     fn response(&mut self) -> Result<Option<Packet<'_>>, EventError> {
-        let packet = decode_slice(self.buffer.as_ref());
+        let buffer = self.buffer[self.range].as_mut();
+        let packet = decode_slice(buffer);
         if packet.as_ref().map(Option::as_ref).transpose().is_some() {
             self.range.end = 0;
         }
