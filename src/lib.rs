@@ -251,7 +251,7 @@ where
             self.state
                 .handle_incoming_packet(packet)
                 .map(|out| {
-                    self.rx_buf.clear();
+                    self.rx_buf.init();
                     out
                 })
                 .map_err(EventError::from)
@@ -419,8 +419,7 @@ where
 
                         Ok(true)
                     }
-                    Ok(Some(_)) => Err(nb::Error::WouldBlock),
-                    Ok(None) => Err(nb::Error::WouldBlock),
+                    Ok(_) => Err(nb::Error::WouldBlock),
                     Err(e) => Err(nb::Error::Other(e)),
                 }
             }
@@ -440,12 +439,18 @@ impl PacketBuffer {
     fn new() -> Self {
         let range = ..0;
         let buffer = Vec::new();
-        Self { range, buffer }
+        let mut buf = Self { range, buffer };
+        buf.init();
+        buf
     }
 
     // Fills the buffer with all 0s
-    fn clear(&mut self) {
+    fn init(&mut self) {
+        let capacity = self.buffer.capacity();
         self.buffer.clear();
+        self.buffer
+            .resize(capacity, 0x00u8)
+            .unwrap_or_else(|()| unreachable!("Input length equals to the current capacity."));
     }
 
     // Returns a remaining fresh part of the buffer.
@@ -458,7 +463,7 @@ impl PacketBuffer {
     // packet is found, returns it. Post condition is that range is set to 0
     // when the encoder constructs a full-packet or raises an error.
     fn response(&mut self) -> Result<Option<Packet<'_>>, EventError> {
-        let buffer = self.buffer[self.range].as_mut();
+        let buffer = self.buffer[self.range].as_ref();
         let packet = decode_slice(buffer);
         if packet.as_ref().map(Option::as_ref).transpose().is_some() {
             self.range.end = 0;
