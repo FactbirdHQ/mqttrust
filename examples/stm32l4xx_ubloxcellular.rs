@@ -1,12 +1,13 @@
 #![no_main]
 #![no_std]
 use atat::{self, ClientBuilder, ComQueue, Queues, ResQueue, UrcQueue};
+use core::cell::RefCell;
 use core::slice::from_ref;
 use cortex_m::peripheral::DWT;
 use defmt_rtt as _; // global logger
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::timer::CountDown;
-use embedded_nal::{Ipv4Addr, SocketAddrV4};
+use embedded_nal::Ipv4Addr;
 use hal::gpio::gpioc::PC4;
 use hal::gpio::gpiod::PD11;
 use hal::gpio::gpioe::PE8;
@@ -19,43 +20,44 @@ use hal::timer::Timer;
 use heapless::consts;
 use heapless::spsc::Queue;
 use heapless::Vec;
-use mqttrust::{EventError, MqttClient, MqttEvent, MqttOptions, Notification, Request};
+use mqttrust::{MqttClient, MqttEvent, MqttOptions, Notification, Request};
 use panic_semihosting as _;
-use rtic::app;
 use rtic::cyccnt::U32Ext;
 use stm32l4xx_hal as hal;
 use stm32l4xx_hal::time::Hertz;
 use ublox_cellular::command::gpio::types::{GpioMode, GpioOutValue};
 use ublox_cellular::command::gpio::SetGpioConfiguration;
-use ublox_cellular::prelude::TcpClient;
 use ublox_cellular::sockets::SocketSet;
-use ublox_cellular::{APNInfo, Apn, Config as GSMConfig, GsmClient};
-use ublox_cellular::{ContextId, ProfileId};
-pub type CellPwr = PC4<Output<OpenDrain>>;
-pub type CellDtr = PD11<Output<PushPull>>;
-pub type CellNrst = PE8<Output<OpenDrain>>;
+use ublox_cellular::{APNInfo, Apn, Config as GSMConfig, ContextId, GsmClient, ProfileId};
 
-type GsmType = GsmClient<
-    atat::Client<
-        Tx<UART4>,
-        TimerWrapper<Timer<TIM6>>,
-        consts::U1024,
-        consts::U3,
-        consts::U4,
-        consts::U10,
-    >,
-    TimerWrapper<Timer<TIM4>>,
-    consts::U5,
-    consts::U2048,
-    CellNrst,
-    CellDtr,
-    CellPwr,
->;
+const MQTT_CLIENT_ID: &str = "stm32l4xx_ubloxcellular";
+const MQTT_BROKER_ADDR: [u8; 4] = [18, 198, 17, 154];
+const MQTT_BROKER_PORT: u16 = 1883;
 
-#[app(device = stm32l4xx_hal::pac, peripherals = true, monotonic = rtic::cyccnt::CYCCNT)]
-const APP: () = {
+#[rtic::app(device = stm32l4xx_hal::pac, peripherals = true, monotonic = rtic::cyccnt::CYCCNT, dispatchers = [UART5])]
+mod app {
+    use super::*;
+
+    #[resources]
     struct Resources {
-        cell_client: GsmType,
+        cell_client: RefCell<
+            GsmClient<
+                atat::Client<
+                    Tx<UART4>,
+                    TimerWrapper<Timer<TIM6>>,
+                    consts::U1024,
+                    consts::U3,
+                    consts::U4,
+                    consts::U10,
+                >,
+                TimerWrapper<Timer<TIM4>>,
+                consts::U5,
+                consts::U2048,
+                PE8<Output<OpenDrain>>,
+                PD11<Output<PushPull>>,
+                PC4<Output<OpenDrain>>,
+            >,
+        >,
         cell_rx: Rx<UART4>,
         cell_ingress: atat::IngressManager<
             consts::U1024,
@@ -73,13 +75,9 @@ const APP: () = {
             TimerWrapper<Timer<TIM7>>,
             Vec<u8, consts::U255>,
         >,
-        #[init(None)]
-        socket: Option<SocketHandle>,
-        #[init(None)]
-        socket_set: Option<SocketSet<consts::U5, consts::U2048>>,
     }
 
-    #[init(resources = [socket_set], spawn = [atat_spin])]
+    #[init]
     fn init(mut ctx: init::Context) -> init::LateResources {
         static mut RES_QUEUE: ResQueue<consts::U1024, consts::U4> = Queue(heapless::i::Queue::u8());
         static mut URC_QUEUE: UrcQueue<consts::U1024, consts::U10> =
@@ -87,6 +85,7 @@ const APP: () = {
         static mut COM_QUEUE: ComQueue<consts::U3> = Queue(heapless::i::Queue::u8());
         static mut MQTT_QUEUE: Queue<Request<Vec<u8, consts::U255>>, consts::U10, u8> =
             Queue(heapless::i::Queue::u8());
+        static mut SOCKET_SET: Option<SocketSet<consts::U5, consts::U2048>> = None;
 
         // **           **
         // ** BEGIN BSP **
@@ -176,14 +175,9 @@ const APP: () = {
         )
         .build(queues);
 
-        *ctx.resources.socket_set = Some(SocketSet::new());
-        let socket_set: &'static mut _ = ctx.resources.socket_set.as_mut().unwrap_or_else(|| {
-            panic!("Failed to get the static socket_set");
-        });
-
         defmt::info!("Peripherals ready");
 
-        let mut cell_client: GsmType = GsmClient::new(
+        let mut cell_client_inner = GsmClient::new(
             cell_at,
             cell_delay,
             GSMConfig::default()
@@ -193,24 +187,26 @@ const APP: () = {
                 .baud_rate(230_400_u32),
         );
 
-        cell_client.set_socket_storage(socket_set);
+        SOCKET_SET.replace(SocketSet::new());
+        cell_client_inner.set_socket_storage(SOCKET_SET.as_mut().unwrap());
+        let cell_client = RefCell::new(cell_client_inner);
 
         let (mqtt_producer, mqtt_consumer) = MQTT_QUEUE.split();
-        let mqtt_client = MqttClient::new(mqtt_producer, "appid");
+        let mqtt_client = MqttClient::new(mqtt_producer, MQTT_CLIENT_ID);
         let mqtt_event = MqttEvent::new(
             mqtt_consumer,
             mqtt_ping_timer,
             MqttOptions::new(
-                "appid",
-                "ec2-18-198-17-154.eu-central-1.compute.amazonaws.com".into(),
-                1883,
+                MQTT_CLIENT_ID,
+                Ipv4Addr::from(MQTT_BROKER_ADDR).into(),
+                MQTT_BROKER_PORT,
             )
             .set_clean_session(true),
         );
 
         defmt::info!("Initialization step done");
 
-        ctx.spawn.atat_spin().unwrap();
+        atat_spin::spawn().unwrap();
 
         init::LateResources {
             cell_client,
@@ -222,179 +218,188 @@ const APP: () = {
     }
 
     /// Idle thread - Captures the time the cpu is asleep to calculate cpu uasge
-    #[idle(resources = [cell_client, mqtt_client, mqtt_event])]
-    fn idle(ctx: idle::Context) -> ! {
+    #[idle(resources = [&cell_client, mqtt_event])]
+    fn idle(mut ctx: idle::Context) -> ! {
         let apn_info = APNInfo {
             apn: Apn::Given(heapless::String::from("em")),
             ..APNInfo::default()
         };
 
-        let _mqtt_client = ctx.resources.mqtt_client;
-        let mqtt_event = ctx.resources.mqtt_event;
-
         let mut init = false;
         let mut connected = false;
 
         loop {
-            match ctx
-                .resources
-                .cell_client
-                .data_service(ProfileId(0), ContextId(2), &apn_info)
-            {
-                Err(nb::Error::WouldBlock) => {}
-                Err(nb::Error::Other(_)) => {
-                    init = false;
-                    defmt::info!("Data Service error");
+            let mut cell_client = match ctx.resources.cell_client.try_borrow_mut() {
+                Err(_) => {
+                    defmt::error!("No cell client");
+                    continue;
                 }
-                Ok(data) => {
-                    if !init {
-                        data.send_at(&SetGpioConfiguration {
-                            gpio_id: 22,
-                            gpio_mode: GpioMode::NetworkStatus,
-                        })
-                        .ok();
+                Ok(cell_client) => cell_client,
+            };
 
-                        data.send_at(&SetGpioConfiguration {
-                            gpio_id: 21,
-                            gpio_mode: GpioMode::Output(GpioOutValue::High),
-                        })
-                        .ok();
+            let data = match cell_client.data_service(ProfileId(0), ContextId(2), &apn_info) {
+                Err(nb::Error::WouldBlock) => {
+                    continue;
+                }
+                Err(_) => {
+                    defmt::error!("No data service");
+                    continue;
+                }
+                Ok(data) => data,
+            };
 
-                        defmt::info!("Initilaize done");
-                        init = true;
+            if !init {
+                data.send_at(&SetGpioConfiguration {
+                    gpio_id: 22,
+                    gpio_mode: GpioMode::NetworkStatus,
+                })
+                .ok();
+
+                data.send_at(&SetGpioConfiguration {
+                    gpio_id: 21,
+                    gpio_mode: GpioMode::Output(GpioOutValue::High),
+                })
+                .ok();
+
+                defmt::info!("Initilaize done");
+                init = true;
+            }
+
+            if !connected {
+                match ctx
+                    .resources
+                    .mqtt_event
+                    .lock(|mqtt_event| mqtt_event.connect(&data))
+                {
+                    Err(nb::Error::WouldBlock) => {
+                        continue;
                     }
-                    if !connected {
-                        match mqtt_event.connect(&data) {
-                            Err(nb::Error::WouldBlock) => {
-                                continue;
-                            }
-                            Err(_) => {
-                                defmt::info!("MQTT connection error");
-                                continue;
-                            }
-                            Ok(new_session) => {
-                                if !new_session {
-                                    continue;
-                                } else {
-                                    connected = true;
-                                }
-                            }
+                    Err(_) => {
+                        defmt::info!("MQTT connection error");
+                        continue;
+                    }
+                    Ok(new_session) => {
+                        if !new_session {
+                        } else {
+                            connected = true;
                         }
                     }
-                    match mqtt_event.yield_event(&data) {
-                        Err(nb::Error::WouldBlock) => {
-                            continue;
-                        }
-                        Err(_) => {
-                            defmt::info!("MQTT yeild error");
-                            unreachable!();
-                            continue;
-                        }
-                        Ok(Notification::Abort(_)) => {
-                            defmt::info!("MQTT yeild abort");
-                            connected = false;
-                            continue;
-                        }
-                        Ok(_ntf) => {
-                            defmt::info!("MQTT notified");
-                        }
+                }
+            }
+
+            if init || connected {
+                match ctx
+                    .resources
+                    .mqtt_event
+                    .lock(|mqtt_event| mqtt_event.yield_event(&data))
+                {
+                    Err(nb::Error::WouldBlock) => {
+                        continue;
+                    }
+                    Err(_) => {
+                        defmt::info!("MQTT yeild error");
+                        unreachable!();
+                    }
+                    Ok(Notification::Abort(_)) => {
+                        defmt::info!("MQTT yeild abort");
+                        connected = false;
+                    }
+                    Ok(_ntf) => {
+                        defmt::info!("MQTT notified");
                     }
                 }
             }
         }
     }
 
-    #[task(resources = [cell_ingress], schedule = [atat_spin])]
-    fn atat_spin(ctx: atat_spin::Context) {
-        ctx.resources.cell_ingress.digest();
-        ctx.schedule
-            .atat_spin(ctx.scheduled + 4_000_000.cycles())
-            .unwrap();
+    #[task(resources = [cell_ingress])]
+    fn atat_spin(mut ctx: atat_spin::Context) {
+        ctx.resources
+            .cell_ingress
+            .lock(|cell_ingress| cell_ingress.digest());
+        atat_spin::schedule(ctx.scheduled + 1_000_000.cycles()).unwrap();
     }
 
-    #[task(binds = UART4, resources = [cell_rx, cell_ingress], spawn = [atat_spin])]
-    fn uart4(ctx: uart4::Context) {
-        nb::block!(ctx.resources.cell_rx.try_read())
-            .map(|word| ctx.resources.cell_ingress.write(from_ref(&word)))
+    #[task(binds = UART4, resources = [cell_rx, cell_ingress])]
+    fn uart4(mut ctx: uart4::Context) {
+        nb::block!(ctx.resources.cell_rx.lock(|cell_rx| cell_rx.try_read()))
+            .map(|word| {
+                ctx.resources
+                    .cell_ingress
+                    .lock(|cell_ingress| cell_ingress.write(from_ref(&word)))
+            })
             .ok();
-        ctx.spawn.atat_spin().ok();
     }
 
-    // spare interrupt used for scheduling software tasks
-    extern "C" {
-        fn UART5();
-        // fn SPI1();
-        // fn LCD();
-    }
-};
+    pub struct Millis(u32);
 
-pub struct Millis(pub u32);
-
-impl From<u32> for Millis {
-    fn from(ms: u32) -> Self {
-        Millis(ms)
-    }
-}
-
-pub struct TimerWrapper<T>
-where
-    T: CountDown<Time = Hertz>,
-{
-    inner: T,
-    remaining_ms: Millis,
-}
-
-impl<T> TimerWrapper<T>
-where
-    T: CountDown<Time = Hertz>,
-{
-    pub fn new(timer: T) -> Self {
-        TimerWrapper {
-            inner: timer,
-            remaining_ms: Millis(0),
+    impl From<u32> for Millis {
+        fn from(ms: u32) -> Self {
+            Millis(ms)
         }
     }
-}
 
-impl<T> DelayMs<u32> for TimerWrapper<T>
-where
-    T: CountDown<Time = Hertz>,
-{
-    type Error = T::Error;
-
-    fn try_delay_ms(&mut self, ms: u32) -> Result<(), Self::Error> {
-        self.try_start(ms)?;
-        nb::block!(self.try_wait())
-    }
-}
-
-impl<T> CountDown for TimerWrapper<T>
-where
-    T: CountDown<Time = Hertz>,
-{
-    type Error = T::Error;
-
-    type Time = Millis;
-
-    fn try_start<M>(&mut self, count: M) -> Result<(), Self::Error>
+    pub struct TimerWrapper<T>
     where
-        M: Into<Self::Time>,
+        T: CountDown<Time = Hertz>,
     {
-        let ms: Millis = count.into();
-
-        self.inner
-            .try_start::<Hertz>(core::cmp::min(ms.0, 1000).into())?;
-        self.remaining_ms = Millis(ms.0.checked_sub(1000).unwrap_or_else(|| 0));
-        Ok(())
+        inner: T,
+        remaining_ms: Millis,
     }
 
-    fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
-        if self.remaining_ms.0 > 0 {
-            self.inner.try_wait()?;
-            self.inner
-                .try_start::<Hertz>(core::cmp::min(self.remaining_ms.0, 1000).into())?;
-            self.remaining_ms = Millis(self.remaining_ms.0.checked_sub(1000).unwrap_or_else(|| 0));
+    impl<T> TimerWrapper<T>
+    where
+        T: CountDown<Time = Hertz>,
+    {
+        fn new(timer: T) -> Self {
+            TimerWrapper {
+                inner: timer,
+                remaining_ms: Millis(0),
+            }
         }
-        self.inner.try_wait()
+    }
+
+    impl<T> DelayMs<u32> for TimerWrapper<T>
+    where
+        T: CountDown<Time = Hertz>,
+    {
+        type Error = T::Error;
+
+        fn try_delay_ms(&mut self, ms: u32) -> Result<(), Self::Error> {
+            self.try_start(ms)?;
+            nb::block!(self.try_wait())
+        }
+    }
+
+    impl<T> CountDown for TimerWrapper<T>
+    where
+        T: CountDown<Time = Hertz>,
+    {
+        type Error = T::Error;
+
+        type Time = Millis;
+
+        fn try_start<M>(&mut self, count: M) -> Result<(), Self::Error>
+        where
+            M: Into<Self::Time>,
+        {
+            let ms: Millis = count.into();
+
+            self.inner
+                .try_start::<Hertz>(core::cmp::min(ms.0, 1000).into())?;
+            self.remaining_ms = Millis(ms.0.checked_sub(1000).unwrap_or_else(|| 0));
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
+            if self.remaining_ms.0 > 0 {
+                self.inner.try_wait()?;
+                self.inner
+                    .try_start::<Hertz>(core::cmp::min(self.remaining_ms.0, 1000).into())?;
+                self.remaining_ms =
+                    Millis(self.remaining_ms.0.checked_sub(1000).unwrap_or_else(|| 0));
+            }
+            self.inner.try_wait()
+        }
     }
 }

@@ -19,14 +19,14 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
-          target: thumbv7m-none-eabi
+          target: thumbv7em-none-eabihf
           override: true
 
       - name: Build
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --all --all-features --target thumbv7m-none-eabi
+          args: --all --examples --features stm32l4xx --target thumbv7em-none-eabihf
 
       - name: Test
         uses: actions-rs/cargo@v1

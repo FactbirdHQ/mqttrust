@@ -25,14 +25,13 @@ heapless = { version = "^0.5.5", features = ["serde"] }
 mqttrs = { version = "0.4.0", default-features = false }
 nb = "^1"
 no-std-net = "0.4.0"
-
 # A dependency for the "std"-enabled example.
 dns-lookup = { version = "1.0.3", optional = true }
 
 [dev-dependencies]
 cortex-m = "0.6.3"
 cortex-m-rt = "0.6.12"
-cortex-m-rtic = "0.5.5"
+cortex-m-rtic = "0.6.0-alpha.0"
 embedded-hal = "1.0.0-alpha.4"
 embedded-nal = "0.2.0"
 heapless = { version = "^0.5", features = ["serde"] }
@@ -63,8 +62,14 @@ defmt-debug = []
 defmt-info = []
 defmt-warn = []
 defmt-error = []
+
 std = ["dns-lookup"]
+stm32l4xx = []
 
 [[example]]
 name = "linux"
 required-features = ["std"]
+
+[[example]]
+name = "stm32l4xx_ubloxcellular"
+required-features = ["stm32l4xx"]
