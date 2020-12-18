@@ -182,7 +182,10 @@ where
                 .handle_outgoing_packet(Packet::Pingreq)
                 .map_err(EventError::from)
         } else {
-            self.receive_notification(network)
+            self.receive_notification(network).map_err(|e| {
+                self.rx_buf.init();
+                e
+            })
         };
 
         let (notification, outpacket) = match o {
@@ -251,7 +254,8 @@ where
             self.state
                 .handle_incoming_packet(packet)
                 .map(|out| {
-                    self.rx_buf.init();
+                    let length = self.rx_buf.packet_length();
+                    self.rx_buf.rotate(length);
                     out
                 })
                 .map_err(EventError::from)
@@ -446,6 +450,7 @@ impl PacketBuffer {
 
     // Fills the buffer with all 0s
     fn init(&mut self) {
+        self.range.end = 0;
         let capacity = self.buffer.capacity();
         self.buffer.clear();
         self.buffer
@@ -459,15 +464,48 @@ impl PacketBuffer {
         self.buffer[range].as_mut()
     }
 
+    // Doesn't cover these cases: 1. the 4th byte has its continuation bit set
+    // (i.e., the packet is malformed). Nor 2. a successor byte has not yet
+    // transferred even if the continuation bit suggests its presence.
+    //
+    // https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718023
+    fn packet_length(&self) -> usize {
+        self.buffer
+            .iter()
+            .skip(1)
+            .take(4)
+            .scan(true, |continuation, byte| {
+                let has_successor = byte & 0x80 != 0x00;
+                let length = (byte & 0x7f) as usize;
+                if *continuation {
+                    *continuation = has_successor;
+                    length.into()
+                } else {
+                    // Short-circuit
+                    None
+                }
+            })
+            .enumerate()
+            .fold(1, |acc, (i, length)| {
+                acc + 1 + length * 0x80_usize.pow(i as u32)
+            })
+    }
+
+    // Invariant: buffer.capacity() == buffer.len()
+    // Assumes length < buffer.len() and length < buffer.range.end
+    fn rotate(&mut self, length: usize) {
+        self.buffer.rotate_left(length);
+        self.range.end -= length;
+        self.buffer.truncate(self.buffer.len() - length);
+        self.buffer.resize(self.buffer.capacity(), 0).unwrap();
+    }
+
     // Assuming the buffer contains a possibly half-done packet. If a complete
     // packet is found, returns it. Post condition is that range is set to 0
     // when the encoder constructs a full-packet or raises an error.
     fn response(&mut self) -> Result<Option<Packet<'_>>, EventError> {
         let buffer = self.buffer[self.range].as_ref();
         let packet = decode_slice(buffer);
-        if packet.as_ref().map(Option::as_ref).transpose().is_some() {
-            self.range.end = 0;
-        }
         packet.map_err(EventError::Encoding)
     }
 
