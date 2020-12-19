@@ -119,6 +119,9 @@ where
         packet: Packet<'a>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         match packet {
+            Packet::Connack(connack) => self
+                .handle_incoming_connack(connack)
+                .map(|()| (Notification::ConnAck.into(), None)),
             Packet::Pingresp => self.handle_incoming_pingresp(),
             Packet::Publish(publish) => self.handle_incoming_publish(publish),
             Packet::Suback(suback) => self.handle_incoming_suback(suback),
@@ -366,6 +369,7 @@ where
             ConnectReturnCode::Accepted
                 if self.connection_status == MqttConnectionStatus::Handshake =>
             {
+                defmt::debug!("MQTT connected!");
                 self.connection_status = MqttConnectionStatus::Connected;
                 Ok(())
             }
