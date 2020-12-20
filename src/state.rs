@@ -39,13 +39,11 @@ pub enum StateError {
 /// **Generics**:
 /// - O: The output timer used for keeping track of keep-alive ping-pongs. Must
 ///   implement the [`embedded_hal::timer::CountDown`] trait
-pub struct MqttState<O, P> {
+pub struct MqttState<P> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
     /// Status of last ping
     pub await_pingresp: bool,
-    /// Last outgoing packet time
-    pub last_outgoing_timer: O,
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
@@ -56,20 +54,17 @@ pub struct MqttState<O, P> {
     pub incoming_pub: FnvIndexSet<u16, consts::U2>,
 }
 
-impl<O, P> MqttState<O, P>
+impl<P> MqttState<P>
 where
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
     P: PublishPayload + Clone,
 {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
     /// instantiated for clean sessions
-    pub fn new(outgoing_timer: O) -> Self {
+    pub fn new() -> Self {
         MqttState {
             connection_status: MqttConnectionStatus::Disconnected,
             await_pingresp: false,
-            last_outgoing_timer: outgoing_timer,
             last_pid: Pid::new(),
 
             outgoing_pub: IndexMap::new(),
@@ -403,29 +398,8 @@ mod test {
     use super::{MqttConnectionStatus, MqttState, Packet, StateError};
     use crate::{Notification, PublishRequest, SubscribeRequest, UnsubscribeRequest};
     use core::convert::TryFrom;
-    use embedded_hal::timer::CountDown;
     use heapless::{consts, String, Vec};
     use mqttrs::*;
-
-    #[derive(Debug)]
-    struct CdMock {
-        time: u32,
-    }
-
-    impl CountDown for CdMock {
-        type Error = core::convert::Infallible;
-        type Time = u32;
-        fn try_start<T>(&mut self, count: T) -> Result<(), Self::Error>
-        where
-            T: Into<Self::Time>,
-        {
-            self.time = count.into();
-            Ok(())
-        }
-        fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
-            Ok(())
-        }
-    }
 
     fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<Vec<u8, consts::U3>> {
         let topic = heapless::String::from("hello/world");
@@ -453,9 +427,8 @@ mod test {
         }
     }
 
-    fn build_mqttstate<'a>() -> MqttState<CdMock, Vec<u8, consts::U3>> {
-        let outgoing_timer = CdMock { time: 0 };
-        MqttState::new(outgoing_timer)
+    fn build_mqttstate<'a>() -> MqttState<Vec<u8, consts::U3>> {
+        MqttState::new()
     }
 
     #[test]

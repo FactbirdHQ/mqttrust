@@ -16,7 +16,9 @@ where
     P: PublishPayload,
 {
     /// Current state of the connection
-    pub state: MqttState<O, P>,
+    pub state: MqttState<P>,
+    /// Last outgoing packet time
+    pub last_outgoing_timer: O,
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
     /// Network socket
@@ -40,7 +42,8 @@ where
         options: MqttOptions<'b>,
     ) -> Self {
         Self {
-            state: MqttState::new(outgoing_timer),
+            state: MqttState::new(),
+            last_outgoing_timer: outgoing_timer,
             options,
             socket: None,
             requests,
@@ -85,7 +88,7 @@ where
             self.state
                 .handle_outgoing_request(request, packet_buf)
                 .map_err(EventError::from)
-        } else if self.state.last_outgoing_timer.try_wait().is_ok() {
+        } else if self.last_outgoing_timer.try_wait().is_ok() {
             // Handle ping
             self.state
                 .handle_outgoing_packet(Packet::Pingreq)
@@ -109,8 +112,7 @@ where
                 self.disconnect(network);
                 return Ok(Notification::Abort(e));
             } else {
-                self.state
-                    .last_outgoing_timer
+                self.last_outgoing_timer
                     .try_start(self.options.keep_alive_ms())
                     .ok();
             }
@@ -272,7 +274,7 @@ where
                             .handle_outgoing_connect()
                             .map_err(|e| nb::Error::Other(e.into()))?;
 
-                        self.state.last_outgoing_timer.try_start(50000).ok();
+                        self.last_outgoing_timer.try_start(50000).ok();
                     }
                     Err(e) => {
                         defmt::debug!("Disconnecting from send error!");
@@ -284,7 +286,7 @@ where
                 Err(nb::Error::WouldBlock)
             }
             MqttConnectionStatus::Handshake => {
-                if self.state.last_outgoing_timer.try_wait().is_ok() {
+                if self.last_outgoing_timer.try_wait().is_ok() {
                     defmt::debug!("Disconnecting from handshake timeout!");
                     self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
@@ -303,9 +305,9 @@ where
     }
 }
 
-// A placeholder that keeps a buffer and constructs a packet incrementally.
-// Given that underlying TcpClient throws WouldBlock in a non-blocking manner,
-// its packet construction won't block either.
+/// A placeholder that keeps a buffer and constructs a packet incrementally.
+/// Given that underlying `TcpClient` throws `WouldBlock` in a non-blocking
+/// manner, its packet construction won't block either.
 struct PacketBuffer {
     range: RangeTo<usize>,
     buffer: Vec<u8, consts::U1024>,
@@ -320,32 +322,34 @@ impl PacketBuffer {
         buf
     }
 
-    // Fills the buffer with all 0s
+    /// Fills the buffer with all 0s
     fn init(&mut self) {
         self.range.end = 0;
-        let capacity = self.buffer.capacity();
         self.buffer.clear();
         self.buffer
-            .resize(capacity, 0x00u8)
-            .unwrap_or_else(|()| unreachable!("Input length equals to the current capacity."));
+            .resize(self.buffer.capacity(), 0x00u8)
+            .unwrap_or_else(|()| unreachable!("Length equals to the current capacity."));
     }
 
-    // Returns a remaining fresh part of the buffer.
+    /// Returns a remaining fresh part of the buffer.
     fn buffer(&mut self) -> &mut [u8] {
         let range = self.range.end..;
         self.buffer[range].as_mut()
     }
 
-    // Invariant: buffer.capacity() == buffer.len()
-    // Assumes length < buffer.len() and length < buffer.range.end
+    /// After decoding a packet, overwrite the used bytes by shifting the buffer
+    /// by its length. Assumes the length fits within the buffer's capacity.
     fn rotate(&mut self, length: usize) {
         self.buffer.copy_within(length.., 0);
         self.range.end -= length;
         self.buffer.truncate(self.buffer.capacity() - length);
-        self.buffer.resize(self.buffer.capacity(), 0).unwrap();
+        self.buffer
+            .resize(self.buffer.capacity(), 0)
+            .unwrap_or_else(|()| unreachable!("Length equals to the current capacity."));
     }
 
-    // If incoming bytes found, the range gets extended covering them.
+    /// Receives bytes from a network socket in non-blocking mode. If incoming
+    /// bytes found, the range gets extended covering them.
     fn receive<N, S>(&mut self, socket: &mut S, network: &N) -> nb::Result<(), EventError>
     where
         N: TcpClient<TcpSocket = S>,
@@ -359,25 +363,23 @@ impl PacketBuffer {
     }
 }
 
-struct PacketDecoder<'a, O, P>
+/// Provides contextual information for decoding packets. If an incoming packet
+/// is well-formed and has a packet type the underlying state expects, returns a
+/// notification. On an error, cleans up its buffer state.
+struct PacketDecoder<'a, P>
 where
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
     P: PublishPayload + Clone,
 {
-    state: &'a mut MqttState<O, P>,
+    state: &'a mut MqttState<P>,
     packet_buffer: &'a mut PacketBuffer,
-    // Clean up action
     is_err: Option<bool>,
 }
 
-impl<'a, O, P> PacketDecoder<'a, O, P>
+impl<'a, P> PacketDecoder<'a, P>
 where
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
     P: PublishPayload + Clone,
 {
-    fn new(state: &'a mut MqttState<O, P>, packet_buffer: &'a mut PacketBuffer) -> Self {
+    fn new(state: &'a mut MqttState<P>, packet_buffer: &'a mut PacketBuffer) -> Self {
         Self {
             state,
             packet_buffer,
@@ -418,10 +420,8 @@ where
     }
 }
 
-impl<'a, O, P> TryInto<(Option<Notification>, Option<Packet<'static>>)> for PacketDecoder<'a, O, P>
+impl<'a, P> TryInto<(Option<Notification>, Option<Packet<'static>>)> for PacketDecoder<'a, P>
 where
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
     P: PublishPayload + Clone,
 {
     type Error = EventError;
@@ -443,10 +443,8 @@ where
     }
 }
 
-impl<'a, O, P> Drop for PacketDecoder<'a, O, P>
+impl<'a, P> Drop for PacketDecoder<'a, P>
 where
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
     P: PublishPayload + Clone,
 {
     fn drop(&mut self) {
@@ -469,7 +467,7 @@ mod tests {
     use crate::PublishRequest;
     use embedded_hal::timer::CountDown;
     use heapless::{consts, spsc::Queue, String, Vec};
-    use mqttrs::{Connack, ConnectReturnCode};
+    use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
 
     #[derive(Debug)]
     struct CdMock {
@@ -566,6 +564,89 @@ mod tests {
         fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn success_receive_multiple_packets() {
+        let mut state = MqttState::<Vec<u8, consts::U10>>::new();
+        let mut rx_buf = PacketBuffer::new();
+        let connack = Connack {
+            session_present: false,
+            code: ConnectReturnCode::Accepted,
+        };
+        let publish = Publish {
+            dup: false,
+            qospid: QosPid::AtLeastOnce(Pid::new()),
+            retain: false,
+            topic_name: "test/topic",
+            payload: &[0xff; 1003],
+        };
+
+        let connack_len = encode_slice(&Packet::from(connack), rx_buf.buffer()).unwrap();
+        rx_buf.range.end += connack_len;
+        let publish_len = encode_slice(&Packet::from(publish.clone()), rx_buf.buffer()).unwrap();
+        rx_buf.range.end += publish_len;
+        assert_eq!(rx_buf.range.end, rx_buf.buffer.capacity());
+
+        // Decode the first Connack packet on the Handshake state.
+        state.connection_status = MqttConnectionStatus::Handshake;
+        let (n, p) = PacketDecoder::new(&mut state, &mut rx_buf)
+            .try_into()
+            .unwrap();
+        assert_eq!(n, Some(Notification::ConnAck));
+        assert_eq!(p, None);
+
+        // Decode the second Publish packet on the Connected state.
+        assert_eq!(state.connection_status, MqttConnectionStatus::Connected);
+        let (n, p) = PacketDecoder::new(&mut state, &mut rx_buf)
+            .try_into()
+            .unwrap();
+        let publish_notification = match n {
+            Some(Notification::Publish(p)) => p,
+            _ => panic!(),
+        };
+        assert_eq!(&publish_notification.payload, publish.payload);
+        assert_eq!(p, Some(Packet::Puback(Pid::default())));
+        assert_eq!(rx_buf.range.end, 0);
+        assert!((0..1024).all(|i| rx_buf.buffer[i] == 0));
+    }
+
+    #[test]
+    fn failure_receive_multiple_packets() {
+        let mut state = MqttState::<Vec<u8, consts::U10>>::new();
+        let mut rx_buf = PacketBuffer::new();
+        let connack_malformed = Connack {
+            session_present: false,
+            code: ConnectReturnCode::Accepted,
+        };
+        let publish = Publish {
+            dup: false,
+            qospid: QosPid::AtLeastOnce(Pid::new()),
+            retain: false,
+            topic_name: "test/topic",
+            payload: &[0xff; 1003],
+        };
+
+        let connack_malformed_len =
+            encode_slice(&Packet::from(connack_malformed), rx_buf.buffer()).unwrap();
+        rx_buf.buffer()[3] = 6; // An invalid connect return code.
+        rx_buf.range.end += connack_malformed_len;
+        let publish_len = encode_slice(&Packet::from(publish.clone()), rx_buf.buffer()).unwrap();
+        rx_buf.range.end += publish_len;
+        assert_eq!(rx_buf.range.end, rx_buf.buffer.capacity());
+
+        // When a packet is malformed, we cannot tell its length. The decoder
+        // discards the entire buffer.
+        state.connection_status = MqttConnectionStatus::Handshake;
+        match PacketDecoder::new(&mut state, &mut rx_buf).try_into() {
+            Ok((_, _)) => panic!(),
+            Err(e) => {
+                assert_eq!(e, EventError::Network(NetworkError::Read))
+            }
+        }
+        assert_eq!(state.connection_status, MqttConnectionStatus::Handshake);
+        assert_eq!(rx_buf.range.end, 0);
+        assert!((0..1024).all(|i| rx_buf.buffer[i] == 0));
     }
 
     #[test]
