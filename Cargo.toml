@@ -19,7 +19,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 embedded-hal = { version = "1.0.0-alpha.4" }
-embedded-nal = "0.2.0"
+embedded-nal = { version = "0.2.0", features = ["tls"] }
 nb = "^1"
 heapless = { version = "^0.5.5", features = ["serde"] }
 no-std-net = "0.4.0"
@@ -40,3 +40,7 @@ defmt-debug = []
 defmt-info = []
 defmt-warn = []
 defmt-error = []
+
+
+[patch.crates-io]
+embedded-nal = { path = "../embedded-nal" }

@@ -1,4 +1,4 @@
-use embedded_nal::{AddrType, Dns, SocketAddr, TcpClient};
+use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
 use heapless::{consts, String};
 use no_std_net::IpAddr;
 use std::io::{ErrorKind, Read, Write};
@@ -32,7 +32,7 @@ impl Dns for Network {
     }
 }
 
-impl TcpClient for Network {
+impl TcpClientStack for Network {
     type Error = ();
     type TcpSocket = TcpSocket;
 

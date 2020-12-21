@@ -7,18 +7,18 @@ mod state;
 
 use core::convert::TryFrom;
 use core::ops::RangeTo;
-use embedded_nal::{AddrType, Dns, TcpClient};
+use embedded_nal::{tls::Tls, TcpClientStack};
 use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Pid, Suback};
-use no_std_net::SocketAddr;
 use state::{MqttState, StateError};
+use options::MqttOptions;
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
 pub use mqttrs::{
     Connect, Packet, Protocol, Publish, QoS, QosPid, Subscribe, SubscribeReturnCodes,
     SubscribeTopic, Unsubscribe,
 };
-pub use options::{Broker, MqttOptions};
+pub use options::MqttOptionsBuilder;
 pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
 #[derive(Debug, PartialEq)]
@@ -97,7 +97,7 @@ impl From<StateError> for EventError {
     }
 }
 
-pub struct MqttEvent<'a, 'b, L, S, O, P>
+pub struct MqttEvent<'a, 'b, L, S, O, P, T>
 where
     L: ArrayLength<Request<P>>,
     P: PublishPayload,
@@ -105,7 +105,7 @@ where
     /// Current state of the connection
     pub state: MqttState<O, P>,
     /// Options of the current mqtt connection
-    pub options: MqttOptions<'b>,
+    pub options: MqttOptions<'b, T>,
     /// Network socket
     pub socket: Option<S>,
     /// Request stream
@@ -114,7 +114,7 @@ where
     rx_buf: PacketBuffer,
 }
 
-impl<'a, 'b, L, S, O, P> MqttEvent<'a, 'b, L, S, O, P>
+impl<'a, 'b, L, S, O, P, T> MqttEvent<'a, 'b, L, S, O, P, T>
 where
     L: ArrayLength<Request<P>>,
     O: embedded_hal::timer::CountDown,
@@ -124,7 +124,7 @@ where
     pub fn new(
         requests: spsc::Consumer<'a, Request<P>, L, u8>,
         outgoing_timer: O,
-        options: MqttOptions<'b>,
+        options: MqttOptions<'b, T>,
     ) -> Self {
         MqttEvent {
             state: MqttState::new(outgoing_timer),
@@ -136,7 +136,7 @@ where
         }
     }
 
-    pub fn connect<N: Dns + TcpClient<TcpSocket = S>>(
+    pub fn connect<N: Tls<TlsConnector = T> + TcpClientStack<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<bool, EventError> {
@@ -165,7 +165,7 @@ where
         }
     }
 
-    pub fn yield_event<N: TcpClient<TcpSocket = S>>(
+    pub fn yield_event<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<Notification, ()> {
@@ -214,7 +214,7 @@ where
         }
     }
 
-    pub fn send<'d, N: TcpClient<TcpSocket = S>>(
+    pub fn send<'d, N: TcpClientStack<TcpSocket = S>>(
         &mut self,
         network: &N,
         pkt: Packet<'d>,
@@ -236,7 +236,7 @@ where
         }
     }
 
-    pub fn receive_notification<N: TcpClient<TcpSocket = S>>(
+    pub fn receive_notification<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
@@ -260,7 +260,7 @@ where
         }
     }
 
-    pub fn receive<N: TcpClient<TcpSocket = S>>(
+    pub fn receive<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> Result<Option<Packet<'_>>, EventError> {
@@ -274,34 +274,34 @@ where
         })
     }
 
-    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> Result<(heapless::String<heapless::consts::U256>, SocketAddr), EventError> {
-        match self.options.broker() {
-            (Broker::Hostname(h), p) => {
-                let socket_addr = SocketAddr::new(
-                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
-                        defmt::info!("Failed to resolve IP!");
-                        EventError::Network(NetworkError::DnsLookupFailed)
-                    })?,
-                    p,
-                );
-                Ok((heapless::String::from(h), socket_addr))
-            }
-            (Broker::IpAddr(ip), p) => {
-                let socket_addr = SocketAddr::new(ip, p);
-                let domain = network.gethostbyaddr(ip).map_err(|_e| {
-                    defmt::info!("Failed to resolve hostname!");
-                    EventError::Network(NetworkError::DnsLookupFailed)
-                })?;
+    // fn lookup_host<N: Dns + TcpClientStack<TcpSocket = S>>(
+    //     &mut self,
+    //     network: &N,
+    // ) -> Result<(heapless::String<heapless::consts::U256>, SocketAddr), EventError> {
+    //     match self.options.broker() {
+    //         (Broker::Hostname(h), p) => {
+    //             let socket_addr = SocketAddr::new(
+    //                 network.get_host_by_name(h, AddrType::IPv4).map_err(|_e| {
+    //                     defmt::info!("Failed to resolve IP!");
+    //                     EventError::Network(NetworkError::DnsLookupFailed)
+    //                 })?,
+    //                 p,
+    //             );
+    //             Ok((heapless::String::from(h), socket_addr))
+    //         }
+    //         (Broker::IpAddr(ip), p) => {
+    //             let socket_addr = SocketAddr::new(ip, p);
+    //             let domain = network.get_host_by_addr(ip).map_err(|_e| {
+    //                 defmt::info!("Failed to resolve hostname!");
+    //                 EventError::Network(NetworkError::DnsLookupFailed)
+    //             })?;
 
-                Ok((domain, socket_addr))
-            }
-        }
-    }
+    //             Ok((domain, socket_addr))
+    //         }
+    //     }
+    // }
 
-    fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
+    fn network_connect<N: Tls<TlsConnector = T> + TcpClientStack<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> Result<(), EventError> {
@@ -323,45 +323,41 @@ where
             .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
             .into();
 
-        match self.lookup_host(network) {
-            Ok((_hostname, socket_addr)) => {
-                Some(
-                    network
-                        .connect(
-                            self.socket.as_mut().unwrap_or_else(|| unreachable!()),
-                            socket_addr,
-                        )
-                        .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
-                );
-
-                // if let Some(root_ca) = self.options.ca() {
-                //     // Add root CA
-                // };
-
-                // if let Some((certificate, private_key)) = self.options.client_auth() {
-                //     // Enable SSL for self.socket, with broker (hostname)
-                // };
-
-                defmt::debug!("Network connected!");
-
-                Ok(())
-            }
+        match if let Some(tls_connector) = self.options.tls_connector() {
+            nb::block!(Tls::connect(
+                network,
+                self.socket.as_mut().unwrap_or_else(|| unreachable!()),
+                self.options.broker(),
+                tls_connector,
+            ))
+            .map_err(|_| EventError::Network(NetworkError::SocketConnect))
+        } else {
+            nb::block!(TcpClientStack::connect(
+                network,
+                self.socket.as_mut().unwrap_or_else(|| unreachable!()),
+                self.options.broker(),
+            ))
+            .map_err(|_| EventError::Network(NetworkError::SocketConnect))
+        } {
             Err(e) => {
-                // Make sure to cleanup socket, in case we fail DNS lookup for some reason
                 self.disconnect(network);
-                Err(e)
+                Err(e.into())
+            }
+            Ok(_) => {
+                defmt::debug!("Network connected!");
+                Ok(())
             }
         }
     }
 
-    pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
+    pub fn disconnect<N: TcpClientStack<TcpSocket = S>>(&mut self, network: &N) {
         self.state.connection_status = state::MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.socket.take() {
             network.close(socket).ok();
         }
     }
 
-    fn mqtt_connect<N: TcpClient<TcpSocket = S>>(
+    fn mqtt_connect<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<bool, EventError> {
@@ -429,7 +425,7 @@ where
 }
 
 // A placeholder that keeps a buffer and constructs a packet incrementally.
-// Given that underlying TcpClient throws WouldBlock in a non-blocking manner,
+// Given that underlying TcpClientStack throws WouldBlock in a non-blocking manner,
 // its packet construction won't block either.
 struct PacketBuffer {
     range: RangeTo<usize>,
@@ -472,7 +468,7 @@ impl PacketBuffer {
         network: &N,
     ) -> nb::Result<Option<Packet<'_>>, EventError>
     where
-        N: TcpClient<TcpSocket = S>,
+        N: TcpClientStack<TcpSocket = S>,
     {
         let buffer = self.buffer();
         let len = network
@@ -485,8 +481,11 @@ impl PacketBuffer {
 
 #[cfg(test)]
 mod tests {
+    use crate::options::MqttOptionsBuilder;
+
     use super::*;
     use embedded_hal::timer::CountDown;
+    use embedded_nal::{HostSocketAddr, Ipv4Addr};
     use heapless::{consts, spsc::Queue, String, Vec};
     use mqttrs::{Connack, ConnectReturnCode};
 
@@ -515,25 +514,7 @@ mod tests {
         pub should_fail_write: bool,
     }
 
-    impl Dns for MockNetwork {
-        type Error = ();
-
-        fn gethostbyname(
-            &self,
-            _hostname: &str,
-            _addr_type: embedded_nal::AddrType,
-        ) -> Result<embedded_nal::IpAddr, Self::Error> {
-            unimplemented!()
-        }
-        fn gethostbyaddr(
-            &self,
-            _addr: embedded_nal::IpAddr,
-        ) -> Result<heapless::String<consts::U256>, Self::Error> {
-            unimplemented!()
-        }
-    }
-
-    impl TcpClient for MockNetwork {
+    impl TcpClientStack for MockNetwork {
         type TcpSocket = ();
         type Error = ();
 
@@ -544,7 +525,7 @@ mod tests {
         fn connect(
             &self,
             _socket: &mut Self::TcpSocket,
-            _remote: embedded_nal::SocketAddr,
+            _remote: HostSocketAddr,
         ) -> nb::Result<(), Self::Error> {
             Ok(())
         }
@@ -587,6 +568,21 @@ mod tests {
         }
     }
 
+    impl Tls for MockNetwork {
+        type Error = ();
+
+        type TlsConnector = ();
+
+        fn connect(
+            &self,
+            socket: &mut <Self as TcpClientStack>::TcpSocket,
+            remote: HostSocketAddr,
+            connector: &Self::TlsConnector,
+        ) -> nb::Result<(), <Self as Tls>::Error> {
+            Ok(())
+        }
+    }
+
     #[test]
     #[ignore]
     fn retry_behaviour() {
@@ -599,10 +595,14 @@ mod tests {
         };
 
         let (_p, c) = unsafe { Q.split() };
-        let mut event = MqttEvent::<_, (), _, _>::new(
+        let mut event = MqttEvent::<_, (), _, _, ()>::new(
             c,
             CdMock { time: 0 },
-            MqttOptions::new("client", Broker::Hostname(""), 8883),
+            MqttOptionsBuilder::new(
+                "client",
+                HostSocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 8883),
+            )
+            .build(),
         );
 
         event
