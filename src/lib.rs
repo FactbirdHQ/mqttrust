@@ -8,7 +8,7 @@ mod state;
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
 use core::convert::TryFrom;
-pub use eventloop::EventLoop;
+pub use eventloop::{EventLoop, Session, TcpSession};
 use heapless::{consts, String, Vec};
 use mqttrs::Pid;
 pub use mqttrs::{

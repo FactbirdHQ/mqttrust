@@ -2,11 +2,59 @@ use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
 use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
-use core::convert::TryInto;
+use core::convert::{AsMut, TryInto};
 use core::ops::RangeTo;
 use embedded_nal::TcpClient;
 use heapless::{consts, spsc, ArrayLength, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
+
+/// Encapsulate application-layer transaction. For example, an implementer can
+/// be a raw TCP traffic, TLS or WebSocket. Typically `T` implements `TcpClient`
+/// and `Self` would be a newtype wrapping `TcpClient::TcpSocket`. The
+/// underlying socket must be connected to a broker in advance and ready for
+/// read/write, e.g., having done SSL/TLS handshake if it is a TLS socket. It is
+/// also a user's responsibility to disconnect it on abort notification. A
+/// buffer is supposed to contain contiguous MQTT payloads encoded without
+/// encryption.
+pub trait Session<T> {
+    /// An error representing transaction failures.
+    type Error;
+    /// Non-blocking read from the underlying socket.
+    fn try_read(&mut self, stack: &T, buffer: &mut [u8]) -> nb::Result<usize, Self::Error>;
+    /// Non-blocking write to the underlying socket.
+    fn try_write(&mut self, stack: &T, buffer: &[u8]) -> nb::Result<usize, Self::Error>;
+}
+
+/// A newtype wrapping a socket of type `S`, given another type `T` of
+/// `TcpClient<TcpSocket = S>`.
+pub struct TcpSession<S>(S);
+
+impl<S> TcpSession<S> {
+    /// Releases the underlying socket.
+    pub fn free(self) -> S {
+        self.0
+    }
+}
+
+impl<S> From<S> for TcpSession<S> {
+    fn from(socket: S) -> Self {
+        Self(socket)
+    }
+}
+
+impl<T, S> Session<T> for TcpSession<S>
+where
+    T: TcpClient<TcpSocket = S>,
+{
+    type Error = <T as TcpClient>::Error;
+    fn try_read(&mut self, stack: &T, buffer: &mut [u8]) -> nb::Result<usize, Self::Error> {
+        stack.receive(&mut self.0, buffer)
+    }
+
+    fn try_write(&mut self, stack: &T, buffer: &[u8]) -> nb::Result<usize, Self::Error> {
+        stack.send(&mut self.0, buffer)
+    }
+}
 
 pub struct EventLoop<'a, 'b, L, O, P>
 where
@@ -63,9 +111,9 @@ where
         }
     }
 
-    pub fn yield_event<N, S>(&mut self, network: &N, socket: &mut S) -> nb::Result<Notification, ()>
+    pub fn yield_event<T, S>(&mut self, stack: &T, session: &mut S) -> nb::Result<Notification, ()>
     where
-        N: TcpClient<TcpSocket = S>,
+        S: Session<T>,
     {
         let packet_buf = &mut [0u8; 1024];
         let o = if self.should_handle_request() {
@@ -80,20 +128,20 @@ where
                 .handle_outgoing_packet(Packet::Pingreq)
                 .map_err(EventError::from)
         } else {
-            self.receive(network, socket)
+            self.receive(stack, session)
         };
 
         let (notification, outpacket) = match o {
             Ok((n, p)) => (n, p),
             Err(e) => {
-                defmt::debug!("Got a state error, aborting");
+                defmt::debug!("Got an error while handling the incoming packet.");
                 return Ok(Notification::Abort(e));
             }
         };
 
         if let Some(p) = outpacket {
-            if let Err(e) = self.send(network, socket, p) {
-                defmt::debug!("Got a state error, aborting");
+            if let Err(e) = self.send(stack, session, p) {
+                defmt::debug!("Failed to send an outgoing packet.");
                 return Ok(Notification::Abort(e));
             } else {
                 self.last_outgoing_timer
@@ -109,14 +157,14 @@ where
         }
     }
 
-    pub fn send<'d, N, S>(
+    pub fn send<'d, T, S>(
         &mut self,
-        network: &N,
-        socket: &mut S,
+        stack: &T,
+        session: &mut S,
         pkt: Packet<'d>,
     ) -> Result<usize, EventError>
     where
-        N: TcpClient<TcpSocket = S>,
+        S: Session<T>,
     {
         let capacity = self.tx_buf.capacity();
         self.tx_buf.clear();
@@ -124,21 +172,21 @@ where
             .resize(capacity, 0x00u8)
             .unwrap_or_else(|()| unreachable!("Input length equals to the current capacity."));
         let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
-        nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
+        nb::block!(session.try_write(stack, &self.tx_buf[..size])).map_err(|_| {
             defmt::error!("[send] NetworkError::Write");
             EventError::Network(NetworkError::Write)
         })
     }
 
-    pub fn receive<N, S>(
+    pub fn receive<T, S>(
         &mut self,
-        network: &N,
-        socket: &mut S,
+        stack: &T,
+        session: &mut S,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), EventError>
     where
-        N: TcpClient<TcpSocket = S>,
+        S: Session<T>,
     {
-        match self.rx_buf.receive(socket, network) {
+        match self.rx_buf.receive(stack, session) {
             Err(nb::Error::WouldBlock) => return Ok((None, None)),
             Err(_) => return Err(EventError::Network(NetworkError::Read)),
             _ => {}
@@ -147,9 +195,9 @@ where
         PacketDecoder::new(&mut self.state, &mut self.rx_buf).try_into()
     }
 
-    pub fn connect<N, S>(&mut self, network: &N, socket: &mut S) -> nb::Result<bool, EventError>
+    pub fn connect<T, S>(&mut self, stack: &T, session: &mut S) -> nb::Result<bool, EventError>
     where
-        N: TcpClient<TcpSocket = S>,
+        S: Session<T>,
     {
         match self.state.connection_status {
             MqttConnectionStatus::Connected => Ok(false),
@@ -171,7 +219,7 @@ where
                 };
 
                 // mqtt connection with timeout
-                match self.send(network, socket, connect.into()) {
+                match self.send(stack, session, connect.into()) {
                     Ok(_) => {
                         self.state
                             .handle_outgoing_connect()
@@ -180,7 +228,7 @@ where
                         self.last_outgoing_timer.try_start(50000).ok();
                     }
                     Err(e) => {
-                        defmt::debug!("Got a send error, aborting");
+                        defmt::debug!("Failed to send a connect packet.");
                         return Err(nb::Error::Other(e));
                     }
                 }
@@ -193,7 +241,7 @@ where
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.receive(network, socket)
+                self.receive(stack, session)
                     .map_err(|e| nb::Error::Other(e.into()))
                     .and_then(|(n, p)| {
                         if n.is_none() && p.is_none() {
@@ -251,13 +299,13 @@ impl PacketBuffer {
 
     /// Receives bytes from a network socket in non-blocking mode. If incoming
     /// bytes found, the range gets extended covering them.
-    fn receive<N, S>(&mut self, socket: &mut S, network: &N) -> nb::Result<(), EventError>
+    fn receive<T, S>(&mut self, stack: &T, session: &mut S) -> nb::Result<(), EventError>
     where
-        N: TcpClient<TcpSocket = S>,
+        S: Session<T>,
     {
         let buffer = self.buffer();
-        let len = network
-            .receive(socket, buffer)
+        let len = session
+            .try_read(stack, buffer)
             .map_err(|e| e.map(|_| EventError::Network(NetworkError::Read)))?;
         self.range.end += len;
         Ok(())
