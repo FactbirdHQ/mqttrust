@@ -1,16 +1,14 @@
-use crate::options::Broker;
 use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
 use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
 use core::convert::TryInto;
 use core::ops::RangeTo;
-use embedded_nal::{AddrType, Dns, TcpClient};
+use embedded_nal::TcpClient;
 use heapless::{consts, spsc, ArrayLength, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
-use no_std_net::SocketAddr;
 
-pub struct EventLoop<'a, 'b, L, S, O, P>
+pub struct EventLoop<'a, 'b, L, O, P>
 where
     L: ArrayLength<Request<P>>,
     P: PublishPayload,
@@ -21,15 +19,13 @@ where
     pub last_outgoing_timer: O,
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
-    /// Network socket
-    pub socket: Option<S>,
     /// Request stream
     pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
     tx_buf: Vec<u8, consts::U1024>,
     rx_buf: PacketBuffer,
 }
 
-impl<'a, 'b, L, S, O, P> EventLoop<'a, 'b, L, S, O, P>
+impl<'a, 'b, L, O, P> EventLoop<'a, 'b, L, O, P>
 where
     L: ArrayLength<Request<P>>,
     O: embedded_hal::timer::CountDown,
@@ -45,20 +41,10 @@ where
             state: MqttState::new(),
             last_outgoing_timer: outgoing_timer,
             options,
-            socket: None,
             requests,
             tx_buf: Vec::new(),
             rx_buf: PacketBuffer::new(),
         }
-    }
-
-    pub fn connect<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> nb::Result<bool, EventError> {
-        // connect to the broker
-        self.network_connect(network)?;
-        self.mqtt_connect(network)
     }
 
     fn should_handle_request(&mut self) -> bool {
@@ -77,10 +63,10 @@ where
         }
     }
 
-    pub fn yield_event<N: TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> nb::Result<Notification, ()> {
+    pub fn yield_event<N, S>(&mut self, network: &N, socket: &mut S) -> nb::Result<Notification, ()>
+    where
+        N: TcpClient<TcpSocket = S>,
+    {
         let packet_buf = &mut [0u8; 1024];
         let o = if self.should_handle_request() {
             // Handle requests
@@ -94,22 +80,20 @@ where
                 .handle_outgoing_packet(Packet::Pingreq)
                 .map_err(EventError::from)
         } else {
-            self.receive(network)
+            self.receive(network, socket)
         };
 
         let (notification, outpacket) = match o {
             Ok((n, p)) => (n, p),
             Err(e) => {
-                defmt::debug!("Disconnecting from handling error!");
-                self.disconnect(network);
+                defmt::debug!("Got a state error, aborting");
                 return Ok(Notification::Abort(e));
             }
         };
 
         if let Some(p) = outpacket {
-            if let Err(e) = self.send(network, p) {
-                defmt::debug!("Disconnecting from send error!");
-                self.disconnect(network);
+            if let Err(e) = self.send(network, socket, p) {
+                defmt::debug!("Got a state error, aborting");
                 return Ok(Notification::Abort(e));
             } else {
                 self.last_outgoing_timer
@@ -125,37 +109,35 @@ where
         }
     }
 
-    pub fn send<'d, N: TcpClient<TcpSocket = S>>(
+    pub fn send<'d, N, S>(
         &mut self,
         network: &N,
+        socket: &mut S,
         pkt: Packet<'d>,
-    ) -> Result<usize, EventError> {
-        match self.socket {
-            Some(ref mut socket) => {
-                let capacity = self.tx_buf.capacity();
-                self.tx_buf.clear();
-                self.tx_buf.resize(capacity, 0x00u8).unwrap_or_else(|()| {
-                    unreachable!("Input length equals to the current capacity.")
-                });
-                let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
-                nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
-                    defmt::error!("[send] NetworkError::Write");
-                    EventError::Network(NetworkError::Write)
-                })
-            }
-            _ => Err(EventError::Network(NetworkError::NoSocket)),
-        }
+    ) -> Result<usize, EventError>
+    where
+        N: TcpClient<TcpSocket = S>,
+    {
+        let capacity = self.tx_buf.capacity();
+        self.tx_buf.clear();
+        self.tx_buf
+            .resize(capacity, 0x00u8)
+            .unwrap_or_else(|()| unreachable!("Input length equals to the current capacity."));
+        let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
+        nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
+            defmt::error!("[send] NetworkError::Write");
+            EventError::Network(NetworkError::Write)
+        })
     }
 
-    pub fn receive<N: TcpClient<TcpSocket = S>>(
+    pub fn receive<N, S>(
         &mut self,
         network: &N,
-    ) -> Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
-        let socket = self
-            .socket
-            .as_mut()
-            .ok_or(EventError::Network(NetworkError::NoSocket))?;
-
+        socket: &mut S,
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), EventError>
+    where
+        N: TcpClient<TcpSocket = S>,
+    {
         match self.rx_buf.receive(socket, network) {
             Err(nb::Error::WouldBlock) => return Ok((None, None)),
             Err(_) => return Err(EventError::Network(NetworkError::Read)),
@@ -165,89 +147,10 @@ where
         PacketDecoder::new(&mut self.state, &mut self.rx_buf).try_into()
     }
 
-    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> Result<(heapless::String<heapless::consts::U256>, SocketAddr), EventError> {
-        match self.options.broker() {
-            (Broker::Hostname(h), p) => {
-                let socket_addr = SocketAddr::new(
-                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
-                        defmt::info!("Failed to resolve IP!");
-                        EventError::Network(NetworkError::DnsLookupFailed)
-                    })?,
-                    p,
-                );
-                Ok((heapless::String::from(h), socket_addr))
-            }
-            (Broker::IpAddr(ip), p) => {
-                let socket_addr = SocketAddr::new(ip, p);
-                let domain = network.gethostbyaddr(ip).map_err(|_e| {
-                    defmt::info!("Failed to resolve hostname!");
-                    EventError::Network(NetworkError::DnsLookupFailed)
-                })?;
-
-                Ok((domain, socket_addr))
-            }
-        }
-    }
-
-    fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> Result<(), EventError> {
-        if let Some(socket) = &self.socket {
-            match network.is_connected(socket) {
-                Ok(true) => return Ok(()),
-                Err(_e) => {
-                    self.socket = None;
-                    return Err(EventError::Network(NetworkError::SocketClosed));
-                }
-                Ok(false) => {}
-            }
-        };
-
-        self.state.connection_status = MqttConnectionStatus::Disconnected;
-
-        self.socket = network
-            .socket()
-            .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
-            .into();
-
-        match self.lookup_host(network) {
-            Ok((_hostname, socket_addr)) => {
-                Some(
-                    network
-                        .connect(
-                            self.socket.as_mut().unwrap_or_else(|| unreachable!()),
-                            socket_addr,
-                        )
-                        .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
-                );
-
-                defmt::debug!("Network connected!");
-
-                Ok(())
-            }
-            Err(e) => {
-                // Make sure to cleanup socket, in case we fail DNS lookup for some reason
-                self.disconnect(network);
-                Err(e)
-            }
-        }
-    }
-
-    pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
-        self.state.connection_status = MqttConnectionStatus::Disconnected;
-        if let Some(socket) = self.socket.take() {
-            network.close(socket).ok();
-        }
-    }
-
-    fn mqtt_connect<N: TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> nb::Result<bool, EventError> {
+    pub fn connect<N, S>(&mut self, network: &N, socket: &mut S) -> nb::Result<bool, EventError>
+    where
+        N: TcpClient<TcpSocket = S>,
+    {
         match self.state.connection_status {
             MqttConnectionStatus::Connected => Ok(false),
             MqttConnectionStatus::Disconnected => {
@@ -268,7 +171,7 @@ where
                 };
 
                 // mqtt connection with timeout
-                match self.send(network, connect.into()) {
+                match self.send(network, socket, connect.into()) {
                     Ok(_) => {
                         self.state
                             .handle_outgoing_connect()
@@ -277,8 +180,7 @@ where
                         self.last_outgoing_timer.try_start(50000).ok();
                     }
                     Err(e) => {
-                        defmt::debug!("Disconnecting from send error!");
-                        self.disconnect(network);
+                        defmt::debug!("Got a send error, aborting");
                         return Err(nb::Error::Other(e));
                     }
                 }
@@ -287,12 +189,11 @@ where
             }
             MqttConnectionStatus::Handshake => {
                 if self.last_outgoing_timer.try_wait().is_ok() {
-                    defmt::debug!("Disconnecting from handshake timeout!");
-                    self.disconnect(network);
+                    defmt::debug!("Handshake timed out");
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.receive(network)
+                self.receive(network, socket)
                     .map_err(|e| nb::Error::Other(e.into()))
                     .and_then(|(n, p)| {
                         if n.is_none() && p.is_none() {

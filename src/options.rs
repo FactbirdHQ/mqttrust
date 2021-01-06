@@ -1,33 +1,4 @@
 use mqttrs::LastWill;
-use no_std_net::{IpAddr, Ipv4Addr};
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Broker<'a> {
-    Hostname(&'a str),
-    IpAddr(IpAddr),
-}
-
-impl<'a> From<&'a str> for Broker<'a> {
-    fn from(s: &'a str) -> Self {
-        Broker::Hostname(s)
-    }
-}
-
-impl<'a> From<IpAddr> for Broker<'a> {
-    fn from(ip: IpAddr) -> Self {
-        Broker::IpAddr(ip)
-    }
-}
-
-impl<'a> From<Ipv4Addr> for Broker<'a> {
-    fn from(ip: Ipv4Addr) -> Self {
-        Broker::IpAddr(ip.into())
-    }
-}
-
-type Certificate<'a> = &'a [u8];
-type PrivateKey<'a> = &'a [u8];
-type Password<'a> = &'a [u8];
 
 /// Options to configure the behaviour of mqtt connection
 ///
@@ -36,26 +7,15 @@ type Password<'a> = &'a [u8];
 /// - 'b: The lifetime of the packet fields, backed by a slice buffer
 #[derive(Clone, Debug)]
 pub struct MqttOptions<'a> {
-    /// broker address that you want to connect to
-    broker_addr: Broker<'a>,
-    /// broker port
-    port: u16,
     /// keep alive time to send pingreq to broker when the connection is idle
     keep_alive_ms: u32,
     /// clean (or) persistent session
     clean_session: bool,
     /// client identifier
     client_id: &'a str,
-    /// certificate authority certificate
-    ca: Option<&'a [u8]>,
-    /// tls client_authentication
-    client_auth: Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)>,
-    /// alpn settings
-    // alpn: Option<Vec<Vec<u8>>>,
     /// username and password
     credentials: Option<(&'a str, &'a [u8])>,
     /// Minimum delay time between consecutive outgoing packets
-    // throttle: Duration,
     /// maximum number of outgoing inflight messages
     inflight: usize,
     /// Last will that will be issued on unexpected disconnect
@@ -64,30 +24,19 @@ pub struct MqttOptions<'a> {
 
 impl<'a> MqttOptions<'a> {
     /// New mqtt options
-    pub fn new(id: &'a str, broker: Broker<'a>, port: u16) -> MqttOptions<'a> {
+    pub fn new(id: &'a str) -> MqttOptions<'a> {
         if id.starts_with(' ') || id.is_empty() {
             panic!("Invalid client id")
         }
 
         MqttOptions {
-            broker_addr: broker,
-            port,
             keep_alive_ms: 60_000,
             clean_session: true,
             client_id: id,
-            ca: None,
-            client_auth: None,
-            // alpn: None,
             credentials: None,
-            // throttle: Duration::from_micros(0),
             inflight: 3,
             last_will: None,
         }
-    }
-
-    /// Broker address
-    pub fn broker(&self) -> (Broker, u16) {
-        (self.broker_addr.clone(), self.port)
     }
 
     pub fn set_last_will(self, will: LastWill<'a>) -> Self {
@@ -100,44 +49,6 @@ impl<'a> MqttOptions<'a> {
     pub fn last_will(&self) -> Option<LastWill<'a>> {
         self.last_will.clone()
     }
-
-    pub fn set_ca(self, ca: &'a [u8]) -> Self {
-        Self {
-            ca: Some(ca),
-            ..self
-        }
-    }
-
-    pub fn ca(&self) -> Option<&[u8]> {
-        self.ca
-    }
-
-    pub fn set_client_auth(
-        self,
-        cert: Certificate<'a>,
-        key: PrivateKey<'a>,
-        password: Option<Password<'a>>,
-    ) -> Self {
-        Self {
-            client_auth: Some((cert, key, password)),
-            ..self
-        }
-    }
-
-    pub fn client_auth(&self) -> Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)> {
-        self.client_auth
-    }
-
-    // pub fn set_alpn(self, alpn: Vec<Vec<u8>>) -> Self {
-    //     Self {
-    //         alpn: Some(alpn),
-    //         ..self
-    //     }
-    // }
-
-    // pub fn alpn(&self) -> Option<Vec<Vec<u8>>> {
-    //     self.alpn.clone()
-    // }
 
     /// Set number of seconds after which client should ping the broker
     /// if there is no other data exchange
