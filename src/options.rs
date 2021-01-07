@@ -136,55 +136,30 @@ impl<'a> MqttOptions<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::{Ipv4Addr, MqttOptions};
-    use embedded_nal::{IpAddr, Ipv6Addr};
+    use super::MqttOptions;
     use mqttrs::LastWill;
 
     #[test]
     #[should_panic]
     fn client_id_starts_with_space() {
-        let _mqtt_opts = MqttOptions::new(" client_a", Ipv4Addr::new(127, 0, 0, 1).into(), 1883)
-            .set_clean_session(true);
+        let _mqtt_opts = MqttOptions::new(" client_a").set_clean_session(true);
     }
 
     #[test]
     #[should_panic]
     fn no_client_id() {
-        let _mqtt_opts =
-            MqttOptions::new("", Ipv4Addr::localhost().into(), 1883).set_clean_session(true);
-    }
-
-    #[test]
-    fn broker() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
-        assert_eq!(opts.broker_addr, Ipv4Addr::localhost().into());
-        assert_eq!(opts.port, 1883);
-        assert_eq!(opts.broker(), (Ipv4Addr::localhost().into(), 1883));
-        assert_eq!(
-            MqttOptions::new("client_a", "localhost".into(), 1883).broker_addr,
-            "localhost".into()
-        );
-        assert_eq!(
-            MqttOptions::new("client_a", IpAddr::V4(Ipv4Addr::localhost()).into(), 1883)
-                .broker_addr,
-            IpAddr::V4(Ipv4Addr::localhost()).into()
-        );
-        assert_eq!(
-            MqttOptions::new("client_a", IpAddr::V6(Ipv6Addr::localhost()).into(), 1883)
-                .broker_addr,
-            IpAddr::V6(Ipv6Addr::localhost()).into()
-        );
+        let _mqtt_opts = MqttOptions::new("").set_clean_session(true);
     }
 
     #[test]
     fn client_id() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.client_id(), "client_a");
     }
 
     #[test]
     fn inflight() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.inflight, 3);
         assert_eq!(opts.set_inflight(5).inflight(), 5);
     }
@@ -192,45 +167,14 @@ mod test {
     #[test]
     #[should_panic]
     fn zero_inflight() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.inflight, 3);
         assert_eq!(opts.set_inflight(0).inflight(), 5);
     }
 
     #[test]
-    fn client_auth() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
-        assert_eq!(opts.client_auth, None);
-        assert_eq!(
-            opts.clone()
-                .set_client_auth(b"Certificate", b"PrivateKey", None)
-                .client_auth(),
-            Some((&b"Certificate"[..], &b"PrivateKey"[..], None))
-        );
-        assert_eq!(
-            opts.set_client_auth(b"Certificate", b"PrivateKey", Some(b"Password"))
-                .client_auth(),
-            Some((
-                &b"Certificate"[..],
-                &b"PrivateKey"[..],
-                Some(&b"Password"[..])
-            ))
-        );
-    }
-
-    #[test]
-    fn ca() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
-        assert_eq!(opts.ca, None);
-        assert_eq!(
-            opts.set_ca(b"My Certificate Authority").ca(),
-            Some(&b"My Certificate Authority"[..])
-        );
-    }
-
-    #[test]
     fn keep_alive_ms() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.keep_alive_ms, 60_000);
         assert_eq!(opts.set_keep_alive(120).keep_alive_ms(), 120_000);
     }
@@ -238,14 +182,14 @@ mod test {
     #[test]
     #[should_panic]
     fn keep_alive_panic() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.keep_alive_ms, 60_000);
         assert_eq!(opts.set_keep_alive(4).keep_alive_ms(), 120_000);
     }
 
     #[test]
     fn last_will() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.last_will, None);
         let will = LastWill {
             topic: "topic",
@@ -258,14 +202,14 @@ mod test {
 
     #[test]
     fn clean_session() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.clean_session, true);
         assert_eq!(opts.set_clean_session(false).clean_session(), false);
     }
 
     #[test]
     fn credentials() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
+        let opts = MqttOptions::new("client_a");
         assert_eq!(opts.credentials, None);
         assert_eq!(opts.credentials(), (None, None));
         assert_eq!(

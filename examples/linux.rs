@@ -1,8 +1,9 @@
 mod common;
 
+use embedded_nal::{AddrType, Dns, TcpClient};
 use mqttrust::{
     EventLoop, MqttOptions, Notification, PublishRequest, QoS, Request, SubscribeRequest,
-    SubscribeTopic,
+    SubscribeTopic, TcpSession,
 };
 
 use common::network::Network;
@@ -17,21 +18,26 @@ fn main() {
     let (mut p, c) = unsafe { Q.split() };
 
     let network = Network;
-    // let network = std_embedded_nal::STACK;
+    let mut socket = network.socket().unwrap();
 
     // Connect to broker.hivemq.com:1883
-    let mut mqtt_eventloop = EventLoop::new(
-        c,
-        SysTimer::new(),
-        MqttOptions::new("mqtt_test_client_id", "broker.hivemq.com".into(), 1883),
-    );
+    let broker_addr = network
+        .gethostbyname("broker.hivemq.com", AddrType::Either)
+        .unwrap();
+    network
+        .connect(&mut socket, (broker_addr, 1883).into())
+        .expect("TCP client cannot connect to the broker");
+    let mut session = TcpSession::from(socket);
+    let mut mqtt_eventloop =
+        EventLoop::new(c, SysTimer::new(), MqttOptions::new("mqtt_test_client_id"));
 
-    nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");
+    nb::block!(mqtt_eventloop.connect(&network, &mut session))
+        .expect("MQTT client's connection request failed");
 
     thread::Builder::new()
         .name("eventloop".to_string())
         .spawn(move || loop {
-            match nb::block!(mqtt_eventloop.yield_event(&network)) {
+            match nb::block!(mqtt_eventloop.yield_event(&network, &mut session)) {
                 Ok(Notification::Publish(_publish)) => {
                     // defmt::debug!(
                     //     "[{}, {:?}]: {:?}",

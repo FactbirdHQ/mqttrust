@@ -438,54 +438,15 @@ mod tests {
         }
     }
 
-    struct MockNetwork {
+    struct MockSession {
         pub should_fail_read: bool,
         pub should_fail_write: bool,
     }
 
-    impl Dns for MockNetwork {
+    impl Session<()> for MockSession {
         type Error = ();
 
-        fn gethostbyname(
-            &self,
-            _hostname: &str,
-            _addr_type: embedded_nal::AddrType,
-        ) -> Result<embedded_nal::IpAddr, Self::Error> {
-            unimplemented!()
-        }
-        fn gethostbyaddr(
-            &self,
-            _addr: embedded_nal::IpAddr,
-        ) -> Result<heapless::String<consts::U256>, Self::Error> {
-            unimplemented!()
-        }
-    }
-
-    impl TcpClient for MockNetwork {
-        type TcpSocket = ();
-        type Error = ();
-
-        fn socket(&self) -> Result<Self::TcpSocket, Self::Error> {
-            Ok(())
-        }
-
-        fn connect(
-            &self,
-            _socket: &mut Self::TcpSocket,
-            _remote: embedded_nal::SocketAddr,
-        ) -> nb::Result<(), Self::Error> {
-            Ok(())
-        }
-
-        fn is_connected(&self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
-            Ok(true)
-        }
-
-        fn send(
-            &self,
-            _socket: &mut Self::TcpSocket,
-            buffer: &[u8],
-        ) -> nb::Result<usize, Self::Error> {
+        fn try_write(&mut self, _stack: &(), buffer: &[u8]) -> nb::Result<usize, Self::Error> {
             if self.should_fail_write {
                 Err(nb::Error::Other(()))
             } else {
@@ -493,11 +454,7 @@ mod tests {
             }
         }
 
-        fn receive(
-            &self,
-            _socket: &mut Self::TcpSocket,
-            buffer: &mut [u8],
-        ) -> nb::Result<usize, Self::Error> {
+        fn try_read(&mut self, _stack: &(), buffer: &mut [u8]) -> nb::Result<usize, Self::Error> {
             if self.should_fail_read {
                 Err(nb::Error::Other(()))
             } else {
@@ -508,10 +465,6 @@ mod tests {
                 let size = encode_slice(&connack, buffer).unwrap();
                 Ok(size)
             }
-        }
-
-        fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
-            Ok(())
         }
     }
 
@@ -604,17 +557,14 @@ mod tests {
         static mut Q: Queue<Request<Vec<u8, consts::U10>>, consts::U5, u8> =
             Queue(heapless::i::Queue::u8());
 
-        let network = MockNetwork {
+        let mut session = MockSession {
             should_fail_read: false,
             should_fail_write: false,
         };
 
         let (_p, c) = unsafe { Q.split() };
-        let mut event = EventLoop::<_, (), _, _>::new(
-            c,
-            CdMock { time: 0 },
-            MqttOptions::new("client", Broker::Hostname(""), 8883),
-        );
+        let mut event =
+            EventLoop::<_, _, _>::new(c, CdMock { time: 0 }, MqttOptions::new("client"));
 
         event
             .state
@@ -662,8 +612,6 @@ mod tests {
             .unwrap();
 
         event.state.connection_status = MqttConnectionStatus::Handshake;
-        event.socket = Some(());
-
-        event.connect(&network).unwrap();
+        event.connect(&(), &mut session).unwrap();
     }
 }
