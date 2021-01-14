@@ -26,6 +26,8 @@ pub enum StateError {
     WrongPacket,
     PayloadEncoding,
     InvalidUtf8,
+    /// The maximum number of messages allowed to be simultaneously in-flight has been reached.
+    MaxMessagesInflight,
 }
 
 /// State of the mqtt connection.
@@ -142,14 +144,14 @@ where
                 let pid = self.next_pid();
                 self.outgoing_pub
                     .insert(pid.get(), request.clone())
-                    .map_err(|_| StateError::InvalidState)?;
+                    .map_err(|_| StateError::MaxMessagesInflight)?;
                 QosPid::AtLeastOnce(pid)
             }
             QoS::ExactlyOnce => {
                 let pid = self.next_pid();
                 self.outgoing_pub
                     .insert(pid.get(), request.clone())
-                    .map_err(|_| StateError::InvalidState)?;
+                    .map_err(|_| StateError::MaxMessagesInflight)?;
                 QosPid::ExactlyOnce(pid)
             }
         };
