@@ -77,37 +77,47 @@ where
         }
     }
 
+    /// Selects an event from the client's requests, incoming packets from the
+    /// broker and keepalive ping cycle.
     fn select_event<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<Notification, EventError> {
-        let packet_buf = &mut [0u8; 1024];
-        let (notification, outpacket) = if self.should_handle_request() {
-            // Handle requests
-            let request = unsafe { self.requests.dequeue_unchecked() };
-            self.state
-                .handle_outgoing_request(request, packet_buf)
-                .map_err(EventError::from)?
-        } else if self.last_outgoing_timer.try_wait().is_ok() {
-            // Handle ping
-            self.state
-                .handle_outgoing_packet(Packet::Pingreq)
-                .map_err(EventError::from)?
-        } else {
-            // Handle incoming
-            self.receive(network)?
-        };
+        let packet_buf = &mut [0_u8; 1024];
 
-        if let Some(packet) = outpacket {
+        if self.should_handle_request() {
+            // Handle a request
+            let request = unsafe { self.requests.dequeue_unchecked() };
+            let packet = self
+                .state
+                .handle_outgoing_request(request, packet_buf)
+                .map_err(EventError::from)?;
             self.send(network, packet)?;
-            self.last_outgoing_timer
-                .try_start(self.options.keep_alive_ms())
-                .ok();
+            return Err(nb::Error::WouldBlock);
+        }
+
+        if self.last_outgoing_timer.try_wait().is_ok() {
+            // Handle keepalive ping
+            let packet = self
+                .state
+                .handle_outgoing_packet(Packet::Pingreq)
+                .map_err(EventError::from)?;
+            self.send(network, packet)?;
+            return Err(nb::Error::WouldBlock);
+        }
+
+        // Handle an incoming packet
+        let (notification, packet) = self.receive(network)?;
+
+        if let Some(packet) = packet {
+            self.send(network, packet)?;
         }
 
         notification.ok_or(nb::Error::WouldBlock)
     }
 
+    /// Yields notification from events. All the error raised while processing
+    /// event is reported as an `Ok` value of `Notification::Abort`.
     pub fn yield_event<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
@@ -127,21 +137,33 @@ where
         network: &N,
         pkt: Packet<'d>,
     ) -> Result<usize, EventError> {
-        match self.socket {
-            Some(ref mut socket) => {
-                let capacity = self.tx_buf.capacity();
-                self.tx_buf.clear();
-                self.tx_buf.resize(capacity, 0x00u8).unwrap_or_else(|()| {
-                    unreachable!("Input length equals to the current capacity.")
-                });
-                let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
-                nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
-                    defmt::error!("[send] NetworkError::Write");
-                    EventError::Network(NetworkError::Write)
-                })
-            }
-            _ => Err(EventError::Network(NetworkError::NoSocket)),
-        }
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(EventError::Network(NetworkError::NoSocket))?;
+        let capacity = self.tx_buf.capacity();
+        self.tx_buf.clear();
+        self.tx_buf
+            .resize(capacity, 0x00_u8)
+            .unwrap_or_else(|()| unreachable!("Input length equals to the current capacity."));
+        let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
+        let length = nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
+            defmt::error!("[send] NetworkError::Write");
+            EventError::Network(NetworkError::Write)
+        })?;
+
+        let last_outgoing_duration =
+            if self.state.connection_status == MqttConnectionStatus::Disconnected {
+                5000
+            } else {
+                self.options.keep_alive_ms()
+            };
+
+        self.last_outgoing_timer
+            .try_start(last_outgoing_duration)
+            .ok();
+
+        Ok(length)
     }
 
     pub fn receive<N: TcpClient<TcpSocket = S>>(
