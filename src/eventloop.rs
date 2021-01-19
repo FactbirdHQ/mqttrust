@@ -3,7 +3,7 @@ use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
 use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
-use core::convert::TryInto;
+use core::convert::{Infallible, TryInto};
 use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, TcpClient};
 use heapless::{consts, spsc, ArrayLength, Vec};
@@ -77,52 +77,49 @@ where
         }
     }
 
-    pub fn yield_event<N: TcpClient<TcpSocket = S>>(
+    fn select_event<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
-    ) -> nb::Result<Notification, ()> {
+    ) -> nb::Result<Notification, EventError> {
         let packet_buf = &mut [0u8; 1024];
-        let o = if self.should_handle_request() {
+        let (notification, outpacket) = if self.should_handle_request() {
             // Handle requests
             let request = unsafe { self.requests.dequeue_unchecked() };
             self.state
                 .handle_outgoing_request(request, packet_buf)
-                .map_err(EventError::from)
+                .map_err(EventError::from)?
         } else if self.last_outgoing_timer.try_wait().is_ok() {
             // Handle ping
             self.state
                 .handle_outgoing_packet(Packet::Pingreq)
-                .map_err(EventError::from)
+                .map_err(EventError::from)?
         } else {
-            self.receive(network)
+            // Handle incoming
+            self.receive(network)?
         };
 
-        let (notification, outpacket) = match o {
-            Ok((n, p)) => (n, p),
-            Err(e) => {
-                defmt::debug!("Disconnecting from handling error!");
-                self.disconnect(network);
-                return Ok(Notification::Abort(e));
-            }
-        };
-
-        if let Some(p) = outpacket {
-            if let Err(e) = self.send(network, p) {
-                defmt::debug!("Disconnecting from send error!");
-                self.disconnect(network);
-                return Ok(Notification::Abort(e));
-            } else {
-                self.last_outgoing_timer
-                    .try_start(self.options.keep_alive_ms())
-                    .ok();
-            }
+        if let Some(packet) = outpacket {
+            self.send(network, packet)?;
+            self.last_outgoing_timer
+                .try_start(self.options.keep_alive_ms())
+                .ok();
         }
 
-        if let Some(n) = notification {
-            Ok(n)
-        } else {
-            Err(nb::Error::WouldBlock)
-        }
+        notification.ok_or(nb::Error::WouldBlock)
+    }
+
+    pub fn yield_event<N: TcpClient<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> nb::Result<Notification, Infallible> {
+        self.select_event(network).or_else(|e| match e {
+            nb::Error::WouldBlock => Err(nb::Error::WouldBlock),
+            nb::Error::Other(e) => {
+                defmt::debug!("Disconnecting from an event error.");
+                self.disconnect(network);
+                Ok(Notification::Abort(e))
+            }
+        })
     }
 
     pub fn send<'d, N: TcpClient<TcpSocket = S>>(
@@ -150,17 +147,13 @@ where
     pub fn receive<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
-    ) -> Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
+    ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
         let socket = self
             .socket
             .as_mut()
             .ok_or(EventError::Network(NetworkError::NoSocket))?;
 
-        match self.rx_buf.receive(socket, network) {
-            Err(nb::Error::WouldBlock) => return Ok((None, None)),
-            Err(_) => return Err(EventError::Network(NetworkError::Read)),
-            _ => {}
-        }
+        self.rx_buf.receive(socket, network)?;
 
         PacketDecoder::new(&mut self.state, &mut self.rx_buf).try_into()
     }
@@ -292,14 +285,12 @@ where
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.receive(network)
-                    .map_err(|e| nb::Error::Other(e.into()))
-                    .and_then(|(n, p)| {
-                        if n.is_none() && p.is_none() {
-                            return Err(nb::Error::WouldBlock);
-                        }
-                        Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
-                    })
+                self.receive(network).and_then(|(n, p)| {
+                    if n.is_none() && p.is_none() {
+                        return Err(nb::Error::WouldBlock);
+                    }
+                    Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
+                })
             }
         }
     }
@@ -355,9 +346,12 @@ impl PacketBuffer {
         N: TcpClient<TcpSocket = S>,
     {
         let buffer = self.buffer();
-        let len = network
-            .receive(socket, buffer)
-            .map_err(|e| e.map(|_| EventError::Network(NetworkError::Read)))?;
+        let len = network.receive(socket, buffer).map_err(|e| {
+            e.map(|_| {
+                defmt::error!("[receive] NetworkError::Read");
+                EventError::Network(NetworkError::Read)
+            })
+        })?;
         self.range.end += len;
         Ok(())
     }
@@ -424,21 +418,22 @@ impl<'a, P> TryInto<(Option<Notification>, Option<Packet<'static>>)> for PacketD
 where
     P: PublishPayload + Clone,
 {
-    type Error = EventError;
+    type Error = nb::Error<EventError>;
     fn try_into(mut self) -> Result<(Option<Notification>, Option<Packet<'static>>), Self::Error> {
         let buffer = self.packet_buffer.buffer[self.packet_buffer.range].as_ref();
         match decode_slice(buffer) {
-            Err(_e) => {
+            Err(e) => {
                 self.is_err.replace(true);
-                Err(EventError::Network(NetworkError::Read))
+                Err(EventError::Encoding(e).into())
             }
             Ok(Some(packet)) => {
                 self.is_err.replace(false);
                 self.state
                     .handle_incoming_packet(packet)
                     .map_err(EventError::from)
+                    .map_err(nb::Error::from)
             }
-            Ok(None) => Ok((None, None)),
+            Ok(None) => Err(nb::Error::WouldBlock),
         }
     }
 }
@@ -467,6 +462,7 @@ mod tests {
     use crate::PublishRequest;
     use embedded_hal::timer::CountDown;
     use heapless::{consts, spsc::Queue, String, Vec};
+    use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
 
     #[derive(Debug)]
@@ -639,9 +635,9 @@ mod tests {
         // discards the entire buffer.
         state.connection_status = MqttConnectionStatus::Handshake;
         match PacketDecoder::new(&mut state, &mut rx_buf).try_into() {
-            Ok((_, _)) => panic!(),
-            Err(e) => {
-                assert_eq!(e, EventError::Network(NetworkError::Read))
+            Ok((_, _)) | Err(nb::Error::WouldBlock) => panic!(),
+            Err(nb::Error::Other(e)) => {
+                assert_eq!(e, EventError::Encoding(InvalidConnectReturnCode(6)))
             }
         }
         assert_eq!(state.connection_status, MqttConnectionStatus::Handshake);
