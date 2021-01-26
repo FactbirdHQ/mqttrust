@@ -313,7 +313,9 @@ where
                     }
                     Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
                 }).map_err(|e| {
-                    self.disconnect(network);
+                    if let nb::Error::Other(_) = e {
+                        self.disconnect(network);
+                    }
                     e
                 })
             }
