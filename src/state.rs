@@ -39,13 +39,11 @@ pub enum StateError {
 /// **Generics**:
 /// - O: The output timer used for keeping track of keep-alive ping-pongs. Must
 ///   implement the [`embedded_hal::timer::CountDown`] trait
-pub struct MqttState<O, P> {
+pub struct MqttState<P> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
     /// Status of last ping
     pub await_pingresp: bool,
-    /// Last outgoing packet time
-    pub last_outgoing_timer: O,
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
@@ -56,20 +54,17 @@ pub struct MqttState<O, P> {
     pub incoming_pub: FnvIndexSet<u16, consts::U2>,
 }
 
-impl<O, P> MqttState<O, P>
+impl<P> MqttState<P>
 where
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
     P: PublishPayload + Clone,
 {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
     /// instantiated for clean sessions
-    pub fn new(outgoing_timer: O) -> Self {
+    pub fn new() -> Self {
         MqttState {
             connection_status: MqttConnectionStatus::Disconnected,
             await_pingresp: false,
-            last_outgoing_timer: outgoing_timer,
             last_pid: Pid::new(),
 
             outgoing_pub: IndexMap::new(),
@@ -83,13 +78,11 @@ where
     pub fn handle_outgoing_packet<'a>(
         &mut self,
         packet: Packet<'a>,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
-        let out = match packet {
-            Packet::Pingreq => self.handle_outgoing_ping()?,
+    ) -> Result<Packet<'a>, StateError> {
+        match packet {
+            Packet::Pingreq => self.handle_outgoing_ping(),
             _ => unimplemented!(),
-        };
-
-        Ok((None, Some(out)))
+        }
     }
 
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a
@@ -98,15 +91,13 @@ where
         &mut self,
         request: Request<P>,
         buf: &'a mut [u8],
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
-        let out = match request {
-            Request::Publish(publish) => self.handle_outgoing_publish(publish, buf)?,
-            Request::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe)?,
-            Request::Unsubscribe(unsubscribe) => self.handle_outgoing_unsubscribe(unsubscribe)?,
+    ) -> Result<Packet<'a>, StateError> {
+        match request {
+            Request::Publish(publish) => self.handle_outgoing_publish(publish, buf),
+            Request::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe),
+            Request::Unsubscribe(unsubscribe) => self.handle_outgoing_unsubscribe(unsubscribe),
             _ => unimplemented!(),
-        };
-
-        Ok((None, Some(out)))
+        }
     }
 
     /// Consolidates handling of all incoming mqtt packets. Returns a
@@ -117,8 +108,11 @@ where
     pub fn handle_incoming_packet<'a>(
         &mut self,
         packet: Packet<'a>,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         match packet {
+            Packet::Connack(connack) => self
+                .handle_incoming_connack(connack)
+                .map(|()| (Notification::ConnAck.into(), None)),
             Packet::Pingresp => self.handle_incoming_pingresp(),
             Packet::Publish(publish) => self.handle_incoming_publish(publish),
             Packet::Suback(suback) => self.handle_incoming_suback(suback),
@@ -190,10 +184,10 @@ where
     /// This should be usually ok in case of acks due to ack ordering in normal
     /// conditions. But in cases where the broker doesn't guarantee the order of
     /// acks, the performance won't be optimal
-    fn handle_incoming_puback<'a>(
+    fn handle_incoming_puback(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.outgoing_pub.contains_key(&pid.get()) {
             let _publish = self.outgoing_pub.remove(&pid.get());
 
@@ -206,19 +200,19 @@ where
         }
     }
 
-    fn handle_incoming_suback<'a>(
+    fn handle_incoming_suback(
         &mut self,
         suback: Suback,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let request = None;
         let notification = Some(Notification::Suback(suback));
         Ok((notification, request))
     }
 
-    fn handle_incoming_unsuback<'a>(
+    fn handle_incoming_unsuback(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let request = None;
         let notification = Some(Notification::Unsuback(pid));
         Ok((notification, request))
@@ -228,10 +222,10 @@ where
     /// matching packet identifier. Removal is now a O(n) operation. This should be
     /// usually ok in case of acks due to ack ordering in normal conditions. But in cases
     /// where the broker doesn't guarantee the order of acks, the performance won't be optimal
-    fn handle_incoming_pubrec<'a>(
+    fn handle_incoming_pubrec(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.outgoing_pub.contains_key(&pid.get()) {
             let _publish = self.outgoing_pub.remove(&pid.get());
             self.outgoing_rel
@@ -252,7 +246,7 @@ where
     fn handle_incoming_publish<'a>(
         &mut self,
         publish: Publish<'a>,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let qospid = publish.qospid;
 
         match qospid {
@@ -277,10 +271,10 @@ where
         }
     }
 
-    fn handle_incoming_pubrel<'a>(
+    fn handle_incoming_pubrel(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.incoming_pub.contains(&pid.get()) {
             self.incoming_pub.remove(&pid.get());
             let reply = Packet::Pubcomp(pid);
@@ -291,10 +285,10 @@ where
         }
     }
 
-    fn handle_incoming_pubcomp<'a>(
+    fn handle_incoming_pubcomp(
         &mut self,
         pid: Pid,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         if self.outgoing_rel.contains(&pid.get()) {
             self.outgoing_rel.remove(&pid.get());
             let notification = Some(Notification::Pubcomp(pid));
@@ -323,9 +317,9 @@ where
         Ok(Packet::Pingreq)
     }
 
-    fn handle_incoming_pingresp<'a>(
+    fn handle_incoming_pingresp(
         &mut self,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
+    ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         self.await_pingresp = false;
         defmt::trace!("Pingresp");
         Ok((None, None))
@@ -361,21 +355,12 @@ where
         Ok(())
     }
 
-    pub fn handle_incoming_connack<'a>(&mut self, packet: Packet<'a>) -> Result<(), StateError> {
-        let connack = match packet {
-            Packet::Connack(connack) => connack,
-            _packet => {
-                defmt::error!("Invalid packet. Expecting connack!",);
-
-                self.connection_status = MqttConnectionStatus::Disconnected;
-                return Err(StateError::WrongPacket);
-            }
-        };
-
+    pub fn handle_incoming_connack<'a>(&mut self, connack: Connack) -> Result<(), StateError> {
         match connack.code {
             ConnectReturnCode::Accepted
                 if self.connection_status == MqttConnectionStatus::Handshake =>
             {
+                defmt::debug!("MQTT connected!");
                 self.connection_status = MqttConnectionStatus::Connected;
                 Ok(())
             }
@@ -409,29 +394,8 @@ mod test {
     use super::{MqttConnectionStatus, MqttState, Packet, StateError};
     use crate::{Notification, PublishRequest, SubscribeRequest, UnsubscribeRequest};
     use core::convert::TryFrom;
-    use embedded_hal::timer::CountDown;
     use heapless::{consts, String, Vec};
     use mqttrs::*;
-
-    #[derive(Debug)]
-    struct CdMock {
-        time: u32,
-    }
-
-    impl CountDown for CdMock {
-        type Error = core::convert::Infallible;
-        type Time = u32;
-        fn try_start<T>(&mut self, count: T) -> Result<(), Self::Error>
-        where
-            T: Into<Self::Time>,
-        {
-            self.time = count.into();
-            Ok(())
-        }
-        fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
-            Ok(())
-        }
-    }
 
     fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<Vec<u8, consts::U3>> {
         let topic = heapless::String::from("hello/world");
@@ -459,9 +423,8 @@ mod test {
         }
     }
 
-    fn build_mqttstate<'a>() -> MqttState<CdMock, Vec<u8, consts::U3>> {
-        let outgoing_timer = CdMock { time: 0 };
-        MqttState::new(outgoing_timer)
+    fn build_mqttstate<'a>() -> MqttState<Vec<u8, consts::U3>> {
+        MqttState::new()
     }
 
     #[test]
@@ -475,7 +438,7 @@ mod test {
 
         // Packet id shouldn't be set and publish shouldn't be saved in queue
         let publish_out = match mqtt.handle_outgoing_request(publish.into(), buf) {
-            Ok((None, Some(Packet::Publish(p)))) => p,
+            Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
         assert_eq!(publish_out.qospid, QosPid::AtMostOnce);
@@ -498,7 +461,7 @@ mod test {
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
         let subscribe_out = match mqtt.handle_outgoing_request(subscribe.into(), buf) {
-            Ok((None, Some(Packet::Subscribe(p)))) => p,
+            Ok(Packet::Subscribe(p)) => p,
             _ => panic!("Invalid packet. Should've been a subscribe packet"),
         };
         let mut topics_iter = subscribe_out.topics.iter();
@@ -532,7 +495,7 @@ mod test {
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
         let unsubscribe_out = match mqtt.handle_outgoing_request(unsubscribe.into(), buf) {
-            Ok((None, Some(Packet::Unsubscribe(p)))) => p,
+            Ok(Packet::Unsubscribe(p)) => p,
             _ => panic!("Invalid packet. Should've been a unsubscribe packet"),
         };
         let mut topics_iter = unsubscribe_out.topics.iter();

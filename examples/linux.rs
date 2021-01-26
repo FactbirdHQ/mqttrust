@@ -1,7 +1,7 @@
 mod common;
 
 use mqttrust::{
-    MqttEvent, MqttOptions, Notification, PublishRequest, QoS, Request, SubscribeRequest,
+    EventLoop, MqttOptions, Notification, PublishRequest, QoS, Request, SubscribeRequest,
     SubscribeTopic,
 };
 
@@ -20,7 +20,7 @@ fn main() {
     // let network = std_embedded_nal::STACK;
 
     // Connect to broker.hivemq.com:1883
-    let mut mqtt_eventloop = MqttEvent::new(
+    let mut mqtt_eventloop = EventLoop::new(
         c,
         SysTimer::new(),
         MqttOptions::new("mqtt_test_client_id", "broker.hivemq.com".into(), 1883),
