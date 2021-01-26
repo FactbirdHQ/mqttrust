@@ -78,13 +78,11 @@ where
     pub fn handle_outgoing_packet<'a>(
         &mut self,
         packet: Packet<'a>,
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
-        let out = match packet {
-            Packet::Pingreq => self.handle_outgoing_ping()?,
+    ) -> Result<Packet<'a>, StateError> {
+        match packet {
+            Packet::Pingreq => self.handle_outgoing_ping(),
             _ => unimplemented!(),
-        };
-
-        Ok((None, Some(out)))
+        }
     }
 
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a
@@ -93,15 +91,13 @@ where
         &mut self,
         request: Request<P>,
         buf: &'a mut [u8],
-    ) -> Result<(Option<Notification>, Option<Packet<'a>>), StateError> {
-        let out = match request {
-            Request::Publish(publish) => self.handle_outgoing_publish(publish, buf)?,
-            Request::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe)?,
-            Request::Unsubscribe(unsubscribe) => self.handle_outgoing_unsubscribe(unsubscribe)?,
+    ) -> Result<Packet<'a>, StateError> {
+        match request {
+            Request::Publish(publish) => self.handle_outgoing_publish(publish, buf),
+            Request::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe),
+            Request::Unsubscribe(unsubscribe) => self.handle_outgoing_unsubscribe(unsubscribe),
             _ => unimplemented!(),
-        };
-
-        Ok((None, Some(out)))
+        }
     }
 
     /// Consolidates handling of all incoming mqtt packets. Returns a
@@ -442,7 +438,7 @@ mod test {
 
         // Packet id shouldn't be set and publish shouldn't be saved in queue
         let publish_out = match mqtt.handle_outgoing_request(publish.into(), buf) {
-            Ok((None, Some(Packet::Publish(p)))) => p,
+            Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
         assert_eq!(publish_out.qospid, QosPid::AtMostOnce);
@@ -465,7 +461,7 @@ mod test {
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
         let subscribe_out = match mqtt.handle_outgoing_request(subscribe.into(), buf) {
-            Ok((None, Some(Packet::Subscribe(p)))) => p,
+            Ok(Packet::Subscribe(p)) => p,
             _ => panic!("Invalid packet. Should've been a subscribe packet"),
         };
         let mut topics_iter = subscribe_out.topics.iter();
@@ -499,7 +495,7 @@ mod test {
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
         let unsubscribe_out = match mqtt.handle_outgoing_request(unsubscribe.into(), buf) {
-            Ok((None, Some(Packet::Unsubscribe(p)))) => p,
+            Ok(Packet::Unsubscribe(p)) => p,
             _ => panic!("Invalid packet. Should've been a unsubscribe packet"),
         };
         let mut topics_iter = unsubscribe_out.topics.iter();
