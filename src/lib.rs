@@ -456,7 +456,10 @@ where
                         Ok(true)
                     }
                     Ok(None) => Err(nb::Error::WouldBlock),
-                    Err(e) => Err(nb::Error::Other(e)),
+                    Err(e) => {
+                        self.disconnect(network);
+                        Err(nb::Error::Other(e))
+                    }
                 }
             }
         }
