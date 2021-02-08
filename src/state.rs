@@ -25,6 +25,7 @@ pub enum StateError {
     /// Received a wrong packet while waiting for another packet
     WrongPacket,
     PayloadEncoding,
+    InvalidUtf8,
 }
 
 /// State of the mqtt connection.
@@ -166,7 +167,7 @@ where
             qospid,
             retain: request.retain,
             topic_name: core::str::from_utf8(&buf[..topic_len])
-                .map_err(|_| StateError::PayloadEncoding)?,
+                .map_err(|_| StateError::InvalidUtf8)?,
             payload: &buf[topic_len..topic_len + len],
         };
 
@@ -248,27 +249,21 @@ where
         publish: Publish<'a>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let qospid = publish.qospid;
+        let notification = Notification::Publish(publish.try_into()?);
 
-        match qospid {
-            QosPid::AtMostOnce => {
-                let notification = Notification::Publish(publish.try_into()?);
-                Ok((Some(notification), None))
-            }
-            QosPid::AtLeastOnce(pid) => {
-                let request = Packet::Puback(pid);
-                let notification = Notification::Publish(publish.try_into()?);
-                Ok((Some(notification), Some(request)))
-            }
+        let request = match qospid {
+            QosPid::AtMostOnce => None,
+            QosPid::AtLeastOnce(pid) => Some(Packet::Puback(pid)),
             QosPid::ExactlyOnce(pid) => {
-                let reply = Packet::Pubrec(pid);
-                let notification = Notification::Publish(publish.try_into()?);
+                self.incoming_pub.insert(pid.get()).map_err(|_| {
+                    defmt::error!("Failed to insert incoming pub!");
+                    StateError::InvalidState
+                })?;
 
-                self.incoming_pub
-                    .insert(pid.get())
-                    .map_err(|_| StateError::InvalidState)?;
-                Ok((Some(notification), Some(reply)))
+                Some(Packet::Pubrec(pid))
             }
-        }
+        };
+        Ok((Some(notification), request))
     }
 
     fn handle_incoming_pubrel(
@@ -307,7 +302,7 @@ where
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
             defmt::error!("Error awaiting for last ping response");
-            return Err(StateError::AwaitPingResp);
+            // return Err(StateError::AwaitPingResp);
         }
 
         self.await_pingresp = true;
@@ -333,9 +328,7 @@ where
         for topic in &subscribe_request.topics {
             defmt::trace!("{:str}", topic.topic_path.as_str());
         }
-        let subscription = Subscribe::new(self.next_pid(), subscribe_request.topics);
-
-        Ok(subscription.into())
+        Ok(Subscribe::new(self.next_pid(), subscribe_request.topics).into())
     }
 
     fn handle_outgoing_unsubscribe<'a>(
@@ -346,8 +339,7 @@ where
         for topic in &unsubscribe_request.topics {
             defmt::trace!("{:str}", topic.as_str());
         }
-        let unsubscription = Unsubscribe::new(self.next_pid(), unsubscribe_request.topics);
-        Ok(unsubscription.into())
+        Ok(Unsubscribe::new(self.next_pid(), unsubscribe_request.topics).into())
     }
 
     pub fn handle_outgoing_connect(&mut self) -> Result<(), StateError> {
@@ -355,7 +347,7 @@ where
         Ok(())
     }
 
-    pub fn handle_incoming_connack<'a>(&mut self, connack: Connack) -> Result<(), StateError> {
+    pub fn handle_incoming_connack(&mut self, connack: Connack) -> Result<(), StateError> {
         match connack.code {
             ConnectReturnCode::Accepted
                 if self.connection_status == MqttConnectionStatus::Handshake =>
@@ -667,23 +659,16 @@ mod test {
     fn incoming_pubrec_should_send_release_to_network_and_nothing_to_user() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
+        let pid = Pid::try_from(2).unwrap();
+        assert_eq!(pid.get(), 2);
 
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
         mqtt.handle_outgoing_publish(publish, buf).unwrap();
 
-        let (notification, request) = mqtt
-            .handle_incoming_pubrec(Pid::try_from(2).unwrap())
-            .unwrap();
+        let (notification, request) = mqtt.handle_incoming_pubrec(pid).unwrap();
 
-        match notification {
-            Some(Notification::Pubrec(pid)) => assert_eq!(pid.get(), 2),
-            _ => panic!("Invalid notification"),
-        }
-
-        match request {
-            Some(Packet::Pubrel(pid)) => assert_eq!(pid.get(), 2),
-            _ => panic!("Invalid network request: {:?}", request),
-        }
+        assert_eq!(notification, Some(Notification::Pubrec(pid)));
+        assert_eq!(request, Some(Packet::Pubrel(pid)));
     }
 
     #[test]
@@ -691,20 +676,14 @@ mod test {
         let mut mqtt = build_mqttstate();
         let publish = build_incoming_publish(QoS::ExactlyOnce, 1);
 
+        let pid = Pid::try_from(1).unwrap();
+        assert_eq!(pid.get(), 1);
+
         mqtt.handle_incoming_publish(publish).unwrap();
-        let (notification, request) = mqtt
-            .handle_incoming_pubrel(Pid::try_from(1).unwrap())
-            .unwrap();
 
-        match notification {
-            None => assert!(true),
-            _ => panic!("Invalid notification: {:?}", notification),
-        }
-
-        match request {
-            Some(Packet::Pubcomp(pid)) => assert_eq!(pid.get(), 1),
-            _ => panic!("Invalid network request: {:?}", request),
-        }
+        let (notification, request) = mqtt.handle_incoming_pubrel(pid).unwrap();
+        assert_eq!(notification, None);
+        assert_eq!(request, Some(Packet::Pubcomp(pid)));
     }
 
     #[test]
@@ -712,13 +691,12 @@ mod test {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
+        let pid = Pid::try_from(2).unwrap();
 
         mqtt.handle_outgoing_publish(publish, buf).unwrap();
-        mqtt.handle_incoming_pubrec(Pid::try_from(2).unwrap())
-            .unwrap();
+        mqtt.handle_incoming_pubrec(pid).unwrap();
 
-        mqtt.handle_incoming_pubcomp(Pid::try_from(2).unwrap())
-            .unwrap();
+        mqtt.handle_incoming_pubcomp(pid).unwrap();
         assert_eq!(mqtt.outgoing_pub.len(), 0);
     }
 
@@ -727,7 +705,8 @@ mod test {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
         mqtt.connection_status = MqttConnectionStatus::Connected;
-        mqtt.handle_outgoing_ping().unwrap();
+        assert_eq!(mqtt.handle_outgoing_ping(), Ok(Packet::Pingreq));
+        assert!(mqtt.await_pingresp);
 
         // network activity other than pingresp
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
@@ -736,11 +715,7 @@ mod test {
             .unwrap();
 
         // should throw error because we didn't get pingresp for previous ping
-        match mqtt.handle_outgoing_ping() {
-            Ok(_) => panic!("Should throw pingresp await error"),
-            Err(StateError::AwaitPingResp) => (),
-            Err(e) => panic!("Should throw pingresp await error. Error = {:?}", e),
-        }
+        assert_eq!(mqtt.handle_outgoing_ping(), Err(StateError::AwaitPingResp));
     }
 
     #[test]
@@ -750,10 +725,16 @@ mod test {
         mqtt.connection_status = MqttConnectionStatus::Connected;
 
         // should ping
-        mqtt.handle_outgoing_ping().unwrap();
-        mqtt.handle_incoming_packet(Packet::Pingresp).unwrap();
+        assert_eq!(mqtt.handle_outgoing_ping(), Ok(Packet::Pingreq));
+        assert!(mqtt.await_pingresp);
+        assert_eq!(
+            mqtt.handle_incoming_packet(Packet::Pingresp),
+            Ok((None, None))
+        );
+        assert!(!mqtt.await_pingresp);
 
         // should ping
-        mqtt.handle_outgoing_ping().unwrap();
+        assert_eq!(mqtt.handle_outgoing_ping(), Ok(Packet::Pingreq));
+        assert!(mqtt.await_pingresp);
     }
 }

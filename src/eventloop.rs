@@ -70,11 +70,7 @@ where
             false
         };
 
-        if qos_0 {
-            true
-        } else {
-            self.requests.ready() && qos_space
-        }
+        qos_0 || (self.requests.ready() && qos_space)
     }
 
     /// Selects an event from the client's requests, incoming packets from the
@@ -112,20 +108,27 @@ where
         if let Some(packet) = packet {
             self.send(network, packet)?;
         }
-
+        
         notification.ok_or(nb::Error::WouldBlock)
     }
 
     /// Yields notification from events. All the error raised while processing
     /// event is reported as an `Ok` value of `Notification::Abort`.
+    #[must_use = "Eventloop should be iterated over a loop to make progress"]
     pub fn yield_event<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<Notification, Infallible> {
+        if self.socket.is_none() {
+            return Ok(Notification::Abort(EventError::Network(
+                NetworkError::NoSocket,
+            )));
+        }
+
         self.select_event(network).or_else(|e| match e {
             nb::Error::WouldBlock => Err(nb::Error::WouldBlock),
             nb::Error::Other(e) => {
-                defmt::debug!("Disconnecting from an event error.");
+                defmt::debug!("Disconnecting from an event error. {:?}", defmt::Debug2Format::<consts::U64>(&e));
                 self.disconnect(network);
                 Ok(Notification::Abort(e))
             }
@@ -289,7 +292,7 @@ where
                             .handle_outgoing_connect()
                             .map_err(|e| nb::Error::Other(e.into()))?;
 
-                        self.last_outgoing_timer.try_start(50000).ok();
+                        self.last_outgoing_timer.try_start(50_000).ok();
                     }
                     Err(e) => {
                         defmt::debug!("Disconnecting from send error!");
@@ -307,17 +310,19 @@ where
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.receive(network).and_then(|(n, p)| {
-                    if n.is_none() && p.is_none() {
-                        return Err(nb::Error::WouldBlock);
-                    }
-                    Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
-                }).map_err(|e| {
-                    if let nb::Error::Other(_) = e {
-                        self.disconnect(network);
-                    }
-                    e
-                })
+                self.receive(network)
+                    .and_then(|(n, p)| {
+                        if n.is_none() && p.is_none() {
+                            return Err(nb::Error::WouldBlock);
+                        }
+                        Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
+                    })
+                    .map_err(|e| {
+                        if let nb::Error::Other(_) = e {
+                            self.disconnect(network);
+                        }
+                        e
+                    })
             }
         }
     }
@@ -373,11 +378,9 @@ impl PacketBuffer {
         N: TcpClient<TcpSocket = S>,
     {
         let buffer = self.buffer();
-        let len = network.receive(socket, buffer).map_err(|e| {
-            e.map(|_| {
-                defmt::error!("[receive] NetworkError::Read");
-                EventError::Network(NetworkError::Read)
-            })
+        let len = network.receive(socket, buffer).map_err(|_| {
+            defmt::error!("[receive] NetworkError::Read");
+            EventError::Network(NetworkError::Read)
         })?;
         self.range.end += len;
         Ok(())
@@ -451,6 +454,8 @@ where
         match decode_slice(buffer) {
             Err(e) => {
                 self.is_err.replace(true);
+                defmt::error!("Packet decode error! {:?}", defmt::Debug2Format::<heapless::consts::U64>(&e));
+
                 Err(EventError::Encoding(e).into())
             }
             Ok(Some(packet)) => {

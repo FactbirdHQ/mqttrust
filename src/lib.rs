@@ -59,7 +59,10 @@ impl<'a> TryFrom<Publish<'a>> for PublishNotification {
             qospid: p.qospid,
             retain: p.retain,
             topic_name: String::from(p.topic_name),
-            payload: Vec::from_slice(p.payload).map_err(|_| StateError::PayloadEncoding)?,
+            payload: Vec::from_slice(p.payload).map_err(|_| {
+                defmt::error!("Failed to convert payload to notification!");
+                StateError::PayloadEncoding
+            })?,
         })
     }
 }
