@@ -4,9 +4,10 @@ use crate::state::{MqttConnectionStatus, MqttState};
 use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
 use core::convert::Infallible;
-use core::ops::RangeTo;
+use core::ops::{Add, RangeTo};
 use embedded_nal::{AddrType, Dns, TcpClient};
 use embedded_time::duration::Extensions;
+use embedded_time::duration::Milliseconds;
 use embedded_time::{Clock, Instant};
 use heapless::{consts, spsc, ArrayLength, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
@@ -83,21 +84,21 @@ where
     ) -> nb::Result<Notification, EventError> {
         let packet_buf = &mut [0_u8; 1024];
 
+        let now = self
+            .last_outgoing_timer
+            .try_now()
+            .map_err(EventError::from)?;
+
         if self.should_handle_request() {
             // Handle a request
             let request = unsafe { self.requests.dequeue_unchecked() };
             let packet = self
                 .state
-                .handle_outgoing_request(request, packet_buf)
+                .handle_outgoing_request(request, packet_buf, &now)
                 .map_err(EventError::from)?;
             self.send(network, packet)?;
             return Err(nb::Error::WouldBlock);
         }
-
-        let now = self
-            .last_outgoing_timer
-            .try_now()
-            .map_err(EventError::from)?;
 
         if self
             .state
@@ -121,6 +122,11 @@ where
         if let Some(packet) = packet {
             self.send(network, packet)?;
         }
+
+        // By comparing the current time, select pending non-zero QoS publish
+        // requests staying longer than the retry interval, and handle their
+        // retrial.
+        for _publish in self.retries().into_iter() {}
 
         notification.ok_or(nb::Error::WouldBlock)
     }
@@ -344,6 +350,10 @@ where
             }
         }
     }
+
+    fn retries(&mut self) -> Result<(), EventError> {
+        unimplemented!();
+    }
 }
 
 /// A placeholder that keeps a buffer and constructs a packet incrementally.
@@ -459,6 +469,7 @@ impl<'a> PacketDecoder<'a> {
     ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError>
     where
         P: PublishPayload + Clone,
+        T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
     {
         let buffer = self.packet_buffer.buffer[self.packet_buffer.range].as_ref();
         match decode_slice(buffer) {
@@ -501,6 +512,7 @@ impl<'a> Drop for PacketDecoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{Inflight, StartTime};
     use crate::PublishRequest;
     use embedded_time::clock::Error;
     use embedded_time::duration::Milliseconds;
@@ -698,18 +710,23 @@ mod tests {
             MqttOptions::new("client", Broker::Hostname(""), 8883),
         );
 
+        let now = StartTime::from(0);
+
         event
             .state
             .outgoing_pub
             .insert(
                 2,
-                PublishRequest {
-                    dup: false,
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                    topic_name: String::from("some/topic/name2"),
-                    payload: Vec::new(),
-                },
+                Inflight::new(
+                    now,
+                    PublishRequest {
+                        dup: false,
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        topic_name: String::from("some/topic/name2"),
+                        payload: Vec::new(),
+                    },
+                ),
             )
             .unwrap();
 
@@ -718,13 +735,16 @@ mod tests {
             .outgoing_pub
             .insert(
                 3,
-                PublishRequest {
-                    dup: false,
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                    topic_name: String::from("some/topic/name3"),
-                    payload: Vec::new(),
-                },
+                Inflight::new(
+                    now,
+                    PublishRequest {
+                        dup: false,
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        topic_name: String::from("some/topic/name3"),
+                        payload: Vec::new(),
+                    },
+                ),
             )
             .unwrap();
 
@@ -733,13 +753,16 @@ mod tests {
             .outgoing_pub
             .insert(
                 4,
-                PublishRequest {
-                    dup: false,
-                    qos: QoS::AtLeastOnce,
-                    retain: false,
-                    topic_name: String::from("some/topic/name4"),
-                    payload: Vec::new(),
-                },
+                Inflight::new(
+                    now,
+                    PublishRequest {
+                        dup: false,
+                        qos: QoS::AtLeastOnce,
+                        retain: false,
+                        topic_name: String::from("some/topic/name4"),
+                        payload: Vec::new(),
+                    },
+                ),
             )
             .unwrap();
 
