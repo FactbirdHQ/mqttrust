@@ -6,6 +6,8 @@ use crate::{EventError, NetworkError, Notification};
 use core::convert::Infallible;
 use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, TcpClient};
+use embedded_time::duration::Extensions;
+use embedded_time::{Clock, Instant};
 use heapless::{consts, spsc, ArrayLength, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
 use no_std_net::SocketAddr;
@@ -13,10 +15,11 @@ use no_std_net::SocketAddr;
 pub struct EventLoop<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
+    O: Clock<T = u32>,
     P: PublishPayload,
 {
     /// Current state of the connection
-    pub state: MqttState<P>,
+    pub state: MqttState<P, Instant<O>>,
     /// Last outgoing packet time
     pub last_outgoing_timer: O,
     /// Options of the current mqtt connection
@@ -32,8 +35,7 @@ where
 impl<'a, 'b, L, S, O, P> EventLoop<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
+    O: Clock<T = u32>,
     P: PublishPayload + Clone,
 {
     pub fn new(
@@ -92,13 +94,24 @@ where
             return Err(nb::Error::WouldBlock);
         }
 
-        if self.last_outgoing_timer.try_wait().is_ok() {
+        let now = self
+            .last_outgoing_timer
+            .try_now()
+            .map_err(EventError::from)?;
+
+        if self
+            .state
+            .last_ping_entry()
+            .or_insert(now)
+            .has_elapsed(&now, self.options.keep_alive_ms().milliseconds())
+        {
             // Handle keepalive ping
             let packet = self
                 .state
                 .handle_outgoing_packet(Packet::Pingreq)
                 .map_err(EventError::from)?;
             self.send(network, packet)?;
+            self.state.last_ping_entry().insert(now);
             return Err(nb::Error::WouldBlock);
         }
 
@@ -157,17 +170,6 @@ where
             defmt::error!("[send] NetworkError::Write");
             EventError::Network(NetworkError::Write)
         })?;
-
-        let last_outgoing_duration =
-            if self.state.connection_status == MqttConnectionStatus::Disconnected {
-                5000
-            } else {
-                self.options.keep_alive_ms()
-            };
-
-        self.last_outgoing_timer
-            .try_start(last_outgoing_duration)
-            .ok();
 
         Ok(length)
     }
@@ -273,6 +275,12 @@ where
             MqttConnectionStatus::Connected => Ok(false),
             MqttConnectionStatus::Disconnected => {
                 defmt::info!("MQTT connecting..");
+                let now = self
+                    .last_outgoing_timer
+                    .try_now()
+                    .map_err(EventError::from)?;
+                self.state.last_ping_entry().insert(now);
+
                 self.state.await_pingresp = false;
                 self.state.outgoing_pub.clear();
 
@@ -294,8 +302,6 @@ where
                         self.state
                             .handle_outgoing_connect()
                             .map_err(|e| nb::Error::Other(e.into()))?;
-
-                        self.last_outgoing_timer.try_start(50_000).ok();
                     }
                     Err(e) => {
                         defmt::debug!("Disconnecting from send error!");
@@ -307,7 +313,16 @@ where
                 Err(nb::Error::WouldBlock)
             }
             MqttConnectionStatus::Handshake => {
-                if self.last_outgoing_timer.try_wait().is_ok() {
+                let now = self
+                    .last_outgoing_timer
+                    .try_now()
+                    .map_err(EventError::from)?;
+                if self
+                    .state
+                    .last_ping_entry()
+                    .or_insert(now)
+                    .has_elapsed(&now, 50_000.milliseconds())
+                {
                     defmt::debug!("Disconnecting from handshake timeout!");
                     self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
@@ -438,9 +453,9 @@ impl<'a> PacketDecoder<'a> {
             .into()
     }
 
-    fn decode<P>(
+    fn decode<P, T>(
         mut self,
-        state: &mut MqttState<P>,
+        state: &mut MqttState<P, T>,
     ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError>
     where
         P: PublishPayload + Clone,
@@ -487,28 +502,25 @@ impl<'a> Drop for PacketDecoder<'a> {
 mod tests {
     use super::*;
     use crate::PublishRequest;
-    use embedded_hal::timer::CountDown;
+    use embedded_time::clock::Error;
+    use embedded_time::duration::Milliseconds;
+    use embedded_time::fraction::Fraction;
+    use embedded_time::Instant;
     use heapless::{consts, spsc::Queue, String, Vec};
     use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
 
     #[derive(Debug)]
-    struct CdMock {
+    struct ClockMock {
         time: u32,
     }
 
-    impl CountDown for CdMock {
-        type Error = core::convert::Infallible;
-        type Time = u32;
-        fn try_start<T>(&mut self, count: T) -> Result<(), Self::Error>
-        where
-            T: Into<Self::Time>,
-        {
-            self.time = count.into();
-            Ok(())
-        }
-        fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
-            Ok(())
+    impl Clock for ClockMock {
+        const SCALING_FACTOR: Fraction = Fraction::new(1000, 1);
+        type T = u32;
+
+        fn try_now(&self) -> Result<Instant<Self>, Error> {
+            Ok(Instant::new(self.time))
         }
     }
 
@@ -591,7 +603,7 @@ mod tests {
 
     #[test]
     fn success_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, consts::U10>>::new();
+        let mut state = MqttState::<Vec<u8, consts::U10>, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack = Connack {
             session_present: false,
@@ -632,7 +644,7 @@ mod tests {
 
     #[test]
     fn failure_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, consts::U10>>::new();
+        let mut state = MqttState::<Vec<u8, consts::U10>, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack_malformed = Connack {
             session_present: false,
@@ -682,7 +694,7 @@ mod tests {
         let (_p, c) = unsafe { Q.split() };
         let mut event = EventLoop::<_, (), _, _>::new(
             c,
-            CdMock { time: 0 },
+            ClockMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
         );
 

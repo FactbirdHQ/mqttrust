@@ -5,8 +5,8 @@ use mqttrust::{
     SubscribeTopic,
 };
 
+use common::clock::SysClock;
 use common::network::Network;
-use common::timer::SysTimer;
 use heapless::{consts, spsc::Queue, String, Vec};
 use std::thread;
 
@@ -22,7 +22,7 @@ fn main() {
     // Connect to broker.hivemq.com:1883
     let mut mqtt_eventloop = EventLoop::new(
         c,
-        SysTimer::new(),
+        SysClock::new(),
         MqttOptions::new("mqtt_test_client_id", "broker.hivemq.com".into(), 1883),
     );
 
