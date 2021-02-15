@@ -3,7 +3,7 @@ use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
 use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
-use core::convert::{Infallible, TryInto};
+use core::convert::Infallible;
 use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, TcpClient};
 use heapless::{consts, spsc, ArrayLength, Vec};
@@ -108,7 +108,7 @@ where
         if let Some(packet) = packet {
             self.send(network, packet)?;
         }
-        
+
         notification.ok_or(nb::Error::WouldBlock)
     }
 
@@ -128,7 +128,10 @@ where
         self.select_event(network).or_else(|e| match e {
             nb::Error::WouldBlock => Err(nb::Error::WouldBlock),
             nb::Error::Other(e) => {
-                defmt::debug!("Disconnecting from an event error. {:?}", defmt::Debug2Format::<consts::U64>(&e));
+                defmt::debug!(
+                    "Disconnecting from an event error. {:?}",
+                    defmt::Debug2Format::<consts::U64>(&e)
+                );
                 self.disconnect(network);
                 Ok(Notification::Abort(e))
             }
@@ -180,7 +183,7 @@ where
 
         self.rx_buf.receive(socket, network)?;
 
-        PacketDecoder::new(&mut self.state, &mut self.rx_buf).try_into()
+        PacketDecoder::new(&mut self.rx_buf).decode(&mut self.state)
     }
 
     fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
@@ -390,22 +393,14 @@ impl PacketBuffer {
 /// Provides contextual information for decoding packets. If an incoming packet
 /// is well-formed and has a packet type the underlying state expects, returns a
 /// notification. On an error, cleans up its buffer state.
-struct PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
-    state: &'a mut MqttState<P>,
+struct PacketDecoder<'a> {
     packet_buffer: &'a mut PacketBuffer,
     is_err: Option<bool>,
 }
 
-impl<'a, P> PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
-    fn new(state: &'a mut MqttState<P>, packet_buffer: &'a mut PacketBuffer) -> Self {
+impl<'a> PacketDecoder<'a> {
+    fn new(packet_buffer: &'a mut PacketBuffer) -> Self {
         Self {
-            state,
             packet_buffer,
             is_err: None,
         }
@@ -442,25 +437,28 @@ where
             })
             .into()
     }
-}
 
-impl<'a, P> TryInto<(Option<Notification>, Option<Packet<'static>>)> for PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
-    type Error = nb::Error<EventError>;
-    fn try_into(mut self) -> Result<(Option<Notification>, Option<Packet<'static>>), Self::Error> {
+    fn decode<P>(
+        mut self,
+        state: &mut MqttState<P>,
+    ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError>
+    where
+        P: PublishPayload + Clone,
+    {
         let buffer = self.packet_buffer.buffer[self.packet_buffer.range].as_ref();
         match decode_slice(buffer) {
             Err(e) => {
                 self.is_err.replace(true);
-                defmt::error!("Packet decode error! {:?}", defmt::Debug2Format::<heapless::consts::U64>(&e));
+                defmt::error!(
+                    "Packet decode error! {:?}",
+                    defmt::Debug2Format::<heapless::consts::U64>(&e)
+                );
 
                 Err(EventError::Encoding(e).into())
             }
             Ok(Some(packet)) => {
                 self.is_err.replace(false);
-                self.state
+                state
                     .handle_incoming_packet(packet)
                     .map_err(EventError::from)
                     .map_err(nb::Error::from)
@@ -470,10 +468,7 @@ where
     }
 }
 
-impl<'a, P> Drop for PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
+impl<'a> Drop for PacketDecoder<'a> {
     fn drop(&mut self) {
         if let Some(is_err) = self.is_err {
             if is_err {
@@ -618,17 +613,13 @@ mod tests {
 
         // Decode the first Connack packet on the Handshake state.
         state.connection_status = MqttConnectionStatus::Handshake;
-        let (n, p) = PacketDecoder::new(&mut state, &mut rx_buf)
-            .try_into()
-            .unwrap();
+        let (n, p) = PacketDecoder::new(&mut rx_buf).decode(&mut state).unwrap();
         assert_eq!(n, Some(Notification::ConnAck));
         assert_eq!(p, None);
 
         // Decode the second Publish packet on the Connected state.
         assert_eq!(state.connection_status, MqttConnectionStatus::Connected);
-        let (n, p) = PacketDecoder::new(&mut state, &mut rx_buf)
-            .try_into()
-            .unwrap();
+        let (n, p) = PacketDecoder::new(&mut rx_buf).decode(&mut state).unwrap();
         let publish_notification = match n {
             Some(Notification::Publish(p)) => p,
             _ => panic!(),
@@ -666,7 +657,7 @@ mod tests {
         // When a packet is malformed, we cannot tell its length. The decoder
         // discards the entire buffer.
         state.connection_status = MqttConnectionStatus::Handshake;
-        match PacketDecoder::new(&mut state, &mut rx_buf).try_into() {
+        match PacketDecoder::new(&mut rx_buf).decode(&mut state) {
             Ok((_, _)) | Err(nb::Error::WouldBlock) => panic!(),
             Err(nb::Error::Other(e)) => {
                 assert_eq!(e, EventError::Encoding(InvalidConnectReturnCode(6)))
