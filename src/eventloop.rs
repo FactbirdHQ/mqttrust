@@ -123,9 +123,12 @@ where
         // By comparing the current time, select pending non-zero QoS publish
         // requests staying longer than the retry interval, and handle their
         // retrial.
-        for (pid, retry) in self.state.retries(now, 50_000.milliseconds()) {
-            let packet = retry.packet(*pid, packet_buf).map_err(EventError::from)?;
-            // *FIXME* second mutable borrow occurs here
+        for (pid, inflight) in self.state.retries(now, 50_000.milliseconds()) {
+            let packet = inflight
+                .packet(*pid, packet_buf)
+                .map_err(EventError::from)?;
+            // Update inflight's timestamp for later retrials
+            inflight.last_touch_entry().insert(now);
             self.network_handle.send(network, &packet)?;
         }
 

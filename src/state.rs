@@ -521,6 +521,10 @@ where
             last_touch,
         }
     }
+
+    pub(crate) fn last_touch_entry(&mut self) -> &mut StartTime<T> {
+        &mut self.last_touch
+    }
 }
 
 impl<P, T> Inflight<P, T>
