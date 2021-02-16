@@ -25,11 +25,9 @@ where
     pub last_outgoing_timer: O,
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
-    /// Network socket
-    pub socket: Option<S>,
     /// Request stream
     pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
-    tx_buf: Vec<u8, consts::U1024>,
+    network_handle: NetworkHandle<S>,
     rx_buf: PacketBuffer,
 }
 
@@ -48,9 +46,8 @@ where
             state: MqttState::new(),
             last_outgoing_timer: outgoing_timer,
             options,
-            socket: None,
             requests,
-            tx_buf: Vec::new(),
+            network_handle: NetworkHandle::new(),
             rx_buf: PacketBuffer::new(),
         }
     }
@@ -96,7 +93,7 @@ where
                 .state
                 .handle_outgoing_request(request, packet_buf, &now)
                 .map_err(EventError::from)?;
-            self.send(network, packet)?;
+            self.network_handle.send(network, &packet)?;
             return Err(nb::Error::WouldBlock);
         }
 
@@ -111,7 +108,7 @@ where
                 .state
                 .handle_outgoing_packet(Packet::Pingreq)
                 .map_err(EventError::from)?;
-            self.send(network, packet)?;
+            self.network_handle.send(network, &packet)?;
             self.state.last_ping_entry().insert(now);
             return Err(nb::Error::WouldBlock);
         }
@@ -120,16 +117,16 @@ where
         let (notification, packet) = self.receive(network)?;
 
         if let Some(packet) = packet {
-            self.send(network, packet)?;
+            self.network_handle.send(network, &packet)?;
         }
 
         // By comparing the current time, select pending non-zero QoS publish
         // requests staying longer than the retry interval, and handle their
         // retrial.
         for (pid, retry) in self.state.retries(now, 50_000.milliseconds()) {
-            let packet = retry.packet(*pid, packet_buf);
+            let packet = retry.packet(*pid, packet_buf).map_err(EventError::from)?;
             // *FIXME* second mutable borrow occurs here
-            /*self.send(network, packet)?;*/
+            self.network_handle.send(network, &packet)?;
         }
 
         notification.ok_or(nb::Error::WouldBlock)
@@ -142,7 +139,7 @@ where
         &mut self,
         network: &N,
     ) -> nb::Result<Notification, Infallible> {
-        if self.socket.is_none() {
+        if self.network_handle.socket.is_none() {
             return Ok(Notification::Abort(EventError::Network(
                 NetworkError::NoSocket,
             )));
@@ -161,34 +158,12 @@ where
         })
     }
 
-    pub fn send<'d, N: TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-        pkt: Packet<'d>,
-    ) -> Result<usize, EventError> {
-        let socket = self
-            .socket
-            .as_mut()
-            .ok_or(EventError::Network(NetworkError::NoSocket))?;
-        let capacity = self.tx_buf.capacity();
-        self.tx_buf.clear();
-        self.tx_buf
-            .resize(capacity, 0x00_u8)
-            .unwrap_or_else(|()| unreachable!("Input length equals to the current capacity."));
-        let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
-        let length = nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
-            defmt::error!("[send] NetworkError::Write");
-            EventError::Network(NetworkError::Write)
-        })?;
-
-        Ok(length)
-    }
-
     pub fn receive<N: TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
         let socket = self
+            .network_handle
             .socket
             .as_mut()
             .ok_or(EventError::Network(NetworkError::NoSocket))?;
@@ -229,11 +204,11 @@ where
         &mut self,
         network: &N,
     ) -> Result<(), EventError> {
-        if let Some(socket) = &self.socket {
+        if let Some(socket) = &self.network_handle.socket {
             match network.is_connected(socket) {
                 Ok(true) => return Ok(()),
                 Err(_e) => {
-                    self.socket = None;
+                    self.network_handle.socket = None;
                     return Err(EventError::Network(NetworkError::SocketClosed));
                 }
                 Ok(false) => {}
@@ -242,7 +217,7 @@ where
 
         self.state.connection_status = MqttConnectionStatus::Disconnected;
 
-        self.socket = network
+        self.network_handle.socket = network
             .socket()
             .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
             .into();
@@ -252,7 +227,10 @@ where
                 Some(
                     network
                         .connect(
-                            self.socket.as_mut().unwrap_or_else(|| unreachable!()),
+                            self.network_handle
+                                .socket
+                                .as_mut()
+                                .unwrap_or_else(|| unreachable!()),
                             socket_addr,
                         )
                         .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
@@ -272,7 +250,7 @@ where
 
     pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
         self.state.connection_status = MqttConnectionStatus::Disconnected;
-        if let Some(socket) = self.socket.take() {
+        if let Some(socket) = self.network_handle.socket.take() {
             network.close(socket).ok();
         }
     }
@@ -307,7 +285,7 @@ where
                 };
 
                 // mqtt connection with timeout
-                match self.send(network, connect.into()) {
+                match self.network_handle.send(network, &connect.into()) {
                     Ok(_) => {
                         self.state
                             .handle_outgoing_connect()
@@ -353,6 +331,44 @@ where
                     })
             }
         }
+    }
+}
+
+struct NetworkHandle<S> {
+    /// Network socket
+    socket: Option<S>,
+    tx_buf: Vec<u8, consts::U1024>,
+}
+
+impl<S> NetworkHandle<S> {
+    fn new() -> Self {
+        Self {
+            socket: None,
+            tx_buf: Vec::new(),
+        }
+    }
+
+    pub fn send<'d, N: TcpClient<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+        pkt: &Packet<'d>,
+    ) -> Result<usize, EventError> {
+        let socket = self
+            .socket
+            .as_mut()
+            .ok_or(EventError::Network(NetworkError::NoSocket))?;
+        let capacity = self.tx_buf.capacity();
+        self.tx_buf.clear();
+        self.tx_buf
+            .resize(capacity, 0x00_u8)
+            .unwrap_or_else(|()| unreachable!("Input length equals to the current capacity."));
+        let size = encode_slice(&pkt, self.tx_buf.as_mut())?;
+        let length = nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
+            defmt::error!("[send] NetworkError::Write");
+            EventError::Network(NetworkError::Write)
+        })?;
+
+        Ok(length)
     }
 }
 
@@ -767,7 +783,7 @@ mod tests {
             .unwrap();
 
         event.state.connection_status = MqttConnectionStatus::Handshake;
-        event.socket = Some(());
+        event.network_handle.socket = Some(());
 
         event.connect(&network).unwrap();
     }
