@@ -2,7 +2,7 @@ use crate::requests::UnsubscribeRequest;
 use crate::{Notification, PublishPayload, PublishRequest, Request, Subscribe, SubscribeRequest};
 use core::convert::TryInto;
 use core::ops::Add;
-use embedded_time::duration::Milliseconds;
+use embedded_time::duration::{Generic, Milliseconds};
 use embedded_time::{Clock, Instant};
 use heapless::{consts, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrs::*;
@@ -437,13 +437,15 @@ where
 
 impl<O> defmt::Format for StartTime<Instant<O>>
 where
-    O: Clock<T = u32>,
+    O: Clock,
+    Generic<O::T>: TryInto<Milliseconds>,
 {
     fn format(&self, fmt: &mut defmt::Formatter) {
         let start_time = self
             .0
-            .map(|t| *t.duration_since_epoch().integer())
-            .unwrap_or(0);
+            .and_then(|t| t.duration_since_epoch().try_into().ok())
+            .unwrap_or(Milliseconds(0u32))
+            .0;
         fmt.u32(&start_time);
     }
 }

@@ -15,7 +15,7 @@ use no_std_net::SocketAddr;
 pub struct EventLoop<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
-    O: Clock<T = u32>,
+    O: Clock,
     P: PublishPayload,
 {
     /// Current state of the connection
@@ -35,7 +35,7 @@ where
 impl<'a, 'b, L, S, O, P> EventLoop<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
-    O: Clock<T = u32>,
+    O: Clock,
     P: PublishPayload + Clone,
 {
     pub fn new(
