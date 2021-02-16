@@ -427,8 +427,8 @@ where
     /// Check whether an interval has elapsed since this start time.
     pub fn has_elapsed(&self, now: &T, interval: Milliseconds) -> bool {
         if let Some(start_time) = self.0 {
-            let time_elapsed = start_time + interval;
-            time_elapsed > *now
+            let elapse_time = start_time + interval;
+            elapse_time <= *now
         } else {
             false
         }
