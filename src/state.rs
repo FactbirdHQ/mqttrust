@@ -309,7 +309,7 @@ where
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
             defmt::error!("Error awaiting for last ping response");
-            // return Err(StateError::AwaitPingResp);
+            return Err(StateError::AwaitPingResp);
         }
 
         self.await_pingresp = true;
