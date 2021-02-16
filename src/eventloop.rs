@@ -126,7 +126,11 @@ where
         // By comparing the current time, select pending non-zero QoS publish
         // requests staying longer than the retry interval, and handle their
         // retrial.
-        for _publish in self.retries().into_iter() {}
+        for (pid, retry) in self.state.retries(now, 50_000.milliseconds()) {
+            let packet = retry.packet(*pid, packet_buf);
+            // *FIXME* second mutable borrow occurs here
+            /*self.send(network, packet)?;*/
+        }
 
         notification.ok_or(nb::Error::WouldBlock)
     }
@@ -349,10 +353,6 @@ where
                     })
             }
         }
-    }
-
-    fn retries(&mut self) -> Result<(), EventError> {
-        unimplemented!();
     }
 }
 

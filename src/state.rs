@@ -31,6 +31,8 @@ pub enum StateError {
     InvalidUtf8,
     /// The maximum number of messages allowed to be simultaneously in-flight has been reached.
     MaxMessagesInflight,
+    /// Non-zero QoS publications require PID
+    PidMissing,
 }
 
 /// State of the mqtt connection.
@@ -146,8 +148,8 @@ where
         buf: &'a mut [u8],
         now: &T,
     ) -> Result<Packet<'a>, StateError> {
-        let qospid = match request.qos {
-            QoS::AtMostOnce => QosPid::AtMostOnce,
+        let pid = match request.qos {
+            QoS::AtMostOnce => None,
             QoS::AtLeastOnce => {
                 let pid = self.next_pid();
                 self.outgoing_pub
@@ -156,7 +158,7 @@ where
                         Inflight::new(StartTime::new(*now), request.clone()),
                     )
                     .map_err(|_| StateError::MaxMessagesInflight)?;
-                QosPid::AtLeastOnce(pid)
+                pid.into()
             }
             QoS::ExactlyOnce => {
                 let pid = self.next_pid();
@@ -166,34 +168,13 @@ where
                         Inflight::new(StartTime::new(*now), request.clone()),
                     )
                     .map_err(|_| StateError::MaxMessagesInflight)?;
-                QosPid::ExactlyOnce(pid)
+                pid.into()
             }
         };
 
-        let topic_len = request.topic_name.len();
-        buf[..topic_len].copy_from_slice(request.topic_name.as_str().as_bytes());
-
-        let len = request
-            .payload
-            .as_bytes(&mut buf[topic_len..])
-            .map_err(|_| StateError::PayloadEncoding)?;
-
-        let publish = Publish {
-            dup: request.dup,
-            qospid,
-            retain: request.retain,
-            topic_name: core::str::from_utf8(&buf[..topic_len])
-                .map_err(|_| StateError::InvalidUtf8)?,
-            payload: &buf[topic_len..topic_len + len],
-        };
-
-        defmt::trace!(
-            "Publish. Topic = {:str}, Payload Size = {:?}",
-            publish.topic_name,
-            publish.payload.len()
-        );
-
-        Ok(publish.into())
+        pid.into_iter()
+            .fold(PublishPacketBuilder::new(buf), PublishPacketBuilder::pid)
+            .build(&request)
     }
 
     /// Iterates through the list of stored publishes and removes the publish
@@ -399,6 +380,16 @@ where
     pub(crate) fn last_ping_entry(&mut self) -> &mut StartTime<T> {
         &mut self.last_ping
     }
+
+    pub(crate) fn retries(
+        &mut self,
+        now: T,
+        interval: Milliseconds,
+    ) -> impl Iterator<Item = (&u16, &mut Inflight<P, T>)> + '_ {
+        self.outgoing_pub
+            .iter_mut()
+            .filter(move |(_, inflight)| inflight.last_touch.has_elapsed(&now, interval))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -455,6 +446,57 @@ where
     }
 }
 
+struct PublishPacketBuilder<'a> {
+    pid: Option<Pid>,
+    buf: &'a mut [u8],
+}
+
+impl<'a> PublishPacketBuilder<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self { pid: None, buf }
+    }
+
+    fn pid(self, pid: Pid) -> Self {
+        Self {
+            pid: pid.into(),
+            ..self
+        }
+    }
+
+    fn build<P>(self, request: &PublishRequest<P>) -> Result<Packet<'a>, StateError>
+    where
+        P: PublishPayload,
+    {
+        let qospid = match request.qos {
+            QoS::AtMostOnce => QosPid::AtMostOnce,
+            QoS::AtLeastOnce => QosPid::AtLeastOnce(self.pid.ok_or(StateError::PidMissing)?),
+            QoS::ExactlyOnce => QosPid::ExactlyOnce(self.pid.ok_or(StateError::PidMissing)?),
+        };
+
+        // Construct topic name from the request and align on a buffer.
+        let topic_len = request.topic_name.len();
+        let (topic_buf, payload_buf) = self.buf.split_at_mut(topic_len);
+        topic_buf.copy_from_slice(request.topic_name.as_str().as_bytes());
+        let topic_name = core::str::from_utf8(topic_buf).map_err(|_| StateError::InvalidUtf8)?;
+
+        // Copy the payload from the request to remaining buffer.
+        let len = request
+            .payload
+            .as_bytes(payload_buf)
+            .map_err(|_| StateError::PayloadEncoding)?;
+        let (payload, _) = payload_buf.split_at(len);
+
+        Ok(Publish {
+            dup: request.dup,
+            qospid,
+            retain: request.retain,
+            topic_name,
+            payload,
+        }
+        .into())
+    }
+}
+
 /// Client publication message data.
 #[derive(Debug)]
 pub(crate) struct Inflight<P, T> {
@@ -478,6 +520,16 @@ where
             publish,
             last_touch,
         }
+    }
+}
+
+impl<P, T> Inflight<P, T>
+where
+    P: PublishPayload,
+{
+    pub(crate) fn packet<'a>(&self, pid: u16, buf: &'a mut [u8]) -> Result<Packet<'a>, StateError> {
+        let pid = pid.try_into().map_err(|_| StateError::PayloadEncoding)?;
+        PublishPacketBuilder::new(buf).pid(pid).build(&self.publish)
     }
 }
 
