@@ -65,8 +65,8 @@ where
             EventError::Network(e)
         })? {
             let (broker, port) = self.options.broker();
-            let (_hostname, socket_addr) =
-                Self::lookup_host(network, broker, port).map_err(EventError::Network)?;
+            let (_hostname, socket_addr) = NetworkHandle::<S>::lookup_host(network, broker, port)
+                .map_err(EventError::Network)?;
             self.network_connect(network, socket_addr)
                 .map_err(EventError::Network)?;
             defmt::debug!("Network connected!");
@@ -203,34 +203,6 @@ where
         PacketDecoder::new(&mut self.rx_buf).decode(&mut self.state)
     }
 
-    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
-        network: &N,
-        broker: Broker,
-        port: u16,
-    ) -> Result<(String<consts::U256>, SocketAddr), NetworkError> {
-        match broker {
-            Broker::Hostname(h) => {
-                let socket_addr = SocketAddr::new(
-                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
-                        defmt::info!("Failed to resolve IP!");
-                        NetworkError::DnsLookupFailed
-                    })?,
-                    port,
-                );
-                Ok((String::from(h), socket_addr))
-            }
-            Broker::IpAddr(ip) => {
-                let socket_addr = SocketAddr::new(ip, port);
-                let domain = network.gethostbyaddr(ip).map_err(|_e| {
-                    defmt::info!("Failed to resolve hostname!");
-                    NetworkError::DnsLookupFailed
-                })?;
-
-                Ok((domain, socket_addr))
-            }
-        }
-    }
-
     fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
@@ -324,6 +296,34 @@ struct NetworkHandle<S> {
 }
 
 impl<S> NetworkHandle<S> {
+    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
+        network: &N,
+        broker: Broker,
+        port: u16,
+    ) -> Result<(String<consts::U256>, SocketAddr), NetworkError> {
+        match broker {
+            Broker::Hostname(h) => {
+                let socket_addr = SocketAddr::new(
+                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
+                        defmt::info!("Failed to resolve IP!");
+                        NetworkError::DnsLookupFailed
+                    })?,
+                    port,
+                );
+                Ok((String::from(h), socket_addr))
+            }
+            Broker::IpAddr(ip) => {
+                let socket_addr = SocketAddr::new(ip, port);
+                let domain = network.gethostbyaddr(ip).map_err(|_e| {
+                    defmt::info!("Failed to resolve hostname!");
+                    NetworkError::DnsLookupFailed
+                })?;
+
+                Ok((domain, socket_addr))
+            }
+        }
+    }
+
     fn new() -> Self {
         Self {
             socket: None,
