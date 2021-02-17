@@ -59,7 +59,7 @@ where
         use EventError::*;
 
         // connect to the broker
-        if !self.is_connected(network).map_err(|e| {
+        if !self.network_handle.is_connected(network).map_err(|e| {
             // On the socket error, clean it up and bail out.
             self.network_handle.socket.take();
             EventError::Network(e)
@@ -231,19 +231,6 @@ where
         }
     }
 
-    /// Checks if this socket is present and connected. Raises `NetworkError` when
-    /// the socket is present and in its error state.
-    fn is_connected<N: Dns + TcpClient<TcpSocket = S>>(
-        &self,
-        network: &N,
-    ) -> Result<bool, NetworkError> {
-        self.network_handle
-            .socket
-            .as_ref()
-            .map_or(Ok(false), |socket| network.is_connected(&socket))
-            .map_err(|_e| NetworkError::SocketClosed)
-    }
-
     fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
@@ -342,6 +329,18 @@ impl<S> NetworkHandle<S> {
             socket: None,
             tx_buf: Vec::new(),
         }
+    }
+
+    /// Checks if this socket is present and connected. Raises `NetworkError` when
+    /// the socket is present and in its error state.
+    fn is_connected<N: Dns + TcpClient<TcpSocket = S>>(
+        &self,
+        network: &N,
+    ) -> Result<bool, NetworkError> {
+        self.socket
+            .as_ref()
+            .map_or(Ok(false), |socket| network.is_connected(&socket))
+            .map_err(|_e| NetworkError::SocketClosed)
     }
 
     pub fn send<'d, N: TcpClient<TcpSocket = S>>(
