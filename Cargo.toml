@@ -20,6 +20,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 embedded-hal = { version = "1.0.0-alpha.4" }
 embedded-nal = "0.2.0"
+embedded-time = "0.10.1"
 nb = "^1"
 heapless = { version = "^0.5.5", features = ["serde"] }
 no-std-net = "0.4.0"

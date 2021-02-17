@@ -8,6 +8,7 @@ mod state;
 
 pub use client::{Mqtt, MqttClient, MqttClientError};
 use core::convert::TryFrom;
+use embedded_time::clock;
 pub use eventloop::EventLoop;
 use heapless::{consts, String, Vec};
 use mqttrs::Pid;
@@ -75,6 +76,7 @@ pub enum EventError {
     Encoding(mqttrs::Error),
     Network(NetworkError),
     BufferSize,
+    Clock,
 }
 
 #[derive(Debug, PartialEq, defmt::Format)]
@@ -97,5 +99,11 @@ impl From<mqttrs::Error> for EventError {
 impl From<StateError> for EventError {
     fn from(e: StateError) -> Self {
         EventError::MqttState(e)
+    }
+}
+
+impl From<clock::Error> for EventError {
+    fn from(_e: clock::Error) -> Self {
+        EventError::Clock
     }
 }

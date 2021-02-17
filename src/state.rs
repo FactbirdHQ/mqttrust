@@ -1,6 +1,9 @@
 use crate::requests::UnsubscribeRequest;
 use crate::{Notification, PublishPayload, PublishRequest, Request, Subscribe, SubscribeRequest};
 use core::convert::TryInto;
+use core::ops::Add;
+use embedded_time::duration::{Generic, Milliseconds};
+use embedded_time::{Clock, Instant};
 use heapless::{consts, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrs::*;
 
@@ -26,6 +29,8 @@ pub enum StateError {
     WrongPacket,
     PayloadEncoding,
     InvalidUtf8,
+    /// The maximum number of messages allowed to be simultaneously in-flight has been reached.
+    MaxMessagesInflight,
 }
 
 /// State of the mqtt connection.
@@ -40,7 +45,7 @@ pub enum StateError {
 /// **Generics**:
 /// - O: The output timer used for keeping track of keep-alive ping-pongs. Must
 ///   implement the [`embedded_hal::timer::CountDown`] trait
-pub struct MqttState<P> {
+pub struct MqttState<P, T> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
     /// Status of last ping
@@ -53,9 +58,10 @@ pub struct MqttState<P> {
     pub outgoing_rel: FnvIndexSet<u16, consts::U4>,
     /// Packet ids on incoming QoS 2 publishes
     pub incoming_pub: FnvIndexSet<u16, consts::U2>,
+    last_ping: StartTime<T>,
 }
 
-impl<P> MqttState<P>
+impl<P, T> MqttState<P, T>
 where
     P: PublishPayload + Clone,
 {
@@ -71,6 +77,7 @@ where
             outgoing_pub: IndexMap::new(),
             outgoing_rel: IndexSet::new(),
             incoming_pub: IndexSet::new(),
+            last_ping: StartTime::default(),
         }
     }
 
@@ -142,14 +149,14 @@ where
                 let pid = self.next_pid();
                 self.outgoing_pub
                     .insert(pid.get(), request.clone())
-                    .map_err(|_| StateError::InvalidState)?;
+                    .map_err(|_| StateError::MaxMessagesInflight)?;
                 QosPid::AtLeastOnce(pid)
             }
             QoS::ExactlyOnce => {
                 let pid = self.next_pid();
                 self.outgoing_pub
                     .insert(pid.get(), request.clone())
-                    .map_err(|_| StateError::InvalidState)?;
+                    .map_err(|_| StateError::MaxMessagesInflight)?;
                 QosPid::ExactlyOnce(pid)
             }
         };
@@ -302,7 +309,7 @@ where
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
             defmt::error!("Error awaiting for last ping response");
-            // return Err(StateError::AwaitPingResp);
+            return Err(StateError::AwaitPingResp);
         }
 
         self.await_pingresp = true;
@@ -379,11 +386,73 @@ where
         self.last_pid = self.last_pid + 1;
         self.last_pid
     }
+
+    pub(crate) fn last_ping(&self) -> &StartTime<T> {
+        &self.last_ping
+    }
+
+    pub(crate) fn last_ping_entry(&mut self) -> &mut StartTime<T> {
+        &mut self.last_ping
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StartTime<T>(Option<T>);
+
+impl<T> Default for StartTime<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> StartTime<T> {
+    pub fn new(start_time: T) -> Self {
+        Self(start_time.into())
+    }
+
+    pub fn or_insert(&mut self, now: T) -> &mut Self {
+        self.0.get_or_insert(now);
+        self
+    }
+
+    pub fn insert(&mut self, now: T) {
+        self.0.replace(now);
+    }
+}
+
+impl<T> StartTime<T>
+where
+    T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
+{
+    /// Check whether an interval has elapsed since this start time.
+    pub fn has_elapsed(&self, now: &T, interval: Milliseconds) -> bool {
+        if let Some(start_time) = self.0 {
+            let elapse_time = start_time + interval;
+            elapse_time <= *now
+        } else {
+            false
+        }
+    }
+}
+
+impl<O> defmt::Format for StartTime<Instant<O>>
+where
+    O: Clock,
+    Generic<O::T>: TryInto<Milliseconds>,
+{
+    fn format(&self, fmt: &mut defmt::Formatter) {
+        let start_time = self
+            .0
+            .and_then(|t| t.duration_since_epoch().try_into().ok())
+            .unwrap_or(Milliseconds(0u32))
+            .0;
+        fmt.u32(&start_time);
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use super::{MqttConnectionStatus, MqttState, Packet, StateError};
+    use super::{Milliseconds, MqttConnectionStatus, MqttState, Packet, StateError};
     use crate::{Notification, PublishRequest, SubscribeRequest, UnsubscribeRequest};
     use core::convert::TryFrom;
     use heapless::{consts, String, Vec};
@@ -415,7 +484,7 @@ mod test {
         }
     }
 
-    fn build_mqttstate<'a>() -> MqttState<Vec<u8, consts::U3>> {
+    fn build_mqttstate<'a>() -> MqttState<Vec<u8, consts::U3>, Milliseconds> {
         MqttState::new()
     }
 

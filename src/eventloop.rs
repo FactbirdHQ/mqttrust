@@ -3,9 +3,11 @@ use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
 use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
-use core::convert::{Infallible, TryInto};
+use core::convert::Infallible;
 use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, TcpClient};
+use embedded_time::duration::Extensions;
+use embedded_time::{Clock, Instant};
 use heapless::{consts, spsc, ArrayLength, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
 use no_std_net::SocketAddr;
@@ -13,10 +15,11 @@ use no_std_net::SocketAddr;
 pub struct EventLoop<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
+    O: Clock,
     P: PublishPayload,
 {
     /// Current state of the connection
-    pub state: MqttState<P>,
+    pub state: MqttState<P, Instant<O>>,
     /// Last outgoing packet time
     pub last_outgoing_timer: O,
     /// Options of the current mqtt connection
@@ -32,8 +35,7 @@ where
 impl<'a, 'b, L, S, O, P> EventLoop<'a, 'b, L, S, O, P>
 where
     L: ArrayLength<Request<P>>,
-    O: embedded_hal::timer::CountDown,
-    O::Time: From<u32>,
+    O: Clock,
     P: PublishPayload + Clone,
 {
     pub fn new(
@@ -92,13 +94,24 @@ where
             return Err(nb::Error::WouldBlock);
         }
 
-        if self.last_outgoing_timer.try_wait().is_ok() {
+        let now = self
+            .last_outgoing_timer
+            .try_now()
+            .map_err(EventError::from)?;
+
+        if self
+            .state
+            .last_ping_entry()
+            .or_insert(now)
+            .has_elapsed(&now, self.options.keep_alive_ms().milliseconds())
+        {
             // Handle keepalive ping
             let packet = self
                 .state
                 .handle_outgoing_packet(Packet::Pingreq)
                 .map_err(EventError::from)?;
             self.send(network, packet)?;
+            self.state.last_ping_entry().insert(now);
             return Err(nb::Error::WouldBlock);
         }
 
@@ -108,7 +121,7 @@ where
         if let Some(packet) = packet {
             self.send(network, packet)?;
         }
-        
+
         notification.ok_or(nb::Error::WouldBlock)
     }
 
@@ -128,7 +141,10 @@ where
         self.select_event(network).or_else(|e| match e {
             nb::Error::WouldBlock => Err(nb::Error::WouldBlock),
             nb::Error::Other(e) => {
-                defmt::debug!("Disconnecting from an event error. {:?}", defmt::Debug2Format::<consts::U64>(&e));
+                defmt::debug!(
+                    "Disconnecting from an event error. {:?}",
+                    defmt::Debug2Format::<consts::U64>(&e)
+                );
                 self.disconnect(network);
                 Ok(Notification::Abort(e))
             }
@@ -155,17 +171,6 @@ where
             EventError::Network(NetworkError::Write)
         })?;
 
-        let last_outgoing_duration =
-            if self.state.connection_status == MqttConnectionStatus::Disconnected {
-                5000
-            } else {
-                self.options.keep_alive_ms()
-            };
-
-        self.last_outgoing_timer
-            .try_start(last_outgoing_duration)
-            .ok();
-
         Ok(length)
     }
 
@@ -180,7 +185,7 @@ where
 
         self.rx_buf.receive(socket, network)?;
 
-        PacketDecoder::new(&mut self.state, &mut self.rx_buf).try_into()
+        PacketDecoder::new(&mut self.rx_buf).decode(&mut self.state)
     }
 
     fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
@@ -270,6 +275,12 @@ where
             MqttConnectionStatus::Connected => Ok(false),
             MqttConnectionStatus::Disconnected => {
                 defmt::info!("MQTT connecting..");
+                let now = self
+                    .last_outgoing_timer
+                    .try_now()
+                    .map_err(EventError::from)?;
+                self.state.last_ping_entry().insert(now);
+
                 self.state.await_pingresp = false;
                 self.state.outgoing_pub.clear();
 
@@ -291,8 +302,6 @@ where
                         self.state
                             .handle_outgoing_connect()
                             .map_err(|e| nb::Error::Other(e.into()))?;
-
-                        self.last_outgoing_timer.try_start(50_000).ok();
                     }
                     Err(e) => {
                         defmt::debug!("Disconnecting from send error!");
@@ -304,7 +313,16 @@ where
                 Err(nb::Error::WouldBlock)
             }
             MqttConnectionStatus::Handshake => {
-                if self.last_outgoing_timer.try_wait().is_ok() {
+                let now = self
+                    .last_outgoing_timer
+                    .try_now()
+                    .map_err(EventError::from)?;
+                if self
+                    .state
+                    .last_ping_entry()
+                    .or_insert(now)
+                    .has_elapsed(&now, 50_000.milliseconds())
+                {
                     defmt::debug!("Disconnecting from handshake timeout!");
                     self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
@@ -390,22 +408,14 @@ impl PacketBuffer {
 /// Provides contextual information for decoding packets. If an incoming packet
 /// is well-formed and has a packet type the underlying state expects, returns a
 /// notification. On an error, cleans up its buffer state.
-struct PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
-    state: &'a mut MqttState<P>,
+struct PacketDecoder<'a> {
     packet_buffer: &'a mut PacketBuffer,
     is_err: Option<bool>,
 }
 
-impl<'a, P> PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
-    fn new(state: &'a mut MqttState<P>, packet_buffer: &'a mut PacketBuffer) -> Self {
+impl<'a> PacketDecoder<'a> {
+    fn new(packet_buffer: &'a mut PacketBuffer) -> Self {
         Self {
-            state,
             packet_buffer,
             is_err: None,
         }
@@ -442,25 +452,28 @@ where
             })
             .into()
     }
-}
 
-impl<'a, P> TryInto<(Option<Notification>, Option<Packet<'static>>)> for PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
-    type Error = nb::Error<EventError>;
-    fn try_into(mut self) -> Result<(Option<Notification>, Option<Packet<'static>>), Self::Error> {
+    fn decode<P, T>(
+        mut self,
+        state: &mut MqttState<P, T>,
+    ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError>
+    where
+        P: PublishPayload + Clone,
+    {
         let buffer = self.packet_buffer.buffer[self.packet_buffer.range].as_ref();
         match decode_slice(buffer) {
             Err(e) => {
                 self.is_err.replace(true);
-                defmt::error!("Packet decode error! {:?}", defmt::Debug2Format::<heapless::consts::U64>(&e));
+                defmt::error!(
+                    "Packet decode error! {:?}",
+                    defmt::Debug2Format::<heapless::consts::U64>(&e)
+                );
 
                 Err(EventError::Encoding(e).into())
             }
             Ok(Some(packet)) => {
                 self.is_err.replace(false);
-                self.state
+                state
                     .handle_incoming_packet(packet)
                     .map_err(EventError::from)
                     .map_err(nb::Error::from)
@@ -470,10 +483,7 @@ where
     }
 }
 
-impl<'a, P> Drop for PacketDecoder<'a, P>
-where
-    P: PublishPayload + Clone,
-{
+impl<'a> Drop for PacketDecoder<'a> {
     fn drop(&mut self) {
         if let Some(is_err) = self.is_err {
             if is_err {
@@ -492,28 +502,25 @@ where
 mod tests {
     use super::*;
     use crate::PublishRequest;
-    use embedded_hal::timer::CountDown;
+    use embedded_time::clock::Error;
+    use embedded_time::duration::Milliseconds;
+    use embedded_time::fraction::Fraction;
+    use embedded_time::Instant;
     use heapless::{consts, spsc::Queue, String, Vec};
     use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
 
     #[derive(Debug)]
-    struct CdMock {
+    struct ClockMock {
         time: u32,
     }
 
-    impl CountDown for CdMock {
-        type Error = core::convert::Infallible;
-        type Time = u32;
-        fn try_start<T>(&mut self, count: T) -> Result<(), Self::Error>
-        where
-            T: Into<Self::Time>,
-        {
-            self.time = count.into();
-            Ok(())
-        }
-        fn try_wait(&mut self) -> nb::Result<(), Self::Error> {
-            Ok(())
+    impl Clock for ClockMock {
+        const SCALING_FACTOR: Fraction = Fraction::new(1000, 1);
+        type T = u32;
+
+        fn try_now(&self) -> Result<Instant<Self>, Error> {
+            Ok(Instant::new(self.time))
         }
     }
 
@@ -596,7 +603,7 @@ mod tests {
 
     #[test]
     fn success_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, consts::U10>>::new();
+        let mut state = MqttState::<Vec<u8, consts::U10>, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack = Connack {
             session_present: false,
@@ -618,17 +625,13 @@ mod tests {
 
         // Decode the first Connack packet on the Handshake state.
         state.connection_status = MqttConnectionStatus::Handshake;
-        let (n, p) = PacketDecoder::new(&mut state, &mut rx_buf)
-            .try_into()
-            .unwrap();
+        let (n, p) = PacketDecoder::new(&mut rx_buf).decode(&mut state).unwrap();
         assert_eq!(n, Some(Notification::ConnAck));
         assert_eq!(p, None);
 
         // Decode the second Publish packet on the Connected state.
         assert_eq!(state.connection_status, MqttConnectionStatus::Connected);
-        let (n, p) = PacketDecoder::new(&mut state, &mut rx_buf)
-            .try_into()
-            .unwrap();
+        let (n, p) = PacketDecoder::new(&mut rx_buf).decode(&mut state).unwrap();
         let publish_notification = match n {
             Some(Notification::Publish(p)) => p,
             _ => panic!(),
@@ -641,7 +644,7 @@ mod tests {
 
     #[test]
     fn failure_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, consts::U10>>::new();
+        let mut state = MqttState::<Vec<u8, consts::U10>, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack_malformed = Connack {
             session_present: false,
@@ -666,7 +669,7 @@ mod tests {
         // When a packet is malformed, we cannot tell its length. The decoder
         // discards the entire buffer.
         state.connection_status = MqttConnectionStatus::Handshake;
-        match PacketDecoder::new(&mut state, &mut rx_buf).try_into() {
+        match PacketDecoder::new(&mut rx_buf).decode(&mut state) {
             Ok((_, _)) | Err(nb::Error::WouldBlock) => panic!(),
             Err(nb::Error::Other(e)) => {
                 assert_eq!(e, EventError::Encoding(InvalidConnectReturnCode(6)))
@@ -691,7 +694,7 @@ mod tests {
         let (_p, c) = unsafe { Q.split() };
         let mut event = EventLoop::<_, (), _, _>::new(
             c,
-            CdMock { time: 0 },
+            ClockMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
         );
 
