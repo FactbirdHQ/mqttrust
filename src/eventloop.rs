@@ -59,7 +59,14 @@ where
         use EventError::*;
 
         // connect to the broker
-        self.network_connect(network)?;
+        if !self.is_connected(network).map_err(|e| {
+            // On the socket error, clean it up and bail out.
+            self.network_handle.socket.take();
+            EventError::Network(e)
+        })? {
+            self.network_connect(network)?;
+        }
+
         self.mqtt_connect(network).map_err(|e| {
             e.map(|e| {
                 if matches!(e, Network(_) | MqttState(_) | Timeout) {
@@ -217,21 +224,23 @@ where
         }
     }
 
+    /// Checks if this socket is present and connected. Raises `NetworkError` when
+    /// the socket is present and in its error state.
+    fn is_connected<N: Dns + TcpClient<TcpSocket = S>>(
+        &self,
+        network: &N,
+    ) -> Result<bool, NetworkError> {
+        self.network_handle
+            .socket
+            .as_ref()
+            .map_or(Ok(false), |socket| network.is_connected(&socket))
+            .map_err(|_e| NetworkError::SocketClosed)
+    }
+
     fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
     ) -> Result<(), EventError> {
-        if let Some(socket) = &self.network_handle.socket {
-            match network.is_connected(socket) {
-                Ok(true) => return Ok(()),
-                Err(_e) => {
-                    self.network_handle.socket = None;
-                    return Err(EventError::Network(NetworkError::SocketClosed));
-                }
-                Ok(false) => {}
-            }
-        };
-
         self.state.connection_status = MqttConnectionStatus::Disconnected;
 
         self.network_handle.socket = network
