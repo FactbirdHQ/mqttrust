@@ -64,7 +64,11 @@ where
             self.network_handle.socket.take();
             EventError::Network(e)
         })? {
-            self.network_connect(network)?;
+            let (broker, port) = self.options.broker();
+            let (_hostname, socket_addr) =
+                Self::lookup_host(network, broker, port).map_err(EventError::Network)?;
+            self.network_connect(network, socket_addr)
+                .map_err(EventError::Network)?;
             self.state.connection_status = MqttConnectionStatus::Disconnected;
         }
 
@@ -201,13 +205,13 @@ where
         network: &N,
         broker: Broker,
         port: u16,
-    ) -> Result<(String<consts::U256>, SocketAddr), EventError> {
+    ) -> Result<(String<consts::U256>, SocketAddr), NetworkError> {
         match broker {
             Broker::Hostname(h) => {
                 let socket_addr = SocketAddr::new(
                     network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
                         defmt::info!("Failed to resolve IP!");
-                        EventError::Network(NetworkError::DnsLookupFailed)
+                        NetworkError::DnsLookupFailed
                     })?,
                     port,
                 );
@@ -217,7 +221,7 @@ where
                 let socket_addr = SocketAddr::new(ip, port);
                 let domain = network.gethostbyaddr(ip).map_err(|_e| {
                     defmt::info!("Failed to resolve hostname!");
-                    EventError::Network(NetworkError::DnsLookupFailed)
+                    NetworkError::DnsLookupFailed
                 })?;
 
                 Ok((domain, socket_addr))
@@ -241,37 +245,26 @@ where
     fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
         &mut self,
         network: &N,
-    ) -> Result<(), EventError> {
+        socket_addr: SocketAddr,
+    ) -> Result<(), NetworkError> {
         self.network_handle.socket = network
             .socket()
-            .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
+            .map_err(|_e| NetworkError::SocketOpen)?
             .into();
 
-        let (broker, port) = self.options.broker();
-        match Self::lookup_host(network, broker, port) {
-            Ok((_hostname, socket_addr)) => {
-                Some(
-                    network
-                        .connect(
-                            self.network_handle
-                                .socket
-                                .as_mut()
-                                .unwrap_or_else(|| unreachable!()),
-                            socket_addr,
-                        )
-                        .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
-                );
+        network
+            .connect(
+                self.network_handle
+                    .socket
+                    .as_mut()
+                    .unwrap_or_else(|| unreachable!()),
+                socket_addr,
+            )
+            .map_err(|_e| NetworkError::SocketConnect)?;
 
-                defmt::debug!("Network connected!");
+        defmt::debug!("Network connected!");
 
-                Ok(())
-            }
-            Err(e) => {
-                // Make sure to cleanup socket, in case we fail DNS lookup for some reason
-                self.disconnect(network);
-                Err(e)
-            }
-        }
+        Ok(())
     }
 
     pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
