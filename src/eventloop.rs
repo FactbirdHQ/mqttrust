@@ -65,6 +65,7 @@ where
             EventError::Network(e)
         })? {
             self.network_connect(network)?;
+            self.state.connection_status = MqttConnectionStatus::Disconnected;
         }
 
         self.mqtt_connect(network).map_err(|e| {
@@ -241,8 +242,6 @@ where
         &mut self,
         network: &N,
     ) -> Result<(), EventError> {
-        self.state.connection_status = MqttConnectionStatus::Disconnected;
-
         self.network_handle.socket = network
             .socket()
             .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
