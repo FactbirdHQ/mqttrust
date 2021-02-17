@@ -69,6 +69,8 @@ where
                 Self::lookup_host(network, broker, port).map_err(EventError::Network)?;
             self.network_connect(network, socket_addr)
                 .map_err(EventError::Network)?;
+            defmt::debug!("Network connected!");
+
             self.state.connection_status = MqttConnectionStatus::Disconnected;
         }
 
@@ -247,24 +249,18 @@ where
         network: &N,
         socket_addr: SocketAddr,
     ) -> Result<(), NetworkError> {
-        self.network_handle.socket = network
-            .socket()
-            .map_err(|_e| NetworkError::SocketOpen)?
-            .into();
+        let socket = match self.network_handle.socket.as_mut() {
+            None => {
+                let socket = network.socket().map_err(|_e| NetworkError::SocketOpen)?;
+                self.network_handle.socket.get_or_insert(socket)
+            }
+            Some(socket) => socket,
+        };
 
         network
-            .connect(
-                self.network_handle
-                    .socket
-                    .as_mut()
-                    .unwrap_or_else(|| unreachable!()),
-                socket_addr,
-            )
-            .map_err(|_e| NetworkError::SocketConnect)?;
-
-        defmt::debug!("Network connected!");
-
-        Ok(())
+            .connect(socket, socket_addr)
+            // Error can be WouldBlock (?)
+            .map_err(|_: nb::Error<_>| NetworkError::SocketConnect)
     }
 
     pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
