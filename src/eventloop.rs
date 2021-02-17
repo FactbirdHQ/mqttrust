@@ -56,9 +56,22 @@ where
         &mut self,
         network: &N,
     ) -> nb::Result<bool, EventError> {
+        use EventError::*;
+
         // connect to the broker
         self.network_connect(network)?;
-        self.mqtt_connect(network)
+        self.mqtt_connect(network).map_err(|e| {
+            e.map(|e| {
+                if matches!(e, Network(_) | MqttState(_) | Timeout) {
+                    defmt::debug!(
+                        "Disconnecting from {:?}",
+                        defmt::Debug2Format::<consts::U64>(&e)
+                    );
+                    self.disconnect(network);
+                }
+                e
+            })
+        })
     }
 
     fn should_handle_request(&mut self) -> bool {
@@ -290,14 +303,8 @@ where
                 };
 
                 // mqtt connection with timeout
-                match self.network_handle.send(network, &connect.into()) {
-                    Ok(_) => self.state.handle_outgoing_connect(),
-                    Err(e) => {
-                        defmt::debug!("Disconnecting from send error!");
-                        self.disconnect(network);
-                        return Err(nb::Error::Other(e));
-                    }
-                }
+                self.network_handle.send(network, &connect.into())?;
+                self.state.handle_outgoing_connect();
 
                 Err(nb::Error::WouldBlock)
             }
@@ -312,24 +319,15 @@ where
                     .or_insert(now)
                     .has_elapsed(&now, 50_000.milliseconds())
                 {
-                    defmt::debug!("Disconnecting from handshake timeout!");
-                    self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.receive(network)
-                    .and_then(|(n, p)| {
-                        if n.is_none() && p.is_none() {
-                            return Err(nb::Error::WouldBlock);
-                        }
-                        Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
-                    })
-                    .map_err(|e| {
-                        if let nb::Error::Other(_) = e {
-                            self.disconnect(network);
-                        }
-                        e
-                    })
+                self.receive(network).and_then(|(n, p)| {
+                    if n.is_none() && p.is_none() {
+                        return Err(nb::Error::WouldBlock);
+                    }
+                    Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
+                })
             }
         }
     }
