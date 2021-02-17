@@ -291,11 +291,7 @@ where
 
                 // mqtt connection with timeout
                 match self.network_handle.send(network, &connect.into()) {
-                    Ok(_) => {
-                        self.state
-                            .handle_outgoing_connect()
-                            .map_err(|e| nb::Error::Other(e.into()))?;
-                    }
+                    Ok(_) => self.state.handle_outgoing_connect(),
                     Err(e) => {
                         defmt::debug!("Disconnecting from send error!");
                         self.disconnect(network);

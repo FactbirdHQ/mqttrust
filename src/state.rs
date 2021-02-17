@@ -339,9 +339,8 @@ where
         Ok(Unsubscribe::new(self.next_pid(), unsubscribe_request.topics).into())
     }
 
-    pub fn handle_outgoing_connect(&mut self) -> Result<(), StateError> {
+    pub(crate) fn handle_outgoing_connect(&mut self) {
         self.connection_status = MqttConnectionStatus::Handshake;
-        Ok(())
     }
 
     pub fn handle_incoming_connack(&mut self, connack: Connack) -> Result<(), StateError> {
