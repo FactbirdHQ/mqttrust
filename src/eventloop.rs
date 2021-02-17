@@ -28,7 +28,6 @@ where
     /// Request stream
     pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
     network_handle: NetworkHandle<S>,
-    rx_buf: PacketBuffer,
 }
 
 impl<'a, 'b, L, S, O, P> EventLoop<'a, 'b, L, S, O, P>
@@ -48,7 +47,6 @@ where
             options,
             requests,
             network_handle: NetworkHandle::new(),
-            rx_buf: PacketBuffer::new(),
         }
     }
 
@@ -142,7 +140,11 @@ where
         }
 
         // Handle an incoming packet
-        let (notification, packet) = self.receive(network)?;
+        let (notification, packet) = self
+            .network_handle
+            .receive(network)
+            .map_err(|e| e.map(EventError::Network))?
+            .decode(&mut self.state)?;
 
         if let Some(packet) = packet {
             self.network_handle.send(network, &packet)?;
@@ -187,21 +189,6 @@ where
                 Ok(Notification::Abort(e))
             }
         })
-    }
-
-    pub fn receive<N: TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
-        let socket = self
-            .network_handle
-            .socket
-            .as_mut()
-            .ok_or(EventError::Network(NetworkError::NoSocket))?;
-
-        self.rx_buf.receive(socket, network)?;
-
-        PacketDecoder::new(&mut self.rx_buf).decode(&mut self.state)
     }
 
     pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
@@ -260,12 +247,16 @@ where
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.receive(network).and_then(|(n, p)| {
-                    if n.is_none() && p.is_none() {
-                        return Err(nb::Error::WouldBlock);
-                    }
-                    Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
-                })
+                self.network_handle
+                    .receive(network)
+                    .map_err(|e| e.map(EventError::Network))?
+                    .decode(&mut self.state)
+                    .and_then(|(n, p)| {
+                        if n.is_none() && p.is_none() {
+                            return Err(nb::Error::WouldBlock);
+                        }
+                        Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
+                    })
             }
         }
     }
@@ -275,6 +266,7 @@ struct NetworkHandle<S> {
     /// Network socket
     socket: Option<S>,
     tx_buf: Vec<u8, consts::U1024>,
+    rx_buf: PacketBuffer,
 }
 
 impl<S> NetworkHandle<S> {
@@ -310,6 +302,7 @@ impl<S> NetworkHandle<S> {
         Self {
             socket: None,
             tx_buf: Vec::new(),
+            rx_buf: PacketBuffer::new(),
         }
     }
 
@@ -366,6 +359,17 @@ impl<S> NetworkHandle<S> {
 
         Ok(length)
     }
+
+    fn receive<N: TcpClient<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> nb::Result<PacketDecoder<'_>, NetworkError> {
+        let socket = self.socket.as_mut().ok_or(NetworkError::NoSocket)?;
+
+        self.rx_buf.receive(socket, network)?;
+
+        Ok(PacketDecoder::new(&mut self.rx_buf))
+    }
 }
 
 /// A placeholder that keeps a buffer and constructs a packet incrementally.
@@ -413,14 +417,14 @@ impl PacketBuffer {
 
     /// Receives bytes from a network socket in non-blocking mode. If incoming
     /// bytes found, the range gets extended covering them.
-    fn receive<N, S>(&mut self, socket: &mut S, network: &N) -> nb::Result<(), EventError>
+    fn receive<N, S>(&mut self, socket: &mut S, network: &N) -> nb::Result<(), NetworkError>
     where
         N: TcpClient<TcpSocket = S>,
     {
         let buffer = self.buffer();
         let len = network.receive(socket, buffer).map_err(|_| {
             defmt::error!("[receive] NetworkError::Read");
-            EventError::Network(NetworkError::Read)
+            NetworkError::Read
         })?;
         self.range.end += len;
         Ok(())
