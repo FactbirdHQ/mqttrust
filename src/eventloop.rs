@@ -67,7 +67,8 @@ where
             let (broker, port) = self.options.broker();
             let (_hostname, socket_addr) = NetworkHandle::<S>::lookup_host(network, broker, port)
                 .map_err(EventError::Network)?;
-            self.network_connect(network, socket_addr)
+            self.network_handle
+                .connect(network, socket_addr)
                 .map_err(EventError::Network)?;
             defmt::debug!("Network connected!");
 
@@ -203,25 +204,6 @@ where
         PacketDecoder::new(&mut self.rx_buf).decode(&mut self.state)
     }
 
-    fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-        socket_addr: SocketAddr,
-    ) -> Result<(), NetworkError> {
-        let socket = match self.network_handle.socket.as_mut() {
-            None => {
-                let socket = network.socket().map_err(|_e| NetworkError::SocketOpen)?;
-                self.network_handle.socket.get_or_insert(socket)
-            }
-            Some(socket) => socket,
-        };
-
-        network
-            .connect(socket, socket_addr)
-            // Error can be WouldBlock (?)
-            .map_err(|_: nb::Error<_>| NetworkError::SocketConnect)
-    }
-
     pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
         self.state.connection_status = MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.network_handle.socket.take() {
@@ -341,6 +323,25 @@ impl<S> NetworkHandle<S> {
             .as_ref()
             .map_or(Ok(false), |socket| network.is_connected(&socket))
             .map_err(|_e| NetworkError::SocketClosed)
+    }
+
+    fn connect<N: Dns + TcpClient<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+        socket_addr: SocketAddr,
+    ) -> Result<(), NetworkError> {
+        let socket = match self.socket.as_mut() {
+            None => {
+                let socket = network.socket().map_err(|_e| NetworkError::SocketOpen)?;
+                self.socket.get_or_insert(socket)
+            }
+            Some(socket) => socket,
+        };
+
+        network
+            .connect(socket, socket_addr)
+            // Error can be WouldBlock (?)
+            .map_err(|_: nb::Error<_>| NetworkError::SocketConnect)
     }
 
     pub fn send<'d, N: TcpClient<TcpSocket = S>>(
