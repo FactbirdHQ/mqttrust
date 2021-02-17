@@ -9,7 +9,7 @@ use embedded_nal::{AddrType, Dns, TcpClient};
 use embedded_time::duration::Extensions;
 use embedded_time::duration::Milliseconds;
 use embedded_time::{Clock, Instant};
-use heapless::{consts, spsc, ArrayLength, Vec};
+use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
 use no_std_net::SocketAddr;
 
@@ -177,22 +177,23 @@ where
     }
 
     fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
         network: &N,
-    ) -> Result<(heapless::String<heapless::consts::U256>, SocketAddr), EventError> {
-        match self.options.broker() {
-            (Broker::Hostname(h), p) => {
+        broker: Broker,
+        port: u16,
+    ) -> Result<(String<consts::U256>, SocketAddr), EventError> {
+        match broker {
+            Broker::Hostname(h) => {
                 let socket_addr = SocketAddr::new(
                     network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
                         defmt::info!("Failed to resolve IP!");
                         EventError::Network(NetworkError::DnsLookupFailed)
                     })?,
-                    p,
+                    port,
                 );
-                Ok((heapless::String::from(h), socket_addr))
+                Ok((String::from(h), socket_addr))
             }
-            (Broker::IpAddr(ip), p) => {
-                let socket_addr = SocketAddr::new(ip, p);
+            Broker::IpAddr(ip) => {
+                let socket_addr = SocketAddr::new(ip, port);
                 let domain = network.gethostbyaddr(ip).map_err(|_e| {
                     defmt::info!("Failed to resolve hostname!");
                     EventError::Network(NetworkError::DnsLookupFailed)
@@ -225,7 +226,8 @@ where
             .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
             .into();
 
-        match self.lookup_host(network) {
+        let (broker, port) = self.options.broker();
+        match Self::lookup_host(network, broker, port) {
             Ok((_hostname, socket_addr)) => {
                 Some(
                     network
