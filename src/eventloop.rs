@@ -124,6 +124,7 @@ where
         // requests staying longer than the retry interval, and handle their
         // retrial.
         for (pid, inflight) in self.state.retries(now, 50_000.milliseconds()) {
+            defmt::warn!("Retrying PID {:?}", pid);
             let packet = inflight
                 .packet(*pid, packet_buf)
                 .map_err(EventError::from)?;
@@ -712,7 +713,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn retry_behaviour() {
         static mut Q: Queue<Request<Vec<u8, consts::U10>>, consts::U5, u8> =
             Queue(heapless::i::Queue::u8());
