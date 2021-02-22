@@ -31,6 +31,8 @@ pub enum StateError {
     InvalidUtf8,
     /// The maximum number of messages allowed to be simultaneously in-flight has been reached.
     MaxMessagesInflight,
+    /// Non-zero QoS publications require PID
+    PidMissing,
 }
 
 /// State of the mqtt connection.
@@ -53,7 +55,7 @@ pub struct MqttState<P, T> {
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub outgoing_pub: FnvIndexMap<u16, PublishRequest<P>, consts::U4>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<P, T>, consts::U4>,
     /// Packet ids of released QoS 2 publishes
     pub outgoing_rel: FnvIndexSet<u16, consts::U4>,
     /// Packet ids on incoming QoS 2 publishes
@@ -64,6 +66,7 @@ pub struct MqttState<P, T> {
 impl<P, T> MqttState<P, T>
 where
     P: PublishPayload + Clone,
+    T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
 {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
@@ -99,9 +102,10 @@ where
         &mut self,
         request: Request<P>,
         buf: &'a mut [u8],
+        now: &T,
     ) -> Result<Packet<'a>, StateError> {
         match request {
-            Request::Publish(publish) => self.handle_outgoing_publish(publish, buf),
+            Request::Publish(publish) => self.handle_outgoing_publish(publish, buf, now),
             Request::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe),
             Request::Unsubscribe(unsubscribe) => self.handle_outgoing_unsubscribe(unsubscribe),
             _ => unimplemented!(),
@@ -142,49 +146,35 @@ where
         &mut self,
         request: PublishRequest<P>,
         buf: &'a mut [u8],
+        now: &T,
     ) -> Result<Packet<'a>, StateError> {
-        let qospid = match request.qos {
-            QoS::AtMostOnce => QosPid::AtMostOnce,
+        let pid = match request.qos {
+            QoS::AtMostOnce => None,
             QoS::AtLeastOnce => {
                 let pid = self.next_pid();
                 self.outgoing_pub
-                    .insert(pid.get(), request.clone())
+                    .insert(
+                        pid.get(),
+                        Inflight::new(StartTime::new(*now), request.clone()),
+                    )
                     .map_err(|_| StateError::MaxMessagesInflight)?;
-                QosPid::AtLeastOnce(pid)
+                pid.into()
             }
             QoS::ExactlyOnce => {
                 let pid = self.next_pid();
                 self.outgoing_pub
-                    .insert(pid.get(), request.clone())
+                    .insert(
+                        pid.get(),
+                        Inflight::new(StartTime::new(*now), request.clone()),
+                    )
                     .map_err(|_| StateError::MaxMessagesInflight)?;
-                QosPid::ExactlyOnce(pid)
+                pid.into()
             }
         };
 
-        let topic_len = request.topic_name.len();
-        buf[..topic_len].copy_from_slice(request.topic_name.as_str().as_bytes());
-
-        let len = request
-            .payload
-            .as_bytes(&mut buf[topic_len..])
-            .map_err(|_| StateError::PayloadEncoding)?;
-
-        let publish = Publish {
-            dup: request.dup,
-            qospid,
-            retain: request.retain,
-            topic_name: core::str::from_utf8(&buf[..topic_len])
-                .map_err(|_| StateError::InvalidUtf8)?,
-            payload: &buf[topic_len..topic_len + len],
-        };
-
-        defmt::trace!(
-            "Publish. Topic = {:str}, Payload Size = {:?}",
-            publish.topic_name,
-            publish.payload.len()
-        );
-
-        Ok(publish.into())
+        pid.into_iter()
+            .fold(PublishPacketBuilder::new(buf), PublishPacketBuilder::pid)
+            .build(&request)
     }
 
     /// Iterates through the list of stored publishes and removes the publish
@@ -387,12 +377,18 @@ where
         self.last_pid
     }
 
-    pub(crate) fn last_ping(&self) -> &StartTime<T> {
-        &self.last_ping
-    }
-
     pub(crate) fn last_ping_entry(&mut self) -> &mut StartTime<T> {
         &mut self.last_ping
+    }
+
+    pub(crate) fn retries(
+        &mut self,
+        now: T,
+        interval: Milliseconds,
+    ) -> impl Iterator<Item = (&u16, &mut Inflight<P, T>)> + '_ {
+        self.outgoing_pub
+            .iter_mut()
+            .filter(move |(_, inflight)| inflight.last_touch.has_elapsed(&now, interval))
     }
 }
 
@@ -450,13 +446,117 @@ where
     }
 }
 
+struct PublishPacketBuilder<'a> {
+    pid: Option<Pid>,
+    buf: &'a mut [u8],
+}
+
+impl<'a> PublishPacketBuilder<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self { pid: None, buf }
+    }
+
+    fn pid(self, pid: Pid) -> Self {
+        Self {
+            pid: pid.into(),
+            ..self
+        }
+    }
+
+    fn build<P>(self, request: &PublishRequest<P>) -> Result<Packet<'a>, StateError>
+    where
+        P: PublishPayload,
+    {
+        let qospid = match request.qos {
+            QoS::AtMostOnce => QosPid::AtMostOnce,
+            QoS::AtLeastOnce => QosPid::AtLeastOnce(self.pid.ok_or(StateError::PidMissing)?),
+            QoS::ExactlyOnce => QosPid::ExactlyOnce(self.pid.ok_or(StateError::PidMissing)?),
+        };
+
+        // Construct topic name from the request and align on a buffer.
+        let topic_len = request.topic_name.len();
+        let (topic_buf, payload_buf) = self.buf.split_at_mut(topic_len);
+        topic_buf.copy_from_slice(request.topic_name.as_str().as_bytes());
+        let topic_name = core::str::from_utf8(topic_buf).map_err(|_| StateError::InvalidUtf8)?;
+
+        // Copy the payload from the request to remaining buffer.
+        let len = request
+            .payload
+            .as_bytes(payload_buf)
+            .map_err(|_| StateError::PayloadEncoding)?;
+        let (payload, _) = payload_buf.split_at(len);
+
+        Ok(Publish {
+            dup: request.dup,
+            qospid,
+            retain: request.retain,
+            topic_name,
+            payload,
+        }
+        .into())
+    }
+}
+
+/// Client publication message data.
+#[derive(Debug)]
+pub(crate) struct Inflight<P, T> {
+    /// A publish of non-zero QoS.
+    publish: PublishRequest<P>,
+    /// A timestmap used for retry and expiry.
+    last_touch: StartTime<T>,
+    // next_message_type, only relevant for Qos2, i.e., PUBREC, PUBREL or PUBCOMP.
+}
+
+impl<P, T> Inflight<P, T>
+where
+    T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
+{
+    pub(crate) fn new(last_touch: StartTime<T>, publish: PublishRequest<P>) -> Self {
+        assert!(
+            !matches!(publish.qos, QoS::AtMostOnce),
+            "Only non-zero QoSs are allowed."
+        );
+        Self {
+            publish,
+            last_touch,
+        }
+    }
+
+    pub(crate) fn last_touch_entry(&mut self) -> &mut StartTime<T> {
+        &mut self.last_touch
+    }
+}
+
+impl<P, T> Inflight<P, T>
+where
+    P: PublishPayload,
+{
+    pub(crate) fn packet<'a>(&self, pid: u16, buf: &'a mut [u8]) -> Result<Packet<'a>, StateError> {
+        let pid = pid.try_into().map_err(|_| StateError::PayloadEncoding)?;
+        PublishPacketBuilder::new(buf).pid(pid).build(&self.publish)
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use super::{Milliseconds, MqttConnectionStatus, MqttState, Packet, StateError};
+    use super::{
+        Clock, Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError,
+    };
     use crate::{Notification, PublishRequest, SubscribeRequest, UnsubscribeRequest};
     use core::convert::TryFrom;
+    use embedded_time::duration::Extensions;
+    use embedded_time::Instant;
     use heapless::{consts, String, Vec};
     use mqttrs::*;
+
+    impl<O> From<u32> for StartTime<Instant<O>>
+    where
+        O: Clock<T = u32>,
+    {
+        fn from(now: u32) -> Self {
+            Self::new(Instant::new(now))
+        }
+    }
 
     fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<Vec<u8, consts::U3>> {
         let topic = heapless::String::from("hello/world");
@@ -491,14 +591,14 @@ mod test {
     #[test]
     fn handle_outgoing_requests() {
         let buf = &mut [0u8; 256];
-
+        let now = 0u32.milliseconds();
         let mut mqtt = build_mqttstate();
 
         // Publish
         let publish = build_outgoing_publish(QoS::AtMostOnce);
 
         // Packet id shouldn't be set and publish shouldn't be saved in queue
-        let publish_out = match mqtt.handle_outgoing_request(publish.into(), buf) {
+        let publish_out = match mqtt.handle_outgoing_request(publish.into(), buf, &now) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -521,7 +621,7 @@ mod test {
         };
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
-        let subscribe_out = match mqtt.handle_outgoing_request(subscribe.into(), buf) {
+        let subscribe_out = match mqtt.handle_outgoing_request(subscribe.into(), buf, &now) {
             Ok(Packet::Subscribe(p)) => p,
             _ => panic!("Invalid packet. Should've been a subscribe packet"),
         };
@@ -555,7 +655,7 @@ mod test {
         };
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
-        let unsubscribe_out = match mqtt.handle_outgoing_request(unsubscribe.into(), buf) {
+        let unsubscribe_out = match mqtt.handle_outgoing_request(unsubscribe.into(), buf, &now) {
             Ok(Packet::Unsubscribe(p)) => p,
             _ => panic!("Invalid packet. Should've been a unsubscribe packet"),
         };
@@ -571,6 +671,7 @@ mod test {
     #[test]
     fn outgoing_publish_handle_should_set_pid_correctly_and_add_publish_to_queue_correctly() {
         let buf = &mut [0u8; 256];
+        let now = 0u32.milliseconds();
 
         let mut mqtt = build_mqttstate();
 
@@ -578,7 +679,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::AtMostOnce);
 
         // Packet id shouldn't be set and publish shouldn't be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish, buf) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish, buf, &now) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -589,7 +690,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
 
         // Packet id should be set and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf, &now) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -600,7 +701,7 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
         // Packet id should be incremented and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf, &now) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -614,7 +715,7 @@ mod test {
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
 
         // Packet id should be set and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf, &now) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -625,7 +726,7 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 3);
 
         // Packet id should be incremented and publish should be saved in queue
-        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf) {
+        let publish_out = match mqtt.handle_outgoing_publish(publish.clone(), buf, &now) {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -678,21 +779,21 @@ mod test {
     #[test]
     fn incoming_puback_should_remove_correct_publish_from_queue() {
         let mut mqtt = build_mqttstate();
-
         let buf = &mut [0u8; 256];
+        let now = 0u32.milliseconds();
 
         let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
         let publish2 = build_outgoing_publish(QoS::ExactlyOnce);
 
-        mqtt.handle_outgoing_publish(publish1, buf).unwrap();
-        mqtt.handle_outgoing_publish(publish2, buf).unwrap();
+        mqtt.handle_outgoing_publish(publish1, buf, &now).unwrap();
+        mqtt.handle_outgoing_publish(publish2, buf, &now).unwrap();
 
         mqtt.handle_incoming_puback(Pid::try_from(2).unwrap())
             .unwrap();
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
         let backup = mqtt.outgoing_pub.get(&3);
-        assert_eq!(backup.unwrap().qos, QoS::ExactlyOnce);
+        assert_eq!(backup.unwrap().publish.qos, QoS::ExactlyOnce);
 
         mqtt.handle_incoming_puback(Pid::try_from(3).unwrap())
             .unwrap();
@@ -703,12 +804,13 @@ mod test {
     fn incoming_pubrec_should_release_correct_publish_from_queue_and_add_releaseid_to_rel_queue() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
+        let now = 0u32.milliseconds();
 
         let publish1 = build_outgoing_publish(QoS::AtLeastOnce);
         let publish2 = build_outgoing_publish(QoS::ExactlyOnce);
 
-        mqtt.handle_outgoing_publish(publish1, buf).unwrap();
-        mqtt.handle_outgoing_publish(publish2, buf).unwrap();
+        mqtt.handle_outgoing_publish(publish1, buf, &now).unwrap();
+        mqtt.handle_outgoing_publish(publish2, buf, &now).unwrap();
 
         mqtt.handle_incoming_pubrec(Pid::try_from(3).unwrap())
             .unwrap();
@@ -716,7 +818,7 @@ mod test {
 
         // check if the remaining element's pid is 2
         let backup = mqtt.outgoing_pub.get(&2);
-        assert_eq!(backup.unwrap().qos, QoS::AtLeastOnce);
+        assert_eq!(backup.unwrap().publish.qos, QoS::AtLeastOnce);
 
         assert_eq!(mqtt.outgoing_rel.len(), 1);
 
@@ -728,11 +830,12 @@ mod test {
     fn incoming_pubrec_should_send_release_to_network_and_nothing_to_user() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
+        let now = 0u32.milliseconds();
         let pid = Pid::try_from(2).unwrap();
         assert_eq!(pid.get(), 2);
 
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
-        mqtt.handle_outgoing_publish(publish, buf).unwrap();
+        mqtt.handle_outgoing_publish(publish, buf, &now).unwrap();
 
         let (notification, request) = mqtt.handle_incoming_pubrec(pid).unwrap();
 
@@ -759,10 +862,11 @@ mod test {
     fn incoming_pubcomp_should_release_correct_pid_from_release_queue() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
+        let now = 0u32.milliseconds();
         let publish = build_outgoing_publish(QoS::ExactlyOnce);
         let pid = Pid::try_from(2).unwrap();
 
-        mqtt.handle_outgoing_publish(publish, buf).unwrap();
+        mqtt.handle_outgoing_publish(publish, buf, &now).unwrap();
         mqtt.handle_incoming_pubrec(pid).unwrap();
 
         mqtt.handle_incoming_pubcomp(pid).unwrap();
@@ -773,13 +877,15 @@ mod test {
     fn outgoing_ping_handle_should_throw_errors_for_no_pingresp() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
+        let now = 0u32.milliseconds();
         mqtt.connection_status = MqttConnectionStatus::Connected;
         assert_eq!(mqtt.handle_outgoing_ping(), Ok(Packet::Pingreq));
         assert!(mqtt.await_pingresp);
 
         // network activity other than pingresp
         let publish = build_outgoing_publish(QoS::AtLeastOnce);
-        mqtt.handle_outgoing_publish(publish.into(), buf).unwrap();
+        mqtt.handle_outgoing_publish(publish.into(), buf, &now)
+            .unwrap();
         mqtt.handle_incoming_packet(Packet::Puback(Pid::try_from(2).unwrap()))
             .unwrap();
 
