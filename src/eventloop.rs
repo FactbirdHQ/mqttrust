@@ -9,7 +9,7 @@ use embedded_nal::{AddrType, Dns, TcpClient};
 use embedded_time::duration::Extensions;
 use embedded_time::duration::Milliseconds;
 use embedded_time::{Clock, Instant};
-use heapless::{consts, spsc, ArrayLength, Vec};
+use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
 use no_std_net::SocketAddr;
 
@@ -28,7 +28,6 @@ where
     /// Request stream
     pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
     network_handle: NetworkHandle<S>,
-    rx_buf: PacketBuffer,
 }
 
 impl<'a, 'b, L, S, O, P> EventLoop<'a, 'b, L, S, O, P>
@@ -48,7 +47,6 @@ where
             options,
             requests,
             network_handle: NetworkHandle::new(),
-            rx_buf: PacketBuffer::new(),
         }
     }
 
@@ -56,9 +54,37 @@ where
         &mut self,
         network: &N,
     ) -> nb::Result<bool, EventError> {
+        use EventError::*;
+
         // connect to the broker
-        self.network_connect(network)?;
-        self.mqtt_connect(network)
+        if !self.network_handle.is_connected(network).map_err(|e| {
+            // On the socket error, clean it up and bail out.
+            self.network_handle.socket.take();
+            EventError::Network(e)
+        })? {
+            let (broker, port) = self.options.broker();
+            let (_hostname, socket_addr) = NetworkHandle::<S>::lookup_host(network, broker, port)
+                .map_err(EventError::Network)?;
+            self.network_handle
+                .connect(network, socket_addr)
+                .map_err(EventError::Network)?;
+            defmt::debug!("Network connected!");
+
+            self.state.connection_status = MqttConnectionStatus::Disconnected;
+        }
+
+        self.mqtt_connect(network).map_err(|e| {
+            e.map(|e| {
+                if matches!(e, Network(_) | MqttState(_) | Timeout) {
+                    defmt::debug!(
+                        "Disconnecting from {:?}",
+                        defmt::Debug2Format::<consts::U64>(&e)
+                    );
+                    self.disconnect(network);
+                }
+                e
+            })
+        })
     }
 
     fn should_handle_request(&mut self) -> bool {
@@ -114,7 +140,11 @@ where
         }
 
         // Handle an incoming packet
-        let (notification, packet) = self.receive(network)?;
+        let (notification, packet) = self
+            .network_handle
+            .receive(network)
+            .map_err(|e| e.map(EventError::Network))?
+            .decode(&mut self.state)?;
 
         if let Some(packet) = packet {
             self.network_handle.send(network, &packet)?;
@@ -162,96 +192,6 @@ where
         })
     }
 
-    pub fn receive<N: TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
-        let socket = self
-            .network_handle
-            .socket
-            .as_mut()
-            .ok_or(EventError::Network(NetworkError::NoSocket))?;
-
-        self.rx_buf.receive(socket, network)?;
-
-        PacketDecoder::new(&mut self.rx_buf).decode(&mut self.state)
-    }
-
-    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> Result<(heapless::String<heapless::consts::U256>, SocketAddr), EventError> {
-        match self.options.broker() {
-            (Broker::Hostname(h), p) => {
-                let socket_addr = SocketAddr::new(
-                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
-                        defmt::info!("Failed to resolve IP!");
-                        EventError::Network(NetworkError::DnsLookupFailed)
-                    })?,
-                    p,
-                );
-                Ok((heapless::String::from(h), socket_addr))
-            }
-            (Broker::IpAddr(ip), p) => {
-                let socket_addr = SocketAddr::new(ip, p);
-                let domain = network.gethostbyaddr(ip).map_err(|_e| {
-                    defmt::info!("Failed to resolve hostname!");
-                    EventError::Network(NetworkError::DnsLookupFailed)
-                })?;
-
-                Ok((domain, socket_addr))
-            }
-        }
-    }
-
-    fn network_connect<N: Dns + TcpClient<TcpSocket = S>>(
-        &mut self,
-        network: &N,
-    ) -> Result<(), EventError> {
-        if let Some(socket) = &self.network_handle.socket {
-            match network.is_connected(socket) {
-                Ok(true) => return Ok(()),
-                Err(_e) => {
-                    self.network_handle.socket = None;
-                    return Err(EventError::Network(NetworkError::SocketClosed));
-                }
-                Ok(false) => {}
-            }
-        };
-
-        self.state.connection_status = MqttConnectionStatus::Disconnected;
-
-        self.network_handle.socket = network
-            .socket()
-            .map_err(|_e| EventError::Network(NetworkError::SocketOpen))?
-            .into();
-
-        match self.lookup_host(network) {
-            Ok((_hostname, socket_addr)) => {
-                Some(
-                    network
-                        .connect(
-                            self.network_handle
-                                .socket
-                                .as_mut()
-                                .unwrap_or_else(|| unreachable!()),
-                            socket_addr,
-                        )
-                        .map_err(|_e| EventError::Network(NetworkError::SocketConnect))?,
-                );
-
-                defmt::debug!("Network connected!");
-
-                Ok(())
-            }
-            Err(e) => {
-                // Make sure to cleanup socket, in case we fail DNS lookup for some reason
-                self.disconnect(network);
-                Err(e)
-            }
-        }
-    }
-
     pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
         self.state.connection_status = MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.network_handle.socket.take() {
@@ -289,19 +229,8 @@ where
                 };
 
                 // mqtt connection with timeout
-                match self.network_handle.send(network, &connect.into()) {
-                    Ok(_) => {
-                        self.state
-                            .handle_outgoing_connect()
-                            .map_err(|e| nb::Error::Other(e.into()))?;
-                    }
-                    Err(e) => {
-                        defmt::debug!("Disconnecting from send error!");
-                        self.disconnect(network);
-                        return Err(nb::Error::Other(e));
-                    }
-                }
-
+                self.network_handle.send(network, &connect.into())?;
+                self.state.handle_outgoing_connect();
                 Err(nb::Error::WouldBlock)
             }
             MqttConnectionStatus::Handshake => {
@@ -315,23 +244,18 @@ where
                     .or_insert(now)
                     .has_elapsed(&now, 50_000.milliseconds())
                 {
-                    defmt::debug!("Disconnecting from handshake timeout!");
-                    self.disconnect(network);
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.receive(network)
+                self.network_handle
+                    .receive(network)
+                    .map_err(|e| e.map(EventError::Network))?
+                    .decode(&mut self.state)
                     .and_then(|(n, p)| {
                         if n.is_none() && p.is_none() {
                             return Err(nb::Error::WouldBlock);
                         }
                         Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
-                    })
-                    .map_err(|e| {
-                        if let nb::Error::Other(_) = e {
-                            self.disconnect(network);
-                        }
-                        e
                     })
             }
         }
@@ -342,14 +266,75 @@ struct NetworkHandle<S> {
     /// Network socket
     socket: Option<S>,
     tx_buf: Vec<u8, consts::U1024>,
+    rx_buf: PacketBuffer,
 }
 
 impl<S> NetworkHandle<S> {
+    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
+        network: &N,
+        broker: Broker,
+        port: u16,
+    ) -> Result<(String<consts::U256>, SocketAddr), NetworkError> {
+        match broker {
+            Broker::Hostname(h) => {
+                let socket_addr = SocketAddr::new(
+                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
+                        defmt::info!("Failed to resolve IP!");
+                        NetworkError::DnsLookupFailed
+                    })?,
+                    port,
+                );
+                Ok((String::from(h), socket_addr))
+            }
+            Broker::IpAddr(ip) => {
+                let socket_addr = SocketAddr::new(ip, port);
+                let domain = network.gethostbyaddr(ip).map_err(|_e| {
+                    defmt::info!("Failed to resolve hostname!");
+                    NetworkError::DnsLookupFailed
+                })?;
+
+                Ok((domain, socket_addr))
+            }
+        }
+    }
+
     fn new() -> Self {
         Self {
             socket: None,
             tx_buf: Vec::new(),
+            rx_buf: PacketBuffer::new(),
         }
+    }
+
+    /// Checks if this socket is present and connected. Raises `NetworkError` when
+    /// the socket is present and in its error state.
+    fn is_connected<N: Dns + TcpClient<TcpSocket = S>>(
+        &self,
+        network: &N,
+    ) -> Result<bool, NetworkError> {
+        self.socket
+            .as_ref()
+            .map_or(Ok(false), |socket| network.is_connected(&socket))
+            .map_err(|_e| NetworkError::SocketClosed)
+    }
+
+    fn connect<N: Dns + TcpClient<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+        socket_addr: SocketAddr,
+    ) -> Result<(), NetworkError> {
+        let socket = match self.socket.as_mut() {
+            None => {
+                let socket = network.socket().map_err(|_e| NetworkError::SocketOpen)?;
+                self.socket.get_or_insert(socket)
+            }
+            Some(socket) => socket,
+        };
+
+        network
+            .connect(socket, socket_addr)
+            // Error can be WouldBlock (?)
+            .map_err(|_: nb::Error<_>| NetworkError::SocketConnect)
     }
 
     pub fn send<'d, N: TcpClient<TcpSocket = S>>(
@@ -373,6 +358,17 @@ impl<S> NetworkHandle<S> {
         })?;
 
         Ok(length)
+    }
+
+    fn receive<N: TcpClient<TcpSocket = S>>(
+        &mut self,
+        network: &N,
+    ) -> nb::Result<PacketDecoder<'_>, NetworkError> {
+        let socket = self.socket.as_mut().ok_or(NetworkError::NoSocket)?;
+
+        self.rx_buf.receive(socket, network)?;
+
+        Ok(PacketDecoder::new(&mut self.rx_buf))
     }
 }
 
@@ -421,14 +417,14 @@ impl PacketBuffer {
 
     /// Receives bytes from a network socket in non-blocking mode. If incoming
     /// bytes found, the range gets extended covering them.
-    fn receive<N, S>(&mut self, socket: &mut S, network: &N) -> nb::Result<(), EventError>
+    fn receive<N, S>(&mut self, socket: &mut S, network: &N) -> nb::Result<(), NetworkError>
     where
         N: TcpClient<TcpSocket = S>,
     {
         let buffer = self.buffer();
         let len = network.receive(socket, buffer).map_err(|_| {
             defmt::error!("[receive] NetworkError::Read");
-            EventError::Network(NetworkError::Read)
+            NetworkError::Read
         })?;
         self.range.end += len;
         Ok(())
