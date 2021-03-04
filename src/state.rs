@@ -323,7 +323,7 @@ where
     ) -> Result<Packet<'a>, StateError> {
         defmt::trace!("Subscribe. Topics = ");
         for topic in &subscribe_request.topics {
-            defmt::trace!("{:str}", topic.topic_path.as_str());
+            defmt::trace!("{=str}", topic.topic_path.as_str());
         }
         Ok(Subscribe::new(self.next_pid(), subscribe_request.topics).into())
     }
@@ -334,7 +334,7 @@ where
     ) -> Result<Packet<'a>, StateError> {
         defmt::trace!("Unsubscribe. Topics = ");
         for topic in &unsubscribe_request.topics {
-            defmt::trace!("{:str}", topic.as_str());
+            defmt::trace!("{=str}", topic.as_str());
         }
         Ok(Unsubscribe::new(self.next_pid(), unsubscribe_request.topics).into())
     }
@@ -435,13 +435,13 @@ where
     O: Clock,
     Generic<O::T>: TryInto<Milliseconds>,
 {
-    fn format(&self, fmt: &mut defmt::Formatter) {
+    fn format(&self, fmt: defmt::Formatter) {
         let start_time = self
             .0
             .and_then(|t| t.duration_since_epoch().try_into().ok())
             .unwrap_or(Milliseconds(0u32))
             .0;
-        fmt.u32(&start_time);
+        defmt::write!(fmt, "{=u32}", start_time)
     }
 }
 
