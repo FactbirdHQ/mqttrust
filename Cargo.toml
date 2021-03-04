@@ -26,7 +26,7 @@ heapless = { version = "^0.5.5", features = ["serde"] }
 no-std-net = "0.4.0"
 mqttrs = { version = "0.4.0", default-features = false }
 
-defmt = { version = "^0.1" }
+defmt = { version = "^0.2" }
 
 [dev-dependencies]
 dns-lookup = "1.0.3"

@@ -76,10 +76,7 @@ where
         self.mqtt_connect(network).map_err(|e| {
             e.map(|e| {
                 if matches!(e, Network(_) | MqttState(_) | Timeout) {
-                    defmt::debug!(
-                        "Disconnecting from {:?}",
-                        defmt::Debug2Format::<consts::U64>(&e)
-                    );
+                    defmt::debug!("Disconnecting from {:?}", defmt::Debug2Format(&e));
                     self.disconnect(network);
                 }
                 e
@@ -184,7 +181,7 @@ where
             nb::Error::Other(e) => {
                 defmt::debug!(
                     "Disconnecting from an event error. {:?}",
-                    defmt::Debug2Format::<consts::U64>(&e)
+                    defmt::Debug2Format(&e)
                 );
                 self.disconnect(network);
                 Ok(Notification::Abort(e))
@@ -491,10 +488,7 @@ impl<'a> PacketDecoder<'a> {
         match decode_slice(buffer) {
             Err(e) => {
                 self.is_err.replace(true);
-                defmt::error!(
-                    "Packet decode error! {:?}",
-                    defmt::Debug2Format::<heapless::consts::U64>(&e)
-                );
+                defmt::error!("Packet decode error! {:?}", defmt::Debug2Format(&e));
 
                 Err(EventError::Encoding(e).into())
             }
