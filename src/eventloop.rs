@@ -212,6 +212,7 @@ where
 
                 self.state.await_pingresp = false;
                 self.state.outgoing_pub.clear();
+                self.network_handle.rx_buf.init();
 
                 let (username, password) = self.options.credentials();
 
@@ -328,10 +329,7 @@ impl<S> NetworkHandle<S> {
             Some(socket) => socket,
         };
 
-        network
-            .connect(socket, socket_addr)
-            // Error can be WouldBlock (?)
-            .map_err(|_: nb::Error<_>| NetworkError::SocketConnect)
+        nb::block!(network.connect(socket, socket_addr)).map_err(|_| NetworkError::SocketConnect)
     }
 
     pub fn send<'d, N: TcpClient<TcpSocket = S>>(
