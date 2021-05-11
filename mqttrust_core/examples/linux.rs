@@ -1,9 +1,7 @@
 mod common;
 
-use mqttrust::{
-    EventLoop, MqttOptions, Notification, PublishRequest, QoS, Request, SubscribeRequest,
-    SubscribeTopic,
-};
+use mqttrust::{PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic};
+use mqttrust_core::{EventLoop, MqttOptions, Notification};
 
 use common::clock::SysClock;
 use common::network::Network;

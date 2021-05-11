@@ -1,5 +1,4 @@
 use crate::options::Broker;
-use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
 use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
@@ -11,6 +10,7 @@ use embedded_time::duration::Milliseconds;
 use embedded_time::{Clock, Instant};
 use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
+use mqttrust::{PublishPayload, Request};
 use no_std_net::SocketAddr;
 
 pub struct EventLoop<'a, 'b, L, S, O, P>
@@ -521,7 +521,6 @@ impl<'a> Drop for PacketDecoder<'a> {
 mod tests {
     use super::*;
     use crate::state::{Inflight, StartTime};
-    use crate::PublishRequest;
     use embedded_time::clock::Error;
     use embedded_time::duration::Milliseconds;
     use embedded_time::fraction::Fraction;
@@ -529,6 +528,7 @@ mod tests {
     use heapless::{consts, spsc::Queue, String, Vec};
     use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
+    use mqttrust::PublishRequest;
 
     #[derive(Debug)]
     struct ClockMock {

@@ -1,11 +1,11 @@
-use crate::requests::UnsubscribeRequest;
-use crate::{Notification, PublishPayload, PublishRequest, Request, Subscribe, SubscribeRequest};
+use crate::{Notification, Subscribe};
 use core::convert::TryInto;
 use core::ops::Add;
 use embedded_time::duration::{Generic, Milliseconds};
 use embedded_time::{Clock, Instant};
 use heapless::{consts, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrs::*;
+use mqttrust::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
@@ -541,12 +541,13 @@ mod test {
     use super::{
         Clock, Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError,
     };
-    use crate::{Notification, PublishRequest, SubscribeRequest, UnsubscribeRequest};
+    use crate::Notification;
     use core::convert::TryFrom;
     use embedded_time::duration::Extensions;
     use embedded_time::Instant;
     use heapless::{consts, String, Vec};
     use mqttrs::*;
+    use mqttrust::{PublishRequest, SubscribeRequest, UnsubscribeRequest};
 
     impl<O> From<u32> for StartTime<Instant<O>>
     where

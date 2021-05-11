@@ -3,10 +3,9 @@
 mod client;
 mod eventloop;
 mod options;
-mod requests;
 mod state;
 
-pub use client::{Mqtt, MqttClient, MqttClientError};
+pub use client::{MqttClient, MqttClientError};
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
@@ -17,7 +16,6 @@ pub use mqttrs::{
     SubscribeTopic, Unsubscribe,
 };
 pub use options::{Broker, MqttOptions};
-pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 use state::StateError;
 
 #[derive(Debug, PartialEq)]
