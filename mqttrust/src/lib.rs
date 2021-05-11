@@ -6,12 +6,7 @@ use heapless::{consts, String, Vec};
 pub use mqttrs::{QoS, SubscribeTopic};
 pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
-#[derive(Debug, Clone)]
-pub enum MqttClientError {
-    Full,
-}
-
-pub trait Mqtt<P: PublishPayload> {
+pub trait Client<P: PublishPayload> {
     type Error;
 
     fn send(&mut self, request: Request<P>) -> Result<(), Self::Error>;

@@ -1,6 +1,5 @@
 use heapless::{spsc::Producer, ArrayLength};
-use mqttrust::Mqtt;
-use mqttrust::{PublishPayload, Request};
+use mqttrust::{self, PublishPayload, Request};
 
 #[derive(Debug, Clone)]
 pub enum MqttClientError {
@@ -25,7 +24,7 @@ pub enum MqttClientError {
 ///   event loop. Length in number of request packets
 /// - P: The type of the payload field of publish requests. This **must**
 ///   implement the [`PublishPayload`] trait
-pub struct MqttClient<'a, 'b, L, P>
+pub struct Client<'a, 'b, L, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
@@ -34,20 +33,20 @@ where
     producer: Producer<'a, Request<P>, L, u8>,
 }
 
-impl<'a, 'b, L, P> MqttClient<'a, 'b, L, P>
+impl<'a, 'b, L, P> Client<'a, 'b, L, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
 {
     pub fn new(producer: Producer<'a, Request<P>, L, u8>, client_id: &'b str) -> Self {
-        MqttClient {
+        Self {
             client_id,
             producer,
         }
     }
 }
 
-impl<'a, 'b, L, P> Mqtt<P> for MqttClient<'a, 'b, L, P>
+impl<'a, 'b, L, P> mqttrust::Client<P> for Client<'a, 'b, L, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,

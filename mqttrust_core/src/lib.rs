@@ -5,7 +5,7 @@ mod eventloop;
 mod options;
 mod state;
 
-pub use client::{MqttClient, MqttClientError};
+pub use client::{Client, MqttClientError};
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
