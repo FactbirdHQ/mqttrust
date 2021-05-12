@@ -1,4 +1,4 @@
-use crate::{PublishPayload, Request};
+use crate::{Mqtt, PublishPayload, Request};
 use heapless::{spsc::Producer, ArrayLength};
 
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ where
     }
 }
 
-impl<'a, 'b, L, P> mqttrust::Client<P> for Client<'a, 'b, L, P>
+impl<'a, 'b, L, P> Mqtt<P> for Client<'a, 'b, L, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
