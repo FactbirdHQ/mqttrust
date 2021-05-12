@@ -1,5 +1,5 @@
+use crate::{PublishPayload, Request};
 use heapless::{spsc::Producer, ArrayLength};
-use mqttrust::{self, PublishPayload, Request};
 
 #[derive(Debug, Clone)]
 pub enum MqttClientError {

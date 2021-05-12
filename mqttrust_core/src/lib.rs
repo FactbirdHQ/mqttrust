@@ -15,6 +15,7 @@ pub use mqttrs::{
     Connect, Packet, Protocol, Publish, QoS, QosPid, Suback, Subscribe, SubscribeReturnCodes,
     SubscribeTopic, Unsubscribe,
 };
+pub use mqttrust::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 pub use options::{Broker, MqttOptions};
 use state::StateError;
 

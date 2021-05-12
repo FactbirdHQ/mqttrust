@@ -1,7 +1,6 @@
 use crate::options::Broker;
 use crate::state::{MqttConnectionStatus, MqttState};
-use crate::MqttOptions;
-use crate::{EventError, NetworkError, Notification};
+use crate::{EventError, MqttOptions, NetworkError, Notification, PublishPayload, Request};
 use core::convert::Infallible;
 use core::ops::{Add, RangeTo};
 use embedded_nal::{AddrType, Dns, TcpClient};
@@ -10,7 +9,6 @@ use embedded_time::duration::Milliseconds;
 use embedded_time::{Clock, Instant};
 use heapless::{consts, spsc, ArrayLength, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
-use mqttrust::{PublishPayload, Request};
 use no_std_net::SocketAddr;
 
 pub struct EventLoop<'a, 'b, L, S, O, P>
