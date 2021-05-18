@@ -4,7 +4,7 @@ use core::convert::TryInto;
 use core::ops::Add;
 use embedded_time::duration::{Generic, Milliseconds};
 use embedded_time::{Clock, Instant};
-use heapless::{consts, FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
+use heapless::{FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrs::*;
 
 #[allow(unused)]
@@ -55,11 +55,11 @@ pub struct MqttState<P, T> {
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<P, T>, consts::U4>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<P, T>, 4>,
     /// Packet ids of released QoS 2 publishes
-    pub outgoing_rel: FnvIndexSet<u16, consts::U4>,
+    pub outgoing_rel: FnvIndexSet<u16, 4>,
     /// Packet ids on incoming QoS 2 publishes
-    pub incoming_pub: FnvIndexSet<u16, consts::U2>,
+    pub incoming_pub: FnvIndexSet<u16, 2>,
     last_ping: StartTime<T>,
 }
 
@@ -545,7 +545,7 @@ mod test {
     use core::convert::TryFrom;
     use embedded_time::duration::Extensions;
     use embedded_time::Instant;
-    use heapless::{consts, String, Vec};
+    use heapless::{String, Vec};
     use mqttrs::*;
 
     impl<O> From<u32> for StartTime<Instant<O>>
@@ -557,7 +557,7 @@ mod test {
         }
     }
 
-    fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<Vec<u8, consts::U3>> {
+    fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<Vec<u8, 3>> {
         let topic = heapless::String::from("hello/world");
         let payload = Vec::from_slice(&[1, 2, 3]).unwrap();
 
@@ -583,7 +583,7 @@ mod test {
         }
     }
 
-    fn build_mqttstate<'a>() -> MqttState<Vec<u8, consts::U3>, Milliseconds> {
+    fn build_mqttstate<'a>() -> MqttState<Vec<u8, 3>, Milliseconds> {
         MqttState::new()
     }
 

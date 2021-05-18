@@ -1,4 +1,4 @@
-use heapless::{consts, ArrayLength, String, Vec};
+use heapless::{String, Vec};
 use mqttrs::{QoS, SubscribeTopic};
 
 pub trait PublishPayload {
@@ -6,10 +6,7 @@ pub trait PublishPayload {
     fn from_bytes(v: &[u8]) -> Self;
 }
 
-impl<L> PublishPayload for Vec<u8, L>
-where
-    L: ArrayLength<u8>,
-{
+impl<const L: usize> PublishPayload for Vec<u8, L> {
     fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()> {
         let len = self.len();
         if buffer.len() < len {
@@ -33,7 +30,7 @@ pub struct PublishRequest<P> {
     pub dup: bool,
     pub qos: QoS,
     pub retain: bool,
-    pub topic_name: String<consts::U256>,
+    pub topic_name: String<256>,
     pub payload: P,
 }
 
@@ -41,7 +38,7 @@ impl<P> PublishRequest<P>
 where
     P: PublishPayload,
 {
-    pub fn new(topic_name: String<consts::U256>, payload: P) -> Self {
+    pub fn new(topic_name: String<256>, payload: P) -> Self {
         PublishRequest {
             dup: false,
             qos: QoS::AtLeastOnce,
@@ -61,7 +58,7 @@ where
 /// [MQTT 3.8]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718063
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubscribeRequest {
-    pub topics: Vec<SubscribeTopic, consts::U5>,
+    pub topics: Vec<SubscribeTopic, 5>,
 }
 
 /// Unsubscribe request ([MQTT 3.10]).
@@ -69,7 +66,7 @@ pub struct SubscribeRequest {
 /// [MQTT 3.10]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718072
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnsubscribeRequest {
-    pub topics: Vec<String<consts::U256>, consts::U5>,
+    pub topics: Vec<String<256>, 5>,
 }
 
 /// Requests by the client to mqtt event loop. Request are

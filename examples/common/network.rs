@@ -1,5 +1,5 @@
-use embedded_nal::{AddrType, Dns, SocketAddr, TcpClient};
-use heapless::{consts, String};
+use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
+use heapless::String;
 use no_std_net::IpAddr;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -21,7 +21,7 @@ impl TcpSocket {
 impl Dns for Network {
     type Error = ();
 
-    fn gethostbyaddr(&self, ip_addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+    fn gethostbyaddr(&self, ip_addr: IpAddr) -> Result<String<256>, Self::Error> {
         let ip: std::net::IpAddr = format!("{}", ip_addr).parse().unwrap();
         let host = lookup_addr(&ip).unwrap();
         Ok(String::from(host.as_str()))
@@ -32,7 +32,7 @@ impl Dns for Network {
     }
 }
 
-impl TcpClient for Network {
+impl TcpClientStack for Network {
     type Error = ();
     type TcpSocket = TcpSocket;
 

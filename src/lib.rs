@@ -6,11 +6,11 @@ mod options;
 mod requests;
 mod state;
 
-pub use client::{Mqtt, MqttClient, MqttClientError};
+pub use client::{Mqtt, MqttClient};
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
-use heapless::{consts, String, Vec};
+use heapless::{String, Vec};
 use mqttrs::Pid;
 pub use mqttrs::{
     Connect, Packet, Protocol, Publish, QoS, QosPid, Suback, Subscribe, SubscribeReturnCodes,
@@ -25,8 +25,8 @@ pub struct PublishNotification {
     pub dup: bool,
     pub qospid: QosPid,
     pub retain: bool,
-    pub topic_name: String<consts::U256>,
-    pub payload: Vec<u8, consts::U2048>,
+    pub topic_name: String<256>,
+    pub payload: Vec<u8, 2048>,
 }
 
 /// Includes incoming packets from the network and other interesting events

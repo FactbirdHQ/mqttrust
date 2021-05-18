@@ -19,11 +19,11 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 embedded-hal = { version = "1.0.0-alpha.4" }
-embedded-nal = "0.2.0"
+embedded-nal = "0.4.0"
 embedded-time = "0.10.1"
 nb = "^1"
-heapless = { version = "^0.5.5", features = ["serde"] }
-no-std-net = "0.4.0"
+heapless = { version = "^0.7", features = ["serde"] }
+no-std-net = "0.5.0"
 mqttrs = { version = "0.4.0", default-features = false }
 
 defmt = { version = "^0.2" }
@@ -41,3 +41,7 @@ defmt-debug = []
 defmt-info = []
 defmt-warn = []
 defmt-error = []
+
+[patch.crates-io]
+mqttrs = { path = "../mqttrs" }
+embedded-nal = { path = "../embedded-nal" }

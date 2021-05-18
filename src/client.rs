@@ -1,27 +1,23 @@
+use core::cell::RefCell;
+
 use crate::{
     requests::PublishPayload, PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic,
     UnsubscribeRequest,
 };
-use heapless::{consts, spsc::Producer, ArrayLength, String, Vec};
+use heapless::{spsc::Producer, String, Vec};
 
 #[derive(Debug, Clone)]
-pub enum MqttClientError {
+pub enum MqttError {
     Full,
+    Borrow,
 }
 
 pub trait Mqtt<P: PublishPayload> {
-    type Error;
-
-    fn send(&mut self, request: Request<P>) -> Result<(), Self::Error>;
+    fn send(&self, request: Request<P>) -> Result<(), MqttError>;
 
     fn client_id(&self) -> &str;
 
-    fn publish(
-        &mut self,
-        topic_name: String<consts::U256>,
-        payload: P,
-        qos: QoS,
-    ) -> Result<(), Self::Error> {
+    fn publish(&self, topic_name: String<256>, payload: P, qos: QoS) -> Result<(), MqttError> {
         let req: Request<P> = PublishRequest {
             dup: false,
             qos,
@@ -34,15 +30,19 @@ pub trait Mqtt<P: PublishPayload> {
         self.send(req)
     }
 
-    fn subscribe(&mut self, topics: Vec<SubscribeTopic, consts::U5>) -> Result<(), Self::Error> {
+    // fn subscribe(&self, topic: SubscribeTopic) -> Result<(), MqttError> {
+    //     let mut topics = Vec::new();
+    //     topics.push(topics).ok();
+    //     let req: Request<P> = SubscribeRequest { topics }.into();
+    //     self.send(req)
+    // }
+
+    fn subscribe(&self, topics: Vec<SubscribeTopic, 5>) -> Result<(), MqttError> {
         let req: Request<P> = SubscribeRequest { topics }.into();
         self.send(req)
     }
 
-    fn unsubscribe(
-        &mut self,
-        topics: Vec<String<consts::U256>, consts::U5>,
-    ) -> Result<(), Self::Error> {
+    fn unsubscribe(&self, topics: Vec<String<256>, 5>) -> Result<(), MqttError> {
         let req: Request<P> = UnsubscribeRequest { topics }.into();
         self.send(req)
     }
@@ -59,50 +59,47 @@ pub trait Mqtt<P: PublishPayload> {
 /// - 'a: The lifetime of the queue exhanging packets between the client and the
 ///   event loop. This must have the same lifetime as the corresponding
 ///   Consumer. Usually 'static.
-/// - 'b: The lifetime of the packet fields, backed by a slice buffer
+/// - 'b: The lifetime of client id str
 ///
 /// **Generics**:
 /// - L: The length of the queue, exhanging packets between the client and the
 ///   event loop. Length in number of request packets
 /// - P: The type of the payload field of publish requests. This **must**
 ///   implement the [`PublishPayload`] trait
-pub struct MqttClient<'a, 'b, L, P>
+pub struct MqttClient<'a, 'b, P, const L: usize>
 where
     P: PublishPayload,
-    L: ArrayLength<Request<P>>,
 {
     client_id: &'b str,
-    producer: Producer<'a, Request<P>, L, u8>,
+    producer: RefCell<Producer<'a, Request<P>, L>>,
 }
 
-impl<'a, 'b, L, P> MqttClient<'a, 'b, L, P>
+impl<'a, 'b, P, const L: usize> MqttClient<'a, 'b, P, L>
 where
     P: PublishPayload,
-    L: ArrayLength<Request<P>>,
 {
-    pub fn new(producer: Producer<'a, Request<P>, L, u8>, client_id: &'b str) -> Self {
+    pub fn new(producer: Producer<'a, Request<P>, L>, client_id: &'b str) -> Self {
         MqttClient {
             client_id,
-            producer,
+            producer: RefCell::new(producer),
         }
     }
 }
 
-impl<'a, 'b, L, P> Mqtt<P> for MqttClient<'a, 'b, L, P>
+impl<'a, 'b, P, const L: usize> Mqtt<P> for MqttClient<'a, 'b, P, L>
 where
     P: PublishPayload,
-    L: ArrayLength<Request<P>>,
 {
-    type Error = MqttClientError;
-
     fn client_id(&self) -> &str {
         &self.client_id
     }
 
-    fn send(&mut self, request: Request<P>) -> Result<(), Self::Error> {
+    fn send(&self, request: Request<P>) -> Result<(), MqttError> {
         self.producer
+            .try_borrow_mut()
+            .map_err(|_| MqttError::Borrow)?
             .enqueue(request)
-            .map_err(|_| MqttClientError::Full)?;
+            .map_err(|_| MqttError::Full)?;
         Ok(())
     }
 }
