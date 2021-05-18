@@ -6,7 +6,7 @@ mod options;
 mod requests;
 mod state;
 
-pub use client::{Mqtt, MqttClient};
+pub use client::{Mqtt, MqttClient, MqttError};
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
