@@ -5,13 +5,12 @@ use crate::MqttOptions;
 use crate::{EventError, NetworkError, Notification};
 use core::convert::Infallible;
 use core::ops::{Add, RangeTo};
-use embedded_nal::{AddrType, Dns, TcpClientStack};
+use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
 use embedded_time::duration::Extensions;
 use embedded_time::duration::Milliseconds;
 use embedded_time::{Clock, Instant};
 use heapless::{spsc, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
-use no_std_net::SocketAddr;
 
 pub struct EventLoop<'a, 'b, S, O, P, const L: usize>
 where

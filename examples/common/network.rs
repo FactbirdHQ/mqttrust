@@ -1,6 +1,5 @@
-use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
+use embedded_nal::{AddrType, IpAddr, Dns, SocketAddr, TcpClientStack};
 use heapless::String;
-use no_std_net::IpAddr;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 
