@@ -1,51 +1,9 @@
-use crate::{
-    requests::PublishPayload, PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic,
-    UnsubscribeRequest,
-};
-use heapless::{consts, spsc::Producer, ArrayLength, String, Vec};
+use crate::{Mqtt, PublishPayload, Request};
+use heapless::{spsc::Producer, ArrayLength};
 
 #[derive(Debug, Clone)]
 pub enum MqttClientError {
     Full,
-}
-
-pub trait Mqtt<P: PublishPayload> {
-    type Error;
-
-    fn send(&mut self, request: Request<P>) -> Result<(), Self::Error>;
-
-    fn client_id(&self) -> &str;
-
-    fn publish(
-        &mut self,
-        topic_name: String<consts::U256>,
-        payload: P,
-        qos: QoS,
-    ) -> Result<(), Self::Error> {
-        let req: Request<P> = PublishRequest {
-            dup: false,
-            qos,
-            retain: false,
-            topic_name,
-            payload,
-        }
-        .into();
-
-        self.send(req)
-    }
-
-    fn subscribe(&mut self, topics: Vec<SubscribeTopic, consts::U5>) -> Result<(), Self::Error> {
-        let req: Request<P> = SubscribeRequest { topics }.into();
-        self.send(req)
-    }
-
-    fn unsubscribe(
-        &mut self,
-        topics: Vec<String<consts::U256>, consts::U5>,
-    ) -> Result<(), Self::Error> {
-        let req: Request<P> = UnsubscribeRequest { topics }.into();
-        self.send(req)
-    }
 }
 
 /// MQTT Client
@@ -66,7 +24,7 @@ pub trait Mqtt<P: PublishPayload> {
 ///   event loop. Length in number of request packets
 /// - P: The type of the payload field of publish requests. This **must**
 ///   implement the [`PublishPayload`] trait
-pub struct MqttClient<'a, 'b, L, P>
+pub struct Client<'a, 'b, L, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
@@ -75,20 +33,20 @@ where
     producer: Producer<'a, Request<P>, L, u8>,
 }
 
-impl<'a, 'b, L, P> MqttClient<'a, 'b, L, P>
+impl<'a, 'b, L, P> Client<'a, 'b, L, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,
 {
     pub fn new(producer: Producer<'a, Request<P>, L, u8>, client_id: &'b str) -> Self {
-        MqttClient {
+        Self {
             client_id,
             producer,
         }
     }
 }
 
-impl<'a, 'b, L, P> Mqtt<P> for MqttClient<'a, 'b, L, P>
+impl<'a, 'b, L, P> Mqtt<P> for Client<'a, 'b, L, P>
 where
     P: PublishPayload,
     L: ArrayLength<Request<P>>,

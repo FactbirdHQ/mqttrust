@@ -1,5 +1,5 @@
+use crate::{QoS, SubscribeTopic};
 use heapless::{consts, ArrayLength, String, Vec};
-use mqttrs::{QoS, SubscribeTopic};
 
 pub trait PublishPayload {
     fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()>;

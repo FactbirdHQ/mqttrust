@@ -1,8 +1,6 @@
 use crate::options::Broker;
-use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
-use crate::MqttOptions;
-use crate::{EventError, NetworkError, Notification};
+use crate::{EventError, MqttOptions, NetworkError, Notification, PublishPayload, Request};
 use core::convert::Infallible;
 use core::ops::{Add, RangeTo};
 use embedded_nal::{AddrType, Dns, TcpClient};
@@ -521,7 +519,6 @@ impl<'a> Drop for PacketDecoder<'a> {
 mod tests {
     use super::*;
     use crate::state::{Inflight, StartTime};
-    use crate::PublishRequest;
     use embedded_time::clock::Error;
     use embedded_time::duration::Milliseconds;
     use embedded_time::fraction::Fraction;
@@ -529,6 +526,7 @@ mod tests {
     use heapless::{consts, spsc::Queue, String, Vec};
     use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
+    use mqttrust::PublishRequest;
 
     #[derive(Debug)]
     struct ClockMock {
