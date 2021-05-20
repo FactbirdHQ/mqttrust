@@ -1,0 +1,22 @@
+[package]
+name = "mqttrust"
+version = "0.0.6"
+authors = ["Mathias Koch <mk@blackbird.online>"]
+description = "MQTT Client "
+readme = "../README.md"
+keywords = ["mqtt", "no-std"]
+categories = ["embedded", "no-std"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/BlackbirdHQ/mqttrust"
+edition = "2018"
+documentation = "https://docs.rs/mqttrust"
+
+[lib]
+name = "mqttrust"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+heapless = { version = "^0.7", features = ["serde"] }
+mqttrs = { version = "0.4.0", default-features = false }

@@ -1,8 +1,6 @@
 use crate::options::Broker;
-use crate::requests::{PublishPayload, Request};
 use crate::state::{MqttConnectionStatus, MqttState};
-use crate::MqttOptions;
-use crate::{EventError, NetworkError, Notification};
+use crate::{EventError, MqttOptions, NetworkError, Notification, PublishPayload, Request};
 use core::convert::Infallible;
 use core::ops::{Add, RangeTo};
 use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
@@ -518,7 +516,6 @@ impl<'a> Drop for PacketDecoder<'a> {
 mod tests {
     use super::*;
     use crate::state::{Inflight, StartTime};
-    use crate::PublishRequest;
     use embedded_time::clock::Error;
     use embedded_time::duration::Milliseconds;
     use embedded_time::fraction::Fraction;
@@ -526,6 +523,7 @@ mod tests {
     use heapless::{spsc::Queue, String, Vec};
     use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
+    use mqttrust::PublishRequest;
 
     #[derive(Debug)]
     struct ClockMock {
@@ -549,17 +547,17 @@ mod tests {
     impl Dns for MockNetwork {
         type Error = ();
 
-        fn gethostbyname(
+        fn get_host_by_name(
             &self,
             _hostname: &str,
             _addr_type: embedded_nal::AddrType,
-        ) -> Result<embedded_nal::IpAddr, Self::Error> {
+        ) -> nb::Result<embedded_nal::IpAddr, Self::Error> {
             unimplemented!()
         }
-        fn gethostbyaddr(
+        fn get_host_by_address(
             &self,
             _addr: embedded_nal::IpAddr,
-        ) -> Result<heapless::String<256>, Self::Error> {
+        ) -> nb::Result<heapless::String<256>, Self::Error> {
             unimplemented!()
         }
     }
@@ -568,24 +566,24 @@ mod tests {
         type TcpSocket = ();
         type Error = ();
 
-        fn socket(&self) -> Result<Self::TcpSocket, Self::Error> {
+        fn socket(&mut self) -> Result<Self::TcpSocket, Self::Error> {
             Ok(())
         }
 
         fn connect(
-            &self,
+            &mut self,
             _socket: &mut Self::TcpSocket,
             _remote: embedded_nal::SocketAddr,
         ) -> nb::Result<(), Self::Error> {
             Ok(())
         }
 
-        fn is_connected(&self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
+        fn is_connected(&mut self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
             Ok(true)
         }
 
         fn send(
-            &self,
+            &mut self,
             _socket: &mut Self::TcpSocket,
             buffer: &[u8],
         ) -> nb::Result<usize, Self::Error> {
@@ -597,7 +595,7 @@ mod tests {
         }
 
         fn receive(
-            &self,
+            &mut self,
             _socket: &mut Self::TcpSocket,
             buffer: &mut [u8],
         ) -> nb::Result<usize, Self::Error> {
@@ -613,7 +611,7 @@ mod tests {
             }
         }
 
-        fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
+        fn close(&mut self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
             Ok(())
         }
     }
@@ -699,15 +697,15 @@ mod tests {
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: Queue<Request<Vec<u8, 10>>, 5, u8> = Queue(heapless::i::Queue::u8());
+        static mut Q: Queue<Request<Vec<u8, 10>>, 5> = Queue::new();
 
-        let network = MockNetwork {
+        let mut network = MockNetwork {
             should_fail_read: false,
             should_fail_write: false,
         };
 
         let (_p, c) = unsafe { Q.split() };
-        let mut event = EventLoop::<_, (), _, _>::new(
+        let mut event = EventLoop::<(), _, _, 5>::new(
             c,
             ClockMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
@@ -772,6 +770,6 @@ mod tests {
         event.state.connection_status = MqttConnectionStatus::Handshake;
         event.network_handle.socket = Some(());
 
-        event.connect(&network).unwrap();
+        event.connect(&mut network).unwrap();
     }
 }

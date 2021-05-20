@@ -1,0 +1,42 @@
+[package]
+name = "mqttrust_core"
+version = "0.0.6"
+authors = ["Mathias Koch <mk@blackbird.online>"]
+description = "MQTT Client "
+readme = "../README.md"
+keywords = ["mqtt", "no-std"]
+categories = ["embedded", "no-std"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/BlackbirdHQ/mqttrust"
+edition = "2018"
+documentation = "https://docs.rs/mqttrust_core"
+
+[lib]
+name = "mqttrust_core"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+embedded-hal = { version = "1.0.0-alpha.4" }
+embedded-nal = "0.5.0"
+embedded-time = "0.10.1"
+nb = "^1"
+heapless = { version = "^0.7", features = ["serde"] }
+mqttrs = { version = "0.4.0", default-features = false }
+mqttrust = { path = "../mqttrust" }
+defmt = { version = "^0.2" }
+
+[dev-dependencies]
+dns-lookup = "1.0.3"
+
+
+[features]
+default = []
+
+defmt-default = []
+defmt-trace = []
+defmt-debug = []
+defmt-info = []
+defmt-warn = []
+defmt-error = []
