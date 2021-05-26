@@ -3,17 +3,15 @@ use crate::state::{MqttConnectionStatus, MqttState};
 use crate::{EventError, MqttOptions, NetworkError, Notification, PublishPayload, Request};
 use core::convert::Infallible;
 use core::ops::{Add, RangeTo};
-use embedded_nal::{AddrType, Dns, TcpClient};
+use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
 use embedded_time::duration::Extensions;
 use embedded_time::duration::Milliseconds;
 use embedded_time::{Clock, Instant};
-use heapless::{consts, spsc, ArrayLength, String, Vec};
+use heapless::{spsc, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
-use no_std_net::SocketAddr;
 
-pub struct EventLoop<'a, 'b, L, S, O, P>
+pub struct EventLoop<'a, 'b, S, O, P, const L: usize>
 where
-    L: ArrayLength<Request<P>>,
     O: Clock,
     P: PublishPayload,
 {
@@ -24,18 +22,17 @@ where
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
     /// Request stream
-    pub requests: spsc::Consumer<'a, Request<P>, L, u8>,
+    pub requests: spsc::Consumer<'a, Request<P>, L>,
     network_handle: NetworkHandle<S>,
 }
 
-impl<'a, 'b, L, S, O, P> EventLoop<'a, 'b, L, S, O, P>
+impl<'a, 'b, S, O, P, const L: usize> EventLoop<'a, 'b, S, O, P, L>
 where
-    L: ArrayLength<Request<P>>,
     O: Clock,
     P: PublishPayload + Clone,
 {
     pub fn new(
-        requests: spsc::Consumer<'a, Request<P>, L, u8>,
+        requests: spsc::Consumer<'a, Request<P>, L>,
         outgoing_timer: O,
         options: MqttOptions<'b>,
     ) -> Self {
@@ -48,9 +45,9 @@ where
         }
     }
 
-    pub fn connect<N: Dns + TcpClient<TcpSocket = S>>(
+    pub fn connect<N: Dns + TcpClientStack<TcpSocket = S>>(
         &mut self,
-        network: &N,
+        network: &mut N,
     ) -> nb::Result<bool, EventError> {
         use EventError::*;
 
@@ -96,9 +93,9 @@ where
 
     /// Selects an event from the client's requests, incoming packets from the
     /// broker and keepalive ping cycle.
-    fn select_event<N: TcpClient<TcpSocket = S>>(
+    fn select_event<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
-        network: &N,
+        network: &mut N,
     ) -> nb::Result<Notification, EventError> {
         let packet_buf = &mut [0_u8; 1024];
 
@@ -164,9 +161,9 @@ where
     /// Yields notification from events. All the error raised while processing
     /// event is reported as an `Ok` value of `Notification::Abort`.
     #[must_use = "Eventloop should be iterated over a loop to make progress"]
-    pub fn yield_event<N: TcpClient<TcpSocket = S>>(
+    pub fn yield_event<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
-        network: &N,
+        network: &mut N,
     ) -> nb::Result<Notification, Infallible> {
         if self.network_handle.socket.is_none() {
             return Ok(Notification::Abort(EventError::Network(
@@ -187,16 +184,16 @@ where
         })
     }
 
-    pub fn disconnect<N: TcpClient<TcpSocket = S>>(&mut self, network: &N) {
+    pub fn disconnect<N: TcpClientStack<TcpSocket = S>>(&mut self, network: &mut N) {
         self.state.connection_status = MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.network_handle.socket.take() {
             network.close(socket).ok();
         }
     }
 
-    fn mqtt_connect<N: TcpClient<TcpSocket = S>>(
+    fn mqtt_connect<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
-        network: &N,
+        network: &mut N,
     ) -> nb::Result<bool, EventError> {
         match self.state.connection_status {
             MqttConnectionStatus::Connected => Ok(false),
@@ -261,20 +258,20 @@ where
 struct NetworkHandle<S> {
     /// Network socket
     socket: Option<S>,
-    tx_buf: Vec<u8, consts::U1024>,
+    tx_buf: Vec<u8, 1024>,
     rx_buf: PacketBuffer,
 }
 
 impl<S> NetworkHandle<S> {
-    fn lookup_host<N: Dns + TcpClient<TcpSocket = S>>(
-        network: &N,
+    fn lookup_host<N: Dns + TcpClientStack<TcpSocket = S>>(
+        network: &mut N,
         broker: Broker,
         port: u16,
-    ) -> Result<(String<consts::U256>, SocketAddr), NetworkError> {
+    ) -> Result<(String<256>, SocketAddr), NetworkError> {
         match broker {
             Broker::Hostname(h) => {
                 let socket_addr = SocketAddr::new(
-                    network.gethostbyname(h, AddrType::IPv4).map_err(|_e| {
+                    network.get_host_by_name(h, AddrType::IPv4).map_err(|_e| {
                         defmt::info!("Failed to resolve IP!");
                         NetworkError::DnsLookupFailed
                     })?,
@@ -284,7 +281,7 @@ impl<S> NetworkHandle<S> {
             }
             Broker::IpAddr(ip) => {
                 let socket_addr = SocketAddr::new(ip, port);
-                let domain = network.gethostbyaddr(ip).map_err(|_e| {
+                let domain = network.get_host_by_address(ip).map_err(|_e| {
                     defmt::info!("Failed to resolve hostname!");
                     NetworkError::DnsLookupFailed
                 })?;
@@ -304,9 +301,9 @@ impl<S> NetworkHandle<S> {
 
     /// Checks if this socket is present and connected. Raises `NetworkError` when
     /// the socket is present and in its error state.
-    fn is_connected<N: Dns + TcpClient<TcpSocket = S>>(
+    fn is_connected<N: Dns + TcpClientStack<TcpSocket = S>>(
         &self,
-        network: &N,
+        network: &mut N,
     ) -> Result<bool, NetworkError> {
         self.socket
             .as_ref()
@@ -314,9 +311,9 @@ impl<S> NetworkHandle<S> {
             .map_err(|_e| NetworkError::SocketClosed)
     }
 
-    fn connect<N: Dns + TcpClient<TcpSocket = S>>(
+    fn connect<N: Dns + TcpClientStack<TcpSocket = S>>(
         &mut self,
-        network: &N,
+        network: &mut N,
         socket_addr: SocketAddr,
     ) -> Result<(), NetworkError> {
         let socket = match self.socket.as_mut() {
@@ -330,9 +327,9 @@ impl<S> NetworkHandle<S> {
         nb::block!(network.connect(socket, socket_addr)).map_err(|_| NetworkError::SocketConnect)
     }
 
-    pub fn send<'d, N: TcpClient<TcpSocket = S>>(
+    pub fn send<'d, N: TcpClientStack<TcpSocket = S>>(
         &mut self,
-        network: &N,
+        network: &mut N,
         pkt: &Packet<'d>,
     ) -> Result<usize, EventError> {
         let socket = self
@@ -353,9 +350,9 @@ impl<S> NetworkHandle<S> {
         Ok(length)
     }
 
-    fn receive<N: TcpClient<TcpSocket = S>>(
+    fn receive<N: TcpClientStack<TcpSocket = S>>(
         &mut self,
-        network: &N,
+        network: &mut N,
     ) -> nb::Result<PacketDecoder<'_>, NetworkError> {
         let socket = self.socket.as_mut().ok_or(NetworkError::NoSocket)?;
 
@@ -366,11 +363,11 @@ impl<S> NetworkHandle<S> {
 }
 
 /// A placeholder that keeps a buffer and constructs a packet incrementally.
-/// Given that underlying `TcpClient` throws `WouldBlock` in a non-blocking
+/// Given that underlying `TcpClientStack` throws `WouldBlock` in a non-blocking
 /// manner, its packet construction won't block either.
 struct PacketBuffer {
     range: RangeTo<usize>,
-    buffer: Vec<u8, consts::U1024>,
+    buffer: Vec<u8, 1024>,
 }
 
 impl PacketBuffer {
@@ -410,9 +407,9 @@ impl PacketBuffer {
 
     /// Receives bytes from a network socket in non-blocking mode. If incoming
     /// bytes found, the range gets extended covering them.
-    fn receive<N, S>(&mut self, socket: &mut S, network: &N) -> nb::Result<(), NetworkError>
+    fn receive<N, S>(&mut self, socket: &mut S, network: &mut N) -> nb::Result<(), NetworkError>
     where
-        N: TcpClient<TcpSocket = S>,
+        N: TcpClientStack<TcpSocket = S>,
     {
         let buffer = self.buffer();
         let len = network.receive(socket, buffer).map_err(|_| {
@@ -523,7 +520,7 @@ mod tests {
     use embedded_time::duration::Milliseconds;
     use embedded_time::fraction::Fraction;
     use embedded_time::Instant;
-    use heapless::{consts, spsc::Queue, String, Vec};
+    use heapless::{spsc::Queue, String, Vec};
     use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
     use mqttrust::PublishRequest;
@@ -550,43 +547,43 @@ mod tests {
     impl Dns for MockNetwork {
         type Error = ();
 
-        fn gethostbyname(
-            &self,
+        fn get_host_by_name(
+            &mut self,
             _hostname: &str,
             _addr_type: embedded_nal::AddrType,
-        ) -> Result<embedded_nal::IpAddr, Self::Error> {
+        ) -> nb::Result<embedded_nal::IpAddr, Self::Error> {
             unimplemented!()
         }
-        fn gethostbyaddr(
-            &self,
+        fn get_host_by_address(
+            &mut self,
             _addr: embedded_nal::IpAddr,
-        ) -> Result<heapless::String<consts::U256>, Self::Error> {
+        ) -> nb::Result<heapless::String<256>, Self::Error> {
             unimplemented!()
         }
     }
 
-    impl TcpClient for MockNetwork {
+    impl TcpClientStack for MockNetwork {
         type TcpSocket = ();
         type Error = ();
 
-        fn socket(&self) -> Result<Self::TcpSocket, Self::Error> {
+        fn socket(&mut self) -> Result<Self::TcpSocket, Self::Error> {
             Ok(())
         }
 
         fn connect(
-            &self,
+            &mut self,
             _socket: &mut Self::TcpSocket,
             _remote: embedded_nal::SocketAddr,
         ) -> nb::Result<(), Self::Error> {
             Ok(())
         }
 
-        fn is_connected(&self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
+        fn is_connected(&mut self, _socket: &Self::TcpSocket) -> Result<bool, Self::Error> {
             Ok(true)
         }
 
         fn send(
-            &self,
+            &mut self,
             _socket: &mut Self::TcpSocket,
             buffer: &[u8],
         ) -> nb::Result<usize, Self::Error> {
@@ -598,7 +595,7 @@ mod tests {
         }
 
         fn receive(
-            &self,
+            &mut self,
             _socket: &mut Self::TcpSocket,
             buffer: &mut [u8],
         ) -> nb::Result<usize, Self::Error> {
@@ -614,14 +611,14 @@ mod tests {
             }
         }
 
-        fn close(&self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
+        fn close(&mut self, _socket: Self::TcpSocket) -> Result<(), Self::Error> {
             Ok(())
         }
     }
 
     #[test]
     fn success_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, consts::U10>, Milliseconds>::new();
+        let mut state = MqttState::<Vec<u8, 10>, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack = Connack {
             session_present: false,
@@ -662,7 +659,7 @@ mod tests {
 
     #[test]
     fn failure_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, consts::U10>, Milliseconds>::new();
+        let mut state = MqttState::<Vec<u8, 10>, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack_malformed = Connack {
             session_present: false,
@@ -700,16 +697,15 @@ mod tests {
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: Queue<Request<Vec<u8, consts::U10>>, consts::U5, u8> =
-            Queue(heapless::i::Queue::u8());
+        static mut Q: Queue<Request<Vec<u8, 10>>, 5> = Queue::new();
 
-        let network = MockNetwork {
+        let mut network = MockNetwork {
             should_fail_read: false,
             should_fail_write: false,
         };
 
         let (_p, c) = unsafe { Q.split() };
-        let mut event = EventLoop::<_, (), _, _>::new(
+        let mut event = EventLoop::<(), _, _, 5>::new(
             c,
             ClockMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
@@ -774,6 +770,6 @@ mod tests {
         event.state.connection_status = MqttConnectionStatus::Handshake;
         event.network_handle.socket = Some(());
 
-        event.connect(&network).unwrap();
+        event.connect(&mut network).unwrap();
     }
 }

@@ -5,16 +5,15 @@ use mqttrust_core::{EventLoop, MqttOptions, Notification};
 
 use common::clock::SysClock;
 use common::network::Network;
-use heapless::{consts, spsc::Queue, String, Vec};
+use heapless::{spsc::Queue, String, Vec};
 use std::thread;
 
-static mut Q: Queue<Request<Vec<u8, consts::U128>>, consts::U10, u8> =
-    Queue(heapless::i::Queue::u8());
+static mut Q: Queue<Request<Vec<u8, 128>>, 10> = Queue::new();
 
 fn main() {
     let (mut p, c) = unsafe { Q.split() };
 
-    let network = Network;
+    let mut network = Network;
     // let network = std_embedded_nal::STACK;
 
     // Connect to broker.hivemq.com:1883
@@ -24,12 +23,12 @@ fn main() {
         MqttOptions::new("mqtt_test_client_id", "broker.hivemq.com".into(), 1883),
     );
 
-    nb::block!(mqtt_eventloop.connect(&network)).expect("Failed to connect to MQTT");
+    nb::block!(mqtt_eventloop.connect(&mut network)).expect("Failed to connect to MQTT");
 
     thread::Builder::new()
         .name("eventloop".to_string())
         .spawn(move || loop {
-            match nb::block!(mqtt_eventloop.yield_event(&network)) {
+            match nb::block!(mqtt_eventloop.yield_event(&mut network)) {
                 Ok(Notification::Publish(_publish)) => {
                     // defmt::debug!(
                     //     "[{}, {:?}]: {:?}",

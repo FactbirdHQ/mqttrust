@@ -1,6 +1,5 @@
-use embedded_nal::{AddrType, Dns, SocketAddr, TcpClient};
-use heapless::{consts, String};
-use no_std_net::IpAddr;
+use embedded_nal::{AddrType, Dns, IpAddr, SocketAddr, TcpClientStack};
+use heapless::String;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 
@@ -21,27 +20,33 @@ impl TcpSocket {
 impl Dns for Network {
     type Error = ();
 
-    fn gethostbyaddr(&self, ip_addr: IpAddr) -> Result<String<consts::U256>, Self::Error> {
+    fn get_host_by_address(&mut self, ip_addr: IpAddr) -> nb::Result<String<256>, Self::Error> {
         let ip: std::net::IpAddr = format!("{}", ip_addr).parse().unwrap();
         let host = lookup_addr(&ip).unwrap();
         Ok(String::from(host.as_str()))
     }
-    fn gethostbyname(&self, hostname: &str, _addr_type: AddrType) -> Result<IpAddr, Self::Error> {
+    fn get_host_by_name(
+        &mut self,
+        hostname: &str,
+        _addr_type: AddrType,
+    ) -> nb::Result<IpAddr, Self::Error> {
         let mut ips: Vec<std::net::IpAddr> = lookup_host(hostname).unwrap();
-        format!("{}", ips.pop().unwrap()).parse().map_err(|_| ())
+        format!("{}", ips.pop().unwrap())
+            .parse()
+            .map_err(|_| nb::Error::Other(()))
     }
 }
 
-impl TcpClient for Network {
+impl TcpClientStack for Network {
     type Error = ();
     type TcpSocket = TcpSocket;
 
-    fn socket(&self) -> Result<Self::TcpSocket, Self::Error> {
+    fn socket(&mut self) -> Result<Self::TcpSocket, Self::Error> {
         Ok(TcpSocket::new())
     }
 
     fn receive(
-        &self,
+        &mut self,
         network: &mut Self::TcpSocket,
         buf: &mut [u8],
     ) -> Result<usize, nb::Error<Self::Error>> {
@@ -56,7 +61,7 @@ impl TcpClient for Network {
     }
 
     fn send(
-        &self,
+        &mut self,
         network: &mut Self::TcpSocket,
         buf: &[u8],
     ) -> Result<usize, nb::Error<Self::Error>> {
@@ -67,12 +72,12 @@ impl TcpClient for Network {
         }
     }
 
-    fn is_connected(&self, _network: &Self::TcpSocket) -> Result<bool, Self::Error> {
+    fn is_connected(&mut self, _network: &Self::TcpSocket) -> Result<bool, Self::Error> {
         Ok(true)
     }
 
     fn connect(
-        &self,
+        &mut self,
         network: &mut Self::TcpSocket,
         remote: SocketAddr,
     ) -> nb::Result<(), Self::Error> {
@@ -81,7 +86,7 @@ impl TcpClient for Network {
             .map_err(|_| ().into())
     }
 
-    fn close(&self, _network: Self::TcpSocket) -> Result<(), Self::Error> {
+    fn close(&mut self, _network: Self::TcpSocket) -> Result<(), Self::Error> {
         Ok(())
     }
 }

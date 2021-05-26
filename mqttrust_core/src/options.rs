@@ -1,5 +1,5 @@
+use embedded_nal::{IpAddr, Ipv4Addr};
 use mqttrs::LastWill;
-use no_std_net::{IpAddr, Ipv4Addr};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Broker<'a> {

@@ -1,10 +1,6 @@
-use crate::{Mqtt, PublishPayload, Request};
-use heapless::{spsc::Producer, ArrayLength};
-
-#[derive(Debug, Clone)]
-pub enum MqttClientError {
-    Full,
-}
+use crate::{Mqtt, MqttError, PublishPayload, Request};
+use core::cell::RefCell;
+use heapless::spsc::Producer;
 
 /// MQTT Client
 ///
@@ -17,50 +13,47 @@ pub enum MqttClientError {
 /// - 'a: The lifetime of the queue exhanging packets between the client and the
 ///   event loop. This must have the same lifetime as the corresponding
 ///   Consumer. Usually 'static.
-/// - 'b: The lifetime of the packet fields, backed by a slice buffer
+/// - 'b: The lifetime of client id str
 ///
 /// **Generics**:
 /// - L: The length of the queue, exhanging packets between the client and the
 ///   event loop. Length in number of request packets
 /// - P: The type of the payload field of publish requests. This **must**
 ///   implement the [`PublishPayload`] trait
-pub struct Client<'a, 'b, L, P>
+pub struct Client<'a, 'b, P, const L: usize>
 where
     P: PublishPayload,
-    L: ArrayLength<Request<P>>,
 {
     client_id: &'b str,
-    producer: Producer<'a, Request<P>, L, u8>,
+    producer: RefCell<Producer<'a, Request<P>, L>>,
 }
 
-impl<'a, 'b, L, P> Client<'a, 'b, L, P>
+impl<'a, 'b, P, const L: usize> Client<'a, 'b, P, L>
 where
     P: PublishPayload,
-    L: ArrayLength<Request<P>>,
 {
-    pub fn new(producer: Producer<'a, Request<P>, L, u8>, client_id: &'b str) -> Self {
+    pub fn new(producer: Producer<'a, Request<P>, L>, client_id: &'b str) -> Self {
         Self {
             client_id,
-            producer,
+            producer: RefCell::new(producer),
         }
     }
 }
 
-impl<'a, 'b, L, P> Mqtt<P> for Client<'a, 'b, L, P>
+impl<'a, 'b, P, const L: usize> Mqtt<P> for Client<'a, 'b, P, L>
 where
     P: PublishPayload,
-    L: ArrayLength<Request<P>>,
 {
-    type Error = MqttClientError;
-
     fn client_id(&self) -> &str {
         &self.client_id
     }
 
-    fn send(&mut self, request: Request<P>) -> Result<(), Self::Error> {
+    fn send(&self, request: Request<P>) -> Result<(), MqttError> {
         self.producer
+            .try_borrow_mut()
+            .map_err(|_| MqttError::Borrow)?
             .enqueue(request)
-            .map_err(|_| MqttClientError::Full)?;
+            .map_err(|_| MqttError::Full)?;
         Ok(())
     }
 }

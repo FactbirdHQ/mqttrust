@@ -2,23 +2,22 @@
 
 mod requests;
 
-use heapless::{consts, String, Vec};
+use heapless::{String, Vec};
 pub use mqttrs::{QoS, SubscribeTopic};
 pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
-pub trait Mqtt<P: PublishPayload> {
-    type Error;
+#[derive(Debug, Clone)]
+pub enum MqttError {
+    Full,
+    Borrow,
+}
 
-    fn send(&mut self, request: Request<P>) -> Result<(), Self::Error>;
+pub trait Mqtt<P: PublishPayload> {
+    fn send(&self, request: Request<P>) -> Result<(), MqttError>;
 
     fn client_id(&self) -> &str;
 
-    fn publish(
-        &mut self,
-        topic_name: String<consts::U256>,
-        payload: P,
-        qos: QoS,
-    ) -> Result<(), Self::Error> {
+    fn publish(&self, topic_name: String<256>, payload: P, qos: QoS) -> Result<(), MqttError> {
         let req: Request<P> = PublishRequest {
             dup: false,
             qos,
@@ -31,15 +30,12 @@ pub trait Mqtt<P: PublishPayload> {
         self.send(req)
     }
 
-    fn subscribe(&mut self, topics: Vec<SubscribeTopic, consts::U5>) -> Result<(), Self::Error> {
+    fn subscribe(&self, topics: Vec<SubscribeTopic, 5>) -> Result<(), MqttError> {
         let req: Request<P> = SubscribeRequest { topics }.into();
         self.send(req)
     }
 
-    fn unsubscribe(
-        &mut self,
-        topics: Vec<String<consts::U256>, consts::U5>,
-    ) -> Result<(), Self::Error> {
+    fn unsubscribe(&self, topics: Vec<String<256>, 5>) -> Result<(), MqttError> {
         let req: Request<P> = UnsubscribeRequest { topics }.into();
         self.send(req)
     }

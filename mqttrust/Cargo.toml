@@ -18,5 +18,5 @@ name = "mqttrust"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-heapless = { version = "^0.5.5", features = ["serde"] }
-mqttrs = { version = "0.4.0", default-features = false }
+heapless = { version = "^0.7", features = ["serde"] }
+mqttrs = { version = "0.4.1", default-features = false }

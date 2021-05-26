@@ -5,18 +5,18 @@ mod eventloop;
 mod options;
 mod state;
 
-pub use client::{Client, MqttClientError};
+pub use client::Client;
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
-use heapless::{consts, String, Vec};
+use heapless::{String, Vec};
 use mqttrs::Pid;
 pub use mqttrs::{
     Connect, Packet, Protocol, Publish, QoS, QosPid, Suback, Subscribe, SubscribeReturnCodes,
     SubscribeTopic, Unsubscribe,
 };
 pub use mqttrust::{
-    Mqtt, PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest,
+    Mqtt, MqttError, PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest,
 };
 pub use options::{Broker, MqttOptions};
 use state::StateError;
@@ -26,8 +26,8 @@ pub struct PublishNotification {
     pub dup: bool,
     pub qospid: QosPid,
     pub retain: bool,
-    pub topic_name: String<consts::U256>,
-    pub payload: Vec<u8, consts::U2048>,
+    pub topic_name: String<256>,
+    pub payload: Vec<u8, 2048>,
 }
 
 /// Includes incoming packets from the network and other interesting events
