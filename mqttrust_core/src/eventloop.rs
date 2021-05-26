@@ -548,14 +548,14 @@ mod tests {
         type Error = ();
 
         fn get_host_by_name(
-            &self,
+            &mut self,
             _hostname: &str,
             _addr_type: embedded_nal::AddrType,
         ) -> nb::Result<embedded_nal::IpAddr, Self::Error> {
             unimplemented!()
         }
         fn get_host_by_address(
-            &self,
+            &mut self,
             _addr: embedded_nal::IpAddr,
         ) -> nb::Result<heapless::String<256>, Self::Error> {
             unimplemented!()

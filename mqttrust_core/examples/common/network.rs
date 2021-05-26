@@ -20,13 +20,13 @@ impl TcpSocket {
 impl Dns for Network {
     type Error = ();
 
-    fn get_host_by_address(&self, ip_addr: IpAddr) -> nb::Result<String<256>, Self::Error> {
+    fn get_host_by_address(&mut self, ip_addr: IpAddr) -> nb::Result<String<256>, Self::Error> {
         let ip: std::net::IpAddr = format!("{}", ip_addr).parse().unwrap();
         let host = lookup_addr(&ip).unwrap();
         Ok(String::from(host.as_str()))
     }
     fn get_host_by_name(
-        &self,
+        &mut self,
         hostname: &str,
         _addr_type: AddrType,
     ) -> nb::Result<IpAddr, Self::Error> {
