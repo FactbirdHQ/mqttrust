@@ -10,6 +10,7 @@ pub use requests::{PublishRequest, Request, SubscribeRequest, UnsubscribeRequest
 pub enum MqttError {
     Full,
     Borrow,
+    Overflow,
 }
 
 pub trait Mqtt {

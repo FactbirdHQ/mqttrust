@@ -1,6 +1,5 @@
-use crate::{
-    Notification, PublishRequest, Request, Subscribe, SubscribeRequest, UnsubscribeRequest,
-};
+use crate::client::temp::{OwnedPublishRequest, OwnedRequest};
+use crate::{Notification, Subscribe, SubscribeRequest, UnsubscribeRequest};
 use core::convert::TryInto;
 use core::ops::Add;
 use embedded_time::duration::{Generic, Milliseconds};
@@ -48,7 +47,7 @@ pub enum StateError {
 /// **Generics**:
 /// - O: The output timer used for keeping track of keep-alive ping-pongs. Must
 ///   implement the [`embedded_hal::timer::CountDown`] trait
-pub struct MqttState<T> {
+pub struct MqttState<TIM, const T: usize, const P: usize> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
     /// Status of last ping
@@ -56,17 +55,17 @@ pub struct MqttState<T> {
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<'a, T>, 4>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<TIM, T, P>, 4>,
     /// Packet ids of released QoS 2 publishes
     pub outgoing_rel: FnvIndexSet<u16, 4>,
     /// Packet ids on incoming QoS 2 publishes
     pub incoming_pub: FnvIndexSet<u16, 2>,
-    last_ping: StartTime<T>,
+    last_ping: StartTime<TIM>,
 }
 
-impl<'a, T> MqttState<'a, T>
+impl<TIM, const T: usize, const P: usize> MqttState<TIM, T, P>
 where
-    T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
+    TIM: Add<Milliseconds, Output = TIM> + PartialOrd + Copy,
 {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
@@ -100,14 +99,14 @@ where
     /// packet which should be put on to the network by the eventloop
     pub fn handle_outgoing_request<'b>(
         &mut self,
-        request: Request<'a>,
-        buf: &'a mut [u8],
-        now: &T,
-    ) -> Result<Packet<'a>, StateError> {
+        request: OwnedRequest<T, P>,
+        buf: &'b mut [u8],
+        now: &TIM,
+    ) -> Result<Packet<'b>, StateError> {
         match request {
-            Request::Publish(publish) => self.handle_outgoing_publish(publish, buf, now),
-            Request::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe),
-            Request::Unsubscribe(unsubscribe) => self.handle_outgoing_unsubscribe(unsubscribe),
+            OwnedRequest::Publish(publish) => self.handle_outgoing_publish(publish, buf, now),
+            OwnedRequest::Subscribe(subscribe) => self.handle_outgoing_subscribe(subscribe),
+            OwnedRequest::Unsubscribe(unsubscribe) => self.handle_outgoing_unsubscribe(unsubscribe),
             _ => unimplemented!(),
         }
     }
@@ -144,9 +143,9 @@ where
     /// it by wrapping publish in packet
     fn handle_outgoing_publish<'b>(
         &mut self,
-        request: PublishRequest<'a>,
+        request: OwnedPublishRequest<T, P>,
         buf: &'b mut [u8],
-        now: &T,
+        now: &TIM,
     ) -> Result<Packet<'b>, StateError> {
         let pid = match request.qos {
             QoS::AtMostOnce => None,
@@ -376,15 +375,15 @@ where
         self.last_pid
     }
 
-    pub(crate) fn last_ping_entry(&mut self) -> &mut StartTime<T> {
+    pub(crate) fn last_ping_entry(&mut self) -> &mut StartTime<TIM> {
         &mut self.last_ping
     }
 
     pub(crate) fn retries(
         &mut self,
-        now: T,
+        now: TIM,
         interval: Milliseconds,
-    ) -> impl Iterator<Item = (&u16, &mut Inflight<'a, T>)> + '_ {
+    ) -> impl Iterator<Item = (&u16, &mut Inflight<TIM, T, P>)> + '_ {
         self.outgoing_pub
             .iter_mut()
             .filter(move |(_, inflight)| inflight.last_touch.has_elapsed(&now, interval))
@@ -462,7 +461,10 @@ impl<'a> PublishPacketBuilder<'a> {
         }
     }
 
-    fn build(self, request: &PublishRequest) -> Result<Packet<'a>, StateError> {
+    fn build<const T: usize, const P: usize>(
+        self,
+        request: &OwnedPublishRequest<T, P>,
+    ) -> Result<Packet<'a>, StateError> {
         let qospid = match request.qos {
             QoS::AtMostOnce => QosPid::AtMostOnce,
             QoS::AtLeastOnce => QosPid::AtLeastOnce(self.pid.ok_or(StateError::PidMissing)?),
@@ -473,12 +475,12 @@ impl<'a> PublishPacketBuilder<'a> {
         let topic_len = request.topic_name.len();
         let payload_len = request.payload.len();
 
-        let (topic_buf, payload_buf) = self.buf.split_at(topic_len);
+        let (topic_buf, payload_buf) = self.buf.split_at_mut(topic_len);
 
         topic_buf.copy_from_slice(request.topic_name.as_bytes());
         let topic_name = core::str::from_utf8(topic_buf).map_err(|_| StateError::InvalidUtf8)?;
 
-        payload_buf[..payload_len].copy_from_slice(request.payload);
+        payload_buf[..payload_len].copy_from_slice(&request.payload);
 
         Ok(Publish {
             dup: request.dup,
@@ -493,19 +495,19 @@ impl<'a> PublishPacketBuilder<'a> {
 
 /// Client publication message data.
 #[derive(Debug)]
-pub(crate) struct Inflight<'a, T> {
+pub(crate) struct Inflight<TIM, const T: usize, const P: usize> {
     /// A publish of non-zero QoS.
-    publish: PublishRequest<'a>,
+    publish: OwnedPublishRequest<T, P>,
     /// A timestmap used for retry and expiry.
-    last_touch: StartTime<T>,
+    last_touch: StartTime<TIM>,
     // next_message_type, only relevant for Qos2, i.e., PUBREC, PUBREL or PUBCOMP.
 }
 
-impl<'a, T> Inflight<'a, T>
+impl<TIM, const T: usize, const P: usize> Inflight<TIM, T, P>
 where
-    T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
+    TIM: Add<Milliseconds, Output = TIM> + PartialOrd + Copy,
 {
-    pub(crate) fn new(last_touch: StartTime<T>, publish: PublishRequest<'a>) -> Self {
+    pub(crate) fn new(last_touch: StartTime<TIM>, publish: OwnedPublishRequest<T, P>) -> Self {
         assert!(
             !matches!(publish.qos, QoS::AtMostOnce),
             "Only non-zero QoSs are allowed."
@@ -516,17 +518,13 @@ where
         }
     }
 
-    pub(crate) fn last_touch_entry(&mut self) -> &mut StartTime<T> {
+    pub(crate) fn last_touch_entry(&mut self) -> &mut StartTime<TIM> {
         &mut self.last_touch
     }
 }
 
-impl<'a, T> Inflight<'a, T> {
-    pub(crate) fn packet<'b>(
-        &'a self,
-        pid: u16,
-        buf: &'b mut [u8],
-    ) -> Result<Packet<'b>, StateError> {
+impl<TIM, const T: usize, const P: usize> Inflight<TIM, T, P> {
+    pub(crate) fn packet<'b>(&self, pid: u16, buf: &'b mut [u8]) -> Result<Packet<'b>, StateError> {
         let pid = pid.try_into().map_err(|_| StateError::PayloadEncoding)?;
         PublishPacketBuilder::new(buf).pid(pid).build(&self.publish)
     }
@@ -537,8 +535,10 @@ mod test {
     use super::{
         Clock, Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError,
     };
+    use crate::client::temp::OwnedPublishRequest;
     use crate::Notification;
     use core::convert::TryFrom;
+    use core::convert::TryInto;
     use embedded_time::duration::Extensions;
     use embedded_time::Instant;
     use heapless::{String, Vec};
@@ -554,11 +554,11 @@ mod test {
         }
     }
 
-    fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<'a> {
-        let topic = heapless::String::from("hello/world");
-        let payload = Vec::from_slice(&[1, 2, 3]).unwrap();
-
-        PublishRequest::new(topic.as_str(), &payload).qos(qos)
+    fn build_outgoing_publish<'a>(qos: QoS) -> OwnedPublishRequest<128, 512> {
+        PublishRequest::new("hello/world", &[1, 2, 3])
+            .qos(qos)
+            .try_into()
+            .unwrap()
     }
 
     fn build_incoming_publish<'a>(qos: QoS, pid: u16) -> Publish<'a> {
@@ -580,7 +580,7 @@ mod test {
         }
     }
 
-    fn build_mqttstate<'a>() -> MqttState<'a, Milliseconds> {
+    fn build_mqttstate() -> MqttState<Milliseconds, 128, 512> {
         MqttState::new()
     }
 
@@ -594,7 +594,8 @@ mod test {
         let publish = build_outgoing_publish(QoS::AtMostOnce);
 
         // Packet id shouldn't be set and publish shouldn't be saved in queue
-        let publish_out = match mqtt.handle_outgoing_request(publish.into(), buf, &now) {
+        let publish_out = match mqtt.handle_outgoing_request(publish.try_into().unwrap(), buf, &now)
+        {
             Ok(Packet::Publish(p)) => p,
             _ => panic!("Invalid packet. Should've been a publish packet"),
         };
@@ -617,10 +618,11 @@ mod test {
         };
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
-        let subscribe_out = match mqtt.handle_outgoing_request(subscribe.into(), buf, &now) {
-            Ok(Packet::Subscribe(p)) => p,
-            _ => panic!("Invalid packet. Should've been a subscribe packet"),
-        };
+        let subscribe_out =
+            match mqtt.handle_outgoing_request(subscribe.try_into().unwrap(), buf, &now) {
+                Ok(Packet::Subscribe(p)) => p,
+                _ => panic!("Invalid packet. Should've been a subscribe packet"),
+            };
         let mut topics_iter = subscribe_out.topics.iter();
 
         assert_eq!(subscribe_out.pid, Pid::try_from(2).unwrap());
@@ -651,10 +653,11 @@ mod test {
         };
 
         // Packet id should be set and subscribe shouldn't be saved in publish queue
-        let unsubscribe_out = match mqtt.handle_outgoing_request(unsubscribe.into(), buf, &now) {
-            Ok(Packet::Unsubscribe(p)) => p,
-            _ => panic!("Invalid packet. Should've been a unsubscribe packet"),
-        };
+        let unsubscribe_out =
+            match mqtt.handle_outgoing_request(unsubscribe.try_into().unwrap(), buf, &now) {
+                Ok(Packet::Unsubscribe(p)) => p,
+                _ => panic!("Invalid packet. Should've been a unsubscribe packet"),
+            };
         let mut topics_iter = unsubscribe_out.topics.iter();
 
         assert_eq!(unsubscribe_out.pid, Pid::try_from(3).unwrap());

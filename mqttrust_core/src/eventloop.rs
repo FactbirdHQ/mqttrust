@@ -11,27 +11,27 @@ use embedded_time::{Clock, Instant};
 use heapless::{spsc, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
 
-pub struct EventLoop<'a, 'b, S, O, const L: usize>
+pub struct EventLoop<'a, 'b, S, O, const T: usize, const P: usize, const L: usize>
 where
     O: Clock,
 {
     /// Current state of the connection
-    pub state: MqttState<Instant<O>>,
+    pub state: MqttState<Instant<O>, T, P>,
     /// Last outgoing packet time
     pub last_outgoing_timer: O,
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
     /// Request stream
-    pub requests: spsc::Consumer<'a, OwnedRequest, L>,
+    pub requests: spsc::Consumer<'a, OwnedRequest<T, P>, L>,
     network_handle: NetworkHandle<S>,
 }
 
-impl<'a, 'b, S, O, const L: usize> EventLoop<'a, 'b, S, O, L>
+impl<'a, 'b, S, O, const T: usize, const P: usize, const L: usize> EventLoop<'a, 'b, S, O, T, P, L>
 where
     O: Clock,
 {
     pub fn new(
-        requests: spsc::Consumer<'a, OwnedRequest, L>,
+        requests: spsc::Consumer<'a, OwnedRequest<T, P>, L>,
         outgoing_timer: O,
         options: MqttOptions<'b>,
     ) -> Self {
@@ -108,7 +108,7 @@ where
             let request = unsafe { self.requests.dequeue_unchecked() };
             let packet = self
                 .state
-                .handle_outgoing_request(request.foo(), packet_buf, &now)
+                .handle_outgoing_request(request, packet_buf, &now)
                 .map_err(EventError::from)?;
             self.network_handle.send(network, &packet)?;
             return Err(nb::Error::WouldBlock);
@@ -161,7 +161,7 @@ where
     /// event is reported as an `Ok` value of `Notification::Abort`.
     #[must_use = "Eventloop should be iterated over a loop to make progress"]
     pub fn yield_event<N: TcpClientStack<TcpSocket = S>>(
-        &'c mut self,
+        &mut self,
         network: &mut N,
     ) -> nb::Result<Notification, Infallible> {
         if self.network_handle.socket.is_none() {
@@ -468,12 +468,12 @@ impl<'a> PacketDecoder<'a> {
             .into()
     }
 
-    fn decode<T>(
+    fn decode<TIM, const T: usize, const P: usize>(
         mut self,
-        state: &mut MqttState<T>,
+        state: &mut MqttState<TIM, T, P>,
     ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError>
     where
-        T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
+        TIM: Add<Milliseconds, Output = TIM> + PartialOrd + Copy,
     {
         let buffer = self.packet_buffer.buffer[self.packet_buffer.range].as_ref();
         match decode_slice(buffer) {
@@ -514,6 +514,7 @@ impl<'a> Drop for PacketDecoder<'a> {
 mod tests {
     use super::*;
     use crate::state::{Inflight, StartTime};
+    use core::convert::TryInto;
     use embedded_time::clock::Error;
     use embedded_time::duration::Milliseconds;
     use embedded_time::fraction::Fraction;
@@ -616,7 +617,7 @@ mod tests {
 
     #[test]
     fn success_receive_multiple_packets() {
-        let mut state = MqttState::<'_, Milliseconds>::new();
+        let mut state = MqttState::<Milliseconds, 128, 512>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack = Connack {
             session_present: false,
@@ -657,7 +658,7 @@ mod tests {
 
     #[test]
     fn failure_receive_multiple_packets() {
-        let mut state = MqttState::<'_, Milliseconds>::new();
+        let mut state = MqttState::<Milliseconds, 128, 512>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack_malformed = Connack {
             session_present: false,
@@ -695,7 +696,7 @@ mod tests {
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: Queue<OwnedRequest, 5> = Queue::new();
+        static mut Q: Queue<OwnedRequest<128, 512>, 5> = Queue::new();
 
         let mut network = MockNetwork {
             should_fail_read: false,
@@ -703,7 +704,7 @@ mod tests {
         };
 
         let (_p, c) = unsafe { Q.split() };
-        let mut event = EventLoop::<(), _, 5>::new(
+        let mut event = EventLoop::<(), _, 128, 512, 5>::new(
             c,
             ClockMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
@@ -724,7 +725,9 @@ mod tests {
                         retain: false,
                         topic_name: "some/topic/name2",
                         payload: &[],
-                    },
+                    }
+                    .try_into()
+                    .unwrap(),
                 ),
             )
             .unwrap();
@@ -742,7 +745,9 @@ mod tests {
                         retain: false,
                         topic_name: "some/topic/name3",
                         payload: &[],
-                    },
+                    }
+                    .try_into()
+                    .unwrap(),
                 ),
             )
             .unwrap();
@@ -760,7 +765,9 @@ mod tests {
                         retain: false,
                         topic_name: "some/topic/name4",
                         payload: &[],
-                    },
+                    }
+                    .try_into()
+                    .unwrap(),
                 ),
             )
             .unwrap();

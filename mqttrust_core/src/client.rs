@@ -1,5 +1,6 @@
 use crate::{Mqtt, MqttError, Request};
 use core::cell::RefCell;
+use core::convert::TryInto;
 use heapless::spsc::Producer;
 
 use self::temp::OwnedRequest;
@@ -20,13 +21,13 @@ use self::temp::OwnedRequest;
 /// **Generics**:
 /// - L: The length of the queue, exhanging packets between the client and the
 ///   event loop. Length in number of request packets
-pub struct Client<'a, 'b, const L: usize> {
+pub struct Client<'a, 'b, const T: usize, const P: usize, const L: usize> {
     client_id: &'b str,
-    producer: RefCell<Producer<'a, OwnedRequest, L>>,
+    producer: RefCell<Producer<'a, OwnedRequest<T, P>, L>>,
 }
 
-impl<'a, 'b, const L: usize> Client<'a, 'b, L> {
-    pub fn new(producer: Producer<'a, OwnedRequest, L>, client_id: &'b str) -> Self {
+impl<'a, 'b, const T: usize, const P: usize, const L: usize> Client<'a, 'b, T, P, L> {
+    pub fn new(producer: Producer<'a, OwnedRequest<T, P>, L>, client_id: &'b str) -> Self {
         Self {
             client_id,
             producer: RefCell::new(producer),
@@ -34,7 +35,7 @@ impl<'a, 'b, const L: usize> Client<'a, 'b, L> {
     }
 }
 
-impl<'a, 'b, 'c, const L: usize> Mqtt for Client<'a, 'b, L> {
+impl<'a, 'b, 'c, const T: usize, const P: usize, const L: usize> Mqtt for Client<'a, 'b, T, P, L> {
     fn client_id(&self) -> &str {
         &self.client_id
     }
@@ -43,52 +44,90 @@ impl<'a, 'b, 'c, const L: usize> Mqtt for Client<'a, 'b, L> {
         self.producer
             .try_borrow_mut()
             .map_err(|_| MqttError::Borrow)?
-            .enqueue(request.into())
+            .enqueue(request.try_into().map_err(|_| MqttError::Overflow)?)
             .map_err(|_| MqttError::Full)?;
         Ok(())
     }
 }
 
 pub mod temp {
+    use core::convert::{TryFrom, TryInto};
+
     use mqttrs::QoS;
     use mqttrust::{PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
-    pub struct OwnedPublishRequest {
+    #[derive(Debug, Clone)]
+    pub struct OwnedPublishRequest<const T: usize, const P: usize> {
         pub dup: bool,
         pub qos: QoS,
         pub retain: bool,
-        pub topic_name: heapless::String<10>,
-        pub payload: heapless::Vec<u8, 10>,
+        pub topic_name: heapless::String<T>,
+        pub payload: heapless::Vec<u8, P>,
     }
 
-    pub enum OwnedRequest {
-        Publish(OwnedPublishRequest),
+    #[derive(Debug, Clone)]
+    pub enum OwnedRequest<const T: usize, const P: usize> {
+        Publish(OwnedPublishRequest<T, P>),
         Subscribe(SubscribeRequest),
         Unsubscribe(UnsubscribeRequest),
         // Reconnect(Connect),
         Disconnect,
     }
 
-    impl OwnedRequest {
-        pub fn foo<'a>(&'a self) -> Request<'a> {
-            match self {
-                OwnedRequest::Publish(p) => Request::Publish(PublishRequest {
-                    dup: p.dup,
-                    qos: p.qos,
-                    retain: p.retain,
-                    topic_name: p.topic_name.as_str(),
-                    payload: &p.payload,
-                }),
-                OwnedRequest::Subscribe(s) => Request::Subscribe(s.clone()),
-                OwnedRequest::Unsubscribe(u) => Request::Unsubscribe(u.clone()),
-                OwnedRequest::Disconnect => Request::Disconnect,
-            }
+    impl<'a, const T: usize, const P: usize> TryFrom<Request<'a>> for OwnedRequest<T, P> {
+        type Error = ();
+
+        fn try_from(r: Request<'a>) -> Result<Self, Self::Error> {
+            Ok(match r {
+                Request::Publish(v) => Self::Publish(v.try_into()?),
+                Request::Subscribe(v) => Self::Subscribe(v),
+                Request::Unsubscribe(v) => Self::Unsubscribe(v),
+                Request::Disconnect => Self::Disconnect,
+            })
         }
     }
 
-    impl<'a> From<Request<'a>> for OwnedRequest {
-        fn from(_: Request<'a>) -> Self {
-            todo!()
+    impl<'a, const T: usize, const P: usize> TryFrom<PublishRequest<'a>> for OwnedPublishRequest<T, P> {
+        type Error = ();
+
+        fn try_from(p: PublishRequest<'a>) -> Result<Self, Self::Error> {
+            if p.topic_name.len() > T {
+                return Err(());
+            }
+
+            Ok(Self {
+                dup: p.dup,
+                qos: p.qos,
+                retain: p.retain,
+                topic_name: heapless::String::from(p.topic_name),
+                payload: heapless::Vec::from_slice(p.payload)?,
+            })
+        }
+    }
+
+    impl<'a, const T: usize, const P: usize> TryFrom<PublishRequest<'a>> for OwnedRequest<T, P> {
+        type Error = ();
+
+        fn try_from(p: PublishRequest<'a>) -> Result<Self, Self::Error> {
+            Ok(Self::Publish(p.try_into()?))
+        }
+    }
+
+    impl<const T: usize, const P: usize> From<OwnedPublishRequest<T, P>> for OwnedRequest<T, P> {
+        fn from(o: OwnedPublishRequest<T, P>) -> Self {
+            Self::Publish(o)
+        }
+    }
+
+    impl<const T: usize, const P: usize> From<SubscribeRequest> for OwnedRequest<T, P> {
+        fn from(s: SubscribeRequest) -> Self {
+            Self::Subscribe(s.into())
+        }
+    }
+
+    impl<const T: usize, const P: usize> From<UnsubscribeRequest> for OwnedRequest<T, P> {
+        fn from(u: UnsubscribeRequest) -> Self {
+            Self::Unsubscribe(u.into())
         }
     }
 }

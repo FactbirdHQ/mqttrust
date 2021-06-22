@@ -1,14 +1,16 @@
 mod common;
 
-use mqttrust::{PublishRequest, QoS, Request, SubscribeRequest, SubscribeTopic};
+use mqttrust::{PublishRequest, QoS, SubscribeRequest, SubscribeTopic};
+use mqttrust_core::OwnedRequest;
 use mqttrust_core::{EventLoop, MqttOptions, Notification};
 
 use common::clock::SysClock;
 use common::network::Network;
 use heapless::{spsc::Queue, String, Vec};
+use std::convert::TryInto;
 use std::thread;
 
-static mut Q: Queue<Request<Vec<u8, 128>>, 10> = Queue::new();
+static mut Q: Queue<OwnedRequest<128, 512>, 10> = Queue::new();
 
 fn main() {
     let (mut p, c) = unsafe { Q.split() };
@@ -58,17 +60,16 @@ fn main() {
             ])
             .unwrap(),
         }
-        .into(),
+        .try_into()
+        .unwrap(),
     )
     .expect("Failed to publish!");
 
     loop {
         p.enqueue(
-            PublishRequest::new(
-                String::from("mqttrust/tester/whatup"),
-                Vec::from_slice(b"{\"key\": \"value\"}").unwrap(),
-            )
-            .into(),
+            PublishRequest::new("mqttrust/tester/whatup", b"{\"key\": \"value\"}")
+                .try_into()
+                .unwrap(),
         )
         .expect("Failed to publish!");
         thread::sleep(std::time::Duration::from_millis(5000));
