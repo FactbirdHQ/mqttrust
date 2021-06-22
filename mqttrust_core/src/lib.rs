@@ -16,7 +16,7 @@ pub use mqttrs::{
     SubscribeTopic, Unsubscribe,
 };
 pub use mqttrust::{
-    Mqtt, MqttError, PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest,
+    Mqtt, MqttError, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest,
 };
 pub use options::{Broker, MqttOptions};
 use state::StateError;

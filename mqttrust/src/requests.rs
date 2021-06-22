@@ -1,44 +1,20 @@
 use heapless::{String, Vec};
 use mqttrs::{QoS, SubscribeTopic};
 
-pub trait PublishPayload {
-    fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()>;
-    fn from_bytes(v: &[u8]) -> Self;
-}
-
-impl<const L: usize> PublishPayload for Vec<u8, L> {
-    fn as_bytes(&self, buffer: &mut [u8]) -> Result<usize, ()> {
-        let len = self.len();
-        if buffer.len() < len {
-            return Err(());
-        }
-
-        buffer[..len].copy_from_slice(self.as_ref());
-        Ok(len)
-    }
-
-    fn from_bytes(v: &[u8]) -> Self {
-        Vec::from_slice(v).expect("Failed to do from_slice! [from_bytes()]")
-    }
-}
-
 /// Publish request ([MQTT 3.3]).
 ///
 /// [MQTT 3.3]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718037
 #[derive(Debug, Clone, PartialEq)]
-pub struct PublishRequest<P> {
+pub struct PublishRequest<'a> {
     pub dup: bool,
     pub qos: QoS,
     pub retain: bool,
-    pub topic_name: String<256>,
-    pub payload: P,
+    pub topic_name: &'a str,
+    pub payload: &'a [u8],
 }
 
-impl<P> PublishRequest<P>
-where
-    P: PublishPayload,
-{
-    pub fn new(topic_name: String<256>, payload: P) -> Self {
+impl<'a> PublishRequest<'a> {
+    pub fn new(topic_name: &'a str, payload: &'a [u8]) -> Self {
         PublishRequest {
             dup: false,
             qos: QoS::AtLeastOnce,
@@ -72,39 +48,27 @@ pub struct UnsubscribeRequest {
 /// Requests by the client to mqtt event loop. Request are
 /// handle one by one
 #[derive(Debug, Clone, PartialEq)]
-pub enum Request<P>
-where
-    P: PublishPayload,
-{
-    Publish(PublishRequest<P>),
+pub enum Request<'a> {
+    Publish(PublishRequest<'a>),
     Subscribe(SubscribeRequest),
     Unsubscribe(UnsubscribeRequest),
     // Reconnect(Connect),
     Disconnect,
 }
 
-impl<P> From<PublishRequest<P>> for Request<P>
-where
-    P: PublishPayload,
-{
-    fn from(publish: PublishRequest<P>) -> Self {
+impl<'a> From<PublishRequest<'a>> for Request<'a> {
+    fn from(publish: PublishRequest<'a>) -> Self {
         Request::Publish(publish)
     }
 }
 
-impl<P> From<SubscribeRequest> for Request<P>
-where
-    P: PublishPayload,
-{
+impl<'a> From<SubscribeRequest> for Request<'a> {
     fn from(subscribe: SubscribeRequest) -> Self {
         Request::Subscribe(subscribe)
     }
 }
 
-impl<P> From<UnsubscribeRequest> for Request<P>
-where
-    P: PublishPayload,
-{
+impl<'a> From<UnsubscribeRequest> for Request<'a> {
     fn from(unsubscribe: UnsubscribeRequest) -> Self {
         Request::Unsubscribe(unsubscribe)
     }

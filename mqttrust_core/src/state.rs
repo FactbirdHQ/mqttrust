@@ -1,6 +1,5 @@
 use crate::{
-    Notification, PublishPayload, PublishRequest, Request, Subscribe, SubscribeRequest,
-    UnsubscribeRequest,
+    Notification, PublishRequest, Request, Subscribe, SubscribeRequest, UnsubscribeRequest,
 };
 use core::convert::TryInto;
 use core::ops::Add;
@@ -49,7 +48,7 @@ pub enum StateError {
 /// **Generics**:
 /// - O: The output timer used for keeping track of keep-alive ping-pongs. Must
 ///   implement the [`embedded_hal::timer::CountDown`] trait
-pub struct MqttState<P, T> {
+pub struct MqttState<T> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
     /// Status of last ping
@@ -57,7 +56,7 @@ pub struct MqttState<P, T> {
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<P, T>, 4>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<'a, T>, 4>,
     /// Packet ids of released QoS 2 publishes
     pub outgoing_rel: FnvIndexSet<u16, 4>,
     /// Packet ids on incoming QoS 2 publishes
@@ -65,9 +64,8 @@ pub struct MqttState<P, T> {
     last_ping: StartTime<T>,
 }
 
-impl<P, T> MqttState<P, T>
+impl<'a, T> MqttState<'a, T>
 where
-    P: PublishPayload + Clone,
     T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
 {
     /// Creates new mqtt state. Same state should be used during a
@@ -88,10 +86,10 @@ where
 
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a
     /// packet which should be put on to the network by the eventloop
-    pub fn handle_outgoing_packet<'a>(
+    pub fn handle_outgoing_packet<'b>(
         &mut self,
-        packet: Packet<'a>,
-    ) -> Result<Packet<'a>, StateError> {
+        packet: Packet<'b>,
+    ) -> Result<Packet<'b>, StateError> {
         match packet {
             Packet::Pingreq => self.handle_outgoing_ping(),
             _ => unimplemented!(),
@@ -100,9 +98,9 @@ where
 
     /// Consolidates handling of all outgoing mqtt packet logic. Returns a
     /// packet which should be put on to the network by the eventloop
-    pub fn handle_outgoing_request<'a>(
+    pub fn handle_outgoing_request<'b>(
         &mut self,
-        request: Request<P>,
+        request: Request<'a>,
         buf: &'a mut [u8],
         now: &T,
     ) -> Result<Packet<'a>, StateError> {
@@ -119,9 +117,9 @@ where
     /// eventloop to put on the network E.g For incoming QoS1 publish packet,
     /// this method returns (Publish, Puback). Publish packet will be forwarded
     /// to user and Pubck packet will be written to network
-    pub fn handle_incoming_packet<'a>(
+    pub fn handle_incoming_packet<'b>(
         &mut self,
-        packet: Packet<'a>,
+        packet: Packet<'b>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         match packet {
             Packet::Connack(connack) => self
@@ -144,12 +142,12 @@ where
 
     /// Adds next packet identifier to QoS 1 and 2 publish packets and returns
     /// it by wrapping publish in packet
-    fn handle_outgoing_publish<'a>(
+    fn handle_outgoing_publish<'b>(
         &mut self,
-        request: PublishRequest<P>,
-        buf: &'a mut [u8],
+        request: PublishRequest<'a>,
+        buf: &'b mut [u8],
         now: &T,
-    ) -> Result<Packet<'a>, StateError> {
+    ) -> Result<Packet<'b>, StateError> {
         let pid = match request.qos {
             QoS::AtMostOnce => None,
             QoS::AtLeastOnce => {
@@ -243,9 +241,9 @@ where
 
     /// Results in a publish notification in all the QoS cases. Replys with an ack
     /// in case of QoS1 and Replys rec in case of QoS while also storing the message
-    fn handle_incoming_publish<'a>(
+    fn handle_incoming_publish<'b>(
         &mut self,
-        publish: Publish<'a>,
+        publish: Publish<'b>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let qospid = publish.qospid;
         let notification = Notification::Publish(publish.try_into()?);
@@ -297,7 +295,7 @@ where
     /// check when the last control packet/pingreq packet is received and return
     /// the status which tells if keep alive time has exceeded
     /// NOTE: status will be checked for zero keepalive times also
-    fn handle_outgoing_ping<'a>(&mut self) -> Result<Packet<'a>, StateError> {
+    fn handle_outgoing_ping<'b>(&mut self) -> Result<Packet<'b>, StateError> {
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
             defmt::error!("Error awaiting for last ping response");
@@ -319,10 +317,10 @@ where
         Ok((None, None))
     }
 
-    fn handle_outgoing_subscribe<'a>(
+    fn handle_outgoing_subscribe<'b>(
         &mut self,
         subscribe_request: SubscribeRequest,
-    ) -> Result<Packet<'a>, StateError> {
+    ) -> Result<Packet<'b>, StateError> {
         defmt::trace!("Subscribe. Topics = ");
         for topic in &subscribe_request.topics {
             defmt::trace!("{=str}", topic.topic_path.as_str());
@@ -330,10 +328,10 @@ where
         Ok(Subscribe::new(self.next_pid(), subscribe_request.topics).into())
     }
 
-    fn handle_outgoing_unsubscribe<'a>(
+    fn handle_outgoing_unsubscribe<'b>(
         &mut self,
         unsubscribe_request: UnsubscribeRequest,
-    ) -> Result<Packet<'a>, StateError> {
+    ) -> Result<Packet<'b>, StateError> {
         defmt::trace!("Unsubscribe. Topics = ");
         for topic in &unsubscribe_request.topics {
             defmt::trace!("{=str}", topic.as_str());
@@ -386,7 +384,7 @@ where
         &mut self,
         now: T,
         interval: Milliseconds,
-    ) -> impl Iterator<Item = (&u16, &mut Inflight<P, T>)> + '_ {
+    ) -> impl Iterator<Item = (&u16, &mut Inflight<'a, T>)> + '_ {
         self.outgoing_pub
             .iter_mut()
             .filter(move |(_, inflight)| inflight.last_touch.has_elapsed(&now, interval))
@@ -464,10 +462,7 @@ impl<'a> PublishPacketBuilder<'a> {
         }
     }
 
-    fn build<P>(self, request: &PublishRequest<P>) -> Result<Packet<'a>, StateError>
-    where
-        P: PublishPayload,
-    {
+    fn build(self, request: &PublishRequest) -> Result<Packet<'a>, StateError> {
         let qospid = match request.qos {
             QoS::AtMostOnce => QosPid::AtMostOnce,
             QoS::AtLeastOnce => QosPid::AtLeastOnce(self.pid.ok_or(StateError::PidMissing)?),
@@ -476,23 +471,21 @@ impl<'a> PublishPacketBuilder<'a> {
 
         // Construct topic name from the request and align on a buffer.
         let topic_len = request.topic_name.len();
-        let (topic_buf, payload_buf) = self.buf.split_at_mut(topic_len);
-        topic_buf.copy_from_slice(request.topic_name.as_str().as_bytes());
+        let payload_len = request.payload.len();
+
+        let (topic_buf, payload_buf) = self.buf.split_at(topic_len);
+
+        topic_buf.copy_from_slice(request.topic_name.as_bytes());
         let topic_name = core::str::from_utf8(topic_buf).map_err(|_| StateError::InvalidUtf8)?;
 
-        // Copy the payload from the request to remaining buffer.
-        let len = request
-            .payload
-            .as_bytes(payload_buf)
-            .map_err(|_| StateError::PayloadEncoding)?;
-        let (payload, _) = payload_buf.split_at(len);
+        payload_buf[..payload_len].copy_from_slice(request.payload);
 
         Ok(Publish {
             dup: request.dup,
             qospid,
             retain: request.retain,
             topic_name,
-            payload,
+            payload: payload_buf,
         }
         .into())
     }
@@ -500,19 +493,19 @@ impl<'a> PublishPacketBuilder<'a> {
 
 /// Client publication message data.
 #[derive(Debug)]
-pub(crate) struct Inflight<P, T> {
+pub(crate) struct Inflight<'a, T> {
     /// A publish of non-zero QoS.
-    publish: PublishRequest<P>,
+    publish: PublishRequest<'a>,
     /// A timestmap used for retry and expiry.
     last_touch: StartTime<T>,
     // next_message_type, only relevant for Qos2, i.e., PUBREC, PUBREL or PUBCOMP.
 }
 
-impl<P, T> Inflight<P, T>
+impl<'a, T> Inflight<'a, T>
 where
     T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
 {
-    pub(crate) fn new(last_touch: StartTime<T>, publish: PublishRequest<P>) -> Self {
+    pub(crate) fn new(last_touch: StartTime<T>, publish: PublishRequest<'a>) -> Self {
         assert!(
             !matches!(publish.qos, QoS::AtMostOnce),
             "Only non-zero QoSs are allowed."
@@ -528,11 +521,12 @@ where
     }
 }
 
-impl<P, T> Inflight<P, T>
-where
-    P: PublishPayload,
-{
-    pub(crate) fn packet<'a>(&self, pid: u16, buf: &'a mut [u8]) -> Result<Packet<'a>, StateError> {
+impl<'a, T> Inflight<'a, T> {
+    pub(crate) fn packet<'b>(
+        &'a self,
+        pid: u16,
+        buf: &'b mut [u8],
+    ) -> Result<Packet<'b>, StateError> {
         let pid = pid.try_into().map_err(|_| StateError::PayloadEncoding)?;
         PublishPacketBuilder::new(buf).pid(pid).build(&self.publish)
     }
@@ -560,11 +554,11 @@ mod test {
         }
     }
 
-    fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<Vec<u8, 3>> {
+    fn build_outgoing_publish<'a>(qos: QoS) -> PublishRequest<'a> {
         let topic = heapless::String::from("hello/world");
         let payload = Vec::from_slice(&[1, 2, 3]).unwrap();
 
-        PublishRequest::new(topic, payload).qos(qos)
+        PublishRequest::new(topic.as_str(), &payload).qos(qos)
     }
 
     fn build_incoming_publish<'a>(qos: QoS, pid: u16) -> Publish<'a> {
@@ -586,7 +580,7 @@ mod test {
         }
     }
 
-    fn build_mqttstate<'a>() -> MqttState<Vec<u8, 3>, Milliseconds> {
+    fn build_mqttstate<'a>() -> MqttState<'a, Milliseconds> {
         MqttState::new()
     }
 

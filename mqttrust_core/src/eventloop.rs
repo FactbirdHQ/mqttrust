@@ -1,6 +1,7 @@
+use crate::client::temp::OwnedRequest;
 use crate::options::Broker;
 use crate::state::{MqttConnectionStatus, MqttState};
-use crate::{EventError, MqttOptions, NetworkError, Notification, PublishPayload, Request};
+use crate::{EventError, MqttOptions, NetworkError, Notification};
 use core::convert::Infallible;
 use core::ops::{Add, RangeTo};
 use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
@@ -10,29 +11,27 @@ use embedded_time::{Clock, Instant};
 use heapless::{spsc, String, Vec};
 use mqttrs::{decode_slice, encode_slice, Connect, Packet, Protocol, QoS};
 
-pub struct EventLoop<'a, 'b, S, O, P, const L: usize>
+pub struct EventLoop<'a, 'b, S, O, const L: usize>
 where
     O: Clock,
-    P: PublishPayload,
 {
     /// Current state of the connection
-    pub state: MqttState<P, Instant<O>>,
+    pub state: MqttState<Instant<O>>,
     /// Last outgoing packet time
     pub last_outgoing_timer: O,
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
     /// Request stream
-    pub requests: spsc::Consumer<'a, Request<P>, L>,
+    pub requests: spsc::Consumer<'a, OwnedRequest, L>,
     network_handle: NetworkHandle<S>,
 }
 
-impl<'a, 'b, S, O, P, const L: usize> EventLoop<'a, 'b, S, O, P, L>
+impl<'a, 'b, S, O, const L: usize> EventLoop<'a, 'b, S, O, L>
 where
     O: Clock,
-    P: PublishPayload + Clone,
 {
     pub fn new(
-        requests: spsc::Consumer<'a, Request<P>, L>,
+        requests: spsc::Consumer<'a, OwnedRequest, L>,
         outgoing_timer: O,
         options: MqttOptions<'b>,
     ) -> Self {
@@ -82,7 +81,7 @@ where
     fn should_handle_request(&mut self) -> bool {
         let qos_space = self.state.outgoing_pub.len() < self.options.inflight();
 
-        let qos_0 = if let Some(Request::Publish(p)) = self.requests.peek() {
+        let qos_0 = if let Some(OwnedRequest::Publish(p)) = self.requests.peek() {
             p.qos == QoS::AtMostOnce
         } else {
             false
@@ -109,7 +108,7 @@ where
             let request = unsafe { self.requests.dequeue_unchecked() };
             let packet = self
                 .state
-                .handle_outgoing_request(request, packet_buf, &now)
+                .handle_outgoing_request(request.foo(), packet_buf, &now)
                 .map_err(EventError::from)?;
             self.network_handle.send(network, &packet)?;
             return Err(nb::Error::WouldBlock);
@@ -162,7 +161,7 @@ where
     /// event is reported as an `Ok` value of `Notification::Abort`.
     #[must_use = "Eventloop should be iterated over a loop to make progress"]
     pub fn yield_event<N: TcpClientStack<TcpSocket = S>>(
-        &mut self,
+        &'c mut self,
         network: &mut N,
     ) -> nb::Result<Notification, Infallible> {
         if self.network_handle.socket.is_none() {
@@ -469,12 +468,11 @@ impl<'a> PacketDecoder<'a> {
             .into()
     }
 
-    fn decode<P, T>(
+    fn decode<T>(
         mut self,
-        state: &mut MqttState<P, T>,
+        state: &mut MqttState<T>,
     ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError>
     where
-        P: PublishPayload + Clone,
         T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
     {
         let buffer = self.packet_buffer.buffer[self.packet_buffer.range].as_ref();
@@ -520,7 +518,7 @@ mod tests {
     use embedded_time::duration::Milliseconds;
     use embedded_time::fraction::Fraction;
     use embedded_time::Instant;
-    use heapless::{spsc::Queue, String, Vec};
+    use heapless::spsc::Queue;
     use mqttrs::Error::InvalidConnectReturnCode;
     use mqttrs::{Connack, ConnectReturnCode, Pid, Publish, QosPid};
     use mqttrust::PublishRequest;
@@ -618,7 +616,7 @@ mod tests {
 
     #[test]
     fn success_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, 10>, Milliseconds>::new();
+        let mut state = MqttState::<'_, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack = Connack {
             session_present: false,
@@ -659,7 +657,7 @@ mod tests {
 
     #[test]
     fn failure_receive_multiple_packets() {
-        let mut state = MqttState::<Vec<u8, 10>, Milliseconds>::new();
+        let mut state = MqttState::<'_, Milliseconds>::new();
         let mut rx_buf = PacketBuffer::new();
         let connack_malformed = Connack {
             session_present: false,
@@ -697,7 +695,7 @@ mod tests {
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: Queue<Request<Vec<u8, 10>>, 5> = Queue::new();
+        static mut Q: Queue<OwnedRequest, 5> = Queue::new();
 
         let mut network = MockNetwork {
             should_fail_read: false,
@@ -705,7 +703,7 @@ mod tests {
         };
 
         let (_p, c) = unsafe { Q.split() };
-        let mut event = EventLoop::<(), _, _, 5>::new(
+        let mut event = EventLoop::<(), _, 5>::new(
             c,
             ClockMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
@@ -724,8 +722,8 @@ mod tests {
                         dup: false,
                         qos: QoS::AtLeastOnce,
                         retain: false,
-                        topic_name: String::from("some/topic/name2"),
-                        payload: Vec::new(),
+                        topic_name: "some/topic/name2",
+                        payload: &[],
                     },
                 ),
             )
@@ -742,8 +740,8 @@ mod tests {
                         dup: false,
                         qos: QoS::AtLeastOnce,
                         retain: false,
-                        topic_name: String::from("some/topic/name3"),
-                        payload: Vec::new(),
+                        topic_name: "some/topic/name3",
+                        payload: &[],
                     },
                 ),
             )
@@ -760,8 +758,8 @@ mod tests {
                         dup: false,
                         qos: QoS::AtLeastOnce,
                         retain: false,
-                        topic_name: String::from("some/topic/name4"),
-                        payload: Vec::new(),
+                        topic_name: "some/topic/name4",
+                        payload: &[],
                     },
                 ),
             )

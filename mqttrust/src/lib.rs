@@ -4,7 +4,7 @@ mod requests;
 
 use heapless::{String, Vec};
 pub use mqttrs::{QoS, SubscribeTopic};
-pub use requests::{PublishPayload, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
+pub use requests::{PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
 #[derive(Debug, Clone)]
 pub enum MqttError {
@@ -12,13 +12,13 @@ pub enum MqttError {
     Borrow,
 }
 
-pub trait Mqtt<P: PublishPayload> {
-    fn send(&self, request: Request<P>) -> Result<(), MqttError>;
+pub trait Mqtt {
+    fn send(&self, request: Request<'_>) -> Result<(), MqttError>;
 
     fn client_id(&self) -> &str;
 
-    fn publish(&self, topic_name: String<256>, payload: P, qos: QoS) -> Result<(), MqttError> {
-        let req: Request<P> = PublishRequest {
+    fn publish(&self, topic_name: &str, payload: &[u8], qos: QoS) -> Result<(), MqttError> {
+        let req: Request = PublishRequest {
             dup: false,
             qos,
             retain: false,
@@ -30,13 +30,29 @@ pub trait Mqtt<P: PublishPayload> {
         self.send(req)
     }
 
-    fn subscribe(&self, topics: Vec<SubscribeTopic, 5>) -> Result<(), MqttError> {
-        let req: Request<P> = SubscribeRequest { topics }.into();
+    fn subscribe(&self, topic: SubscribeTopic) -> Result<(), MqttError> {
+        let req: Request = SubscribeRequest {
+            topics: Vec::from_slice(&[topic]).unwrap(),
+        }
+        .into();
         self.send(req)
     }
 
-    fn unsubscribe(&self, topics: Vec<String<256>, 5>) -> Result<(), MqttError> {
-        let req: Request<P> = UnsubscribeRequest { topics }.into();
+    fn subscribe_many(&self, topics: Vec<SubscribeTopic, 5>) -> Result<(), MqttError> {
+        let req: Request = SubscribeRequest { topics }.into();
+        self.send(req)
+    }
+
+    fn unsubscribe(&self, topic: String<256>) -> Result<(), MqttError> {
+        let req: Request = UnsubscribeRequest {
+            topics: Vec::from_slice(&[topic]).unwrap(),
+        }
+        .into();
+        self.send(req)
+    }
+
+    fn unsubscribe_many(&self, topics: Vec<String<256>, 5>) -> Result<(), MqttError> {
+        let req: Request = UnsubscribeRequest { topics }.into();
         self.send(req)
     }
 }
