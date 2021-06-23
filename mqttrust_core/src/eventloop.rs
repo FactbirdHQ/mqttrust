@@ -236,7 +236,6 @@ where
                     .or_insert(now)
                     .has_elapsed(&now, 50_000.milliseconds())
                 {
-                    println!("TIMEOUT!!");
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
