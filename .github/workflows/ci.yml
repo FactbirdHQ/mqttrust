@@ -1,0 +1,233 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: thumbv7m-none-eabi
+          override: true
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --all --all-features --target thumbv7m-none-eabi
+
+      - name: Test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --lib --all-features
+  integration:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: thumbv7m-none-eabi
+          override: true
+      - name: Run integration test
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: -p mqttrust_core --example linux
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+          components: rustfmt
+
+      - name: Run rustfmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check --verbose
+
+  # tomlfmt:
+  #   name: tomlfmt
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout source code
+  #       uses: actions/checkout@v2
+
+  #     - name: Install Rust
+  #       uses: actions-rs/toolchain@v1
+  #       with:
+  #         profile: minimal
+  #         toolchain: nightly
+  #         override: true
+
+  #     - name: Install tomlfmt
+  #       uses: actions-rs/install@v0.1
+  #       with:
+  #         crate: cargo-tomlfmt
+  #         version: latest
+  #         use-tool-cache: true
+
+  #     - name: Run Tomlfmt
+  #       uses: actions-rs/cargo@v1
+  #       with:
+  #         command: tomlfmt
+  #         args: --dryrun
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    env:
+      CLIPPY_PARAMS: -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: clippy
+
+      - name: Run clippy
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --all-features -- ${{ env.CLIPPY_PARAMS }}
+  grcov:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          target: thumbv7m-none-eabi
+          override: true
+
+      - name: Install grcov
+        uses: actions-rs/cargo@v1
+        # uses: actions-rs/install@v0.1
+        with:
+          # crate: grcov
+          # version: latest
+          # use-tool-cache: true
+          command: install
+          args: grcov --git https://github.com/mozilla/grcov
+
+      - name: Test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --lib --no-fail-fast --all-features
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=unwind -Zpanic_abort_tests"
+          RUSTDOCFLAGS: "-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=unwind -Zpanic_abort_tests"
+
+      - name: Generate coverage data
+        id: grcov
+        # uses: actions-rs/grcov@v0.1
+        run: |
+          grcov target/debug/ \
+              --branch \
+              --llvm \
+              --source-dir . \
+              --output-file lcov.info \
+              --ignore='/**' \
+              --ignore='C:/**' \
+              --ignore='../**' \
+              --ignore-not-existing \
+              --excl-line "#\\[derive\\(" \
+              --excl-br-line "(#\\[derive\\()|(debug_assert)" \
+              --excl-start "#\\[cfg\\(test\\)\\]" \
+              --excl-br-start "#\\[cfg\\(test\\)\\]" \
+              --commit-sha ${{ github.sha }} \
+              --service-job-id ${{ github.job }} \
+              --service-name "GitHub Actions" \
+              --service-number ${{ github.run_id }}
+      - name: Upload coverage as artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: lcov.info
+          # path: ${{ steps.grcov.outputs.report }}
+          path: lcov.info
+
+      - name: Upload coverage to codecov.io
+        uses: codecov/codecov-action@v1
+        with:
+          # file: ${{ steps.grcov.outputs.report }}
+          file: lcov.info
+          fail_ci_if_error: true
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+
+      - name: Build documentation
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --verbose --no-deps --all-features
+
+      # - name: Finalize documentation
+      #   run: |
+      #     CRATE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]' | cut -f2 -d"/")
+      #     echo "<meta http-equiv=\"refresh\" content=\"0; url=${CRATE_NAME/-/_}\">" > target/doc/index.html
+      #     touch target/doc/.nojekyll
+      # - name: Upload as artifact
+      #   uses: actions/upload-artifact@v2
+      #   with:
+      #     name: Documentation
+      #     path: target/doc
+
+      # - name: Deploy
+      #   uses: JamesIves/github-pages-deploy-action@releases/v3
+      #   with:
+      #     ACCESS_TOKEN: ${{ secrets.GH_PAT }}
+      #     BRANCH: gh-pages
+      #     FOLDER: target/doc

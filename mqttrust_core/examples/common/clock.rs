@@ -20,9 +20,12 @@ impl Clock for SysClock {
     type T = u32;
 
     fn try_now(&self) -> Result<embedded_time::Instant<Self>, Error> {
-        Ok(embedded_time::Instant::new(self.now
-        .duration_since(UNIX_EPOCH).expect("Time went backwards")
-        .as_millis() as u32))
+        Ok(embedded_time::Instant::new(
+            self.now
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis() as u32,
+        ))
     }
 }
 
