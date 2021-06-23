@@ -16,7 +16,6 @@ fn main() {
     let (mut p, c) = unsafe { Q.split() };
 
     let mut network = Network;
-    // let network = std_embedded_nal::STACK;
 
     // Connect to broker.hivemq.com:1883
     let mut mqtt_eventloop = EventLoop::new(
@@ -30,18 +29,14 @@ fn main() {
     thread::Builder::new()
         .name("eventloop".to_string())
         .spawn(move || loop {
-            match nb::block!(mqtt_eventloop.yield_event(&mut network)) {
-                Ok(Notification::Publish(_publish)) => {
-                    // defmt::debug!(
-                    //     "[{}, {:?}]: {:?}",
-                    //     _publish.topic_name,
-                    //     _publish.qospid,
-                    //     String::from_utf8(_publish.payload).unwrap()
-                    // );
+            match mqtt_eventloop.yield_event(&mut network) {
+                Ok(Notification::Publish(publish)) => {
+                    println!("Received {:?}", publish);
                 }
-                _n => {
-                    // defmt::debug!("{:?}", _n);
+                Ok(n) => {
+                    println!("{:?}", n);
                 }
+                _ => {}
             }
         })
         .unwrap();
@@ -65,13 +60,20 @@ fn main() {
     )
     .expect("Failed to publish!");
 
+    let mut cnt = 0;
+
     loop {
+        println!("Enqueing {}", cnt);
         p.enqueue(
-            PublishRequest::new("mqttrust/tester/whatup", b"{\"key\": \"value\"}")
-                .try_into()
-                .unwrap(),
+            PublishRequest::new(
+                "mqttrust/tester/whatup",
+                format!("{{\"count\": {} }}", cnt).as_bytes(),
+            )
+            .try_into()
+            .unwrap(),
         )
         .expect("Failed to publish!");
+        cnt += 1;
         thread::sleep(std::time::Duration::from_millis(5000));
     }
 }

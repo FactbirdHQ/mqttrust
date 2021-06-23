@@ -1,16 +1,16 @@
 use embedded_time::clock::Error;
 use embedded_time::fraction::Fraction;
 use embedded_time::Clock;
-use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct SysClock {
-    now: Instant,
+    now: SystemTime,
 }
 
 impl SysClock {
     pub fn new() -> Self {
         Self {
-            now: Instant::now(),
+            now: SystemTime::now(),
         }
     }
 }
@@ -20,8 +20,9 @@ impl Clock for SysClock {
     type T = u32;
 
     fn try_now(&self) -> Result<embedded_time::Instant<Self>, Error> {
-        let _ = self.now;
-        todo!()
+        Ok(embedded_time::Instant::new(self.now
+        .duration_since(UNIX_EPOCH).expect("Time went backwards")
+        .as_millis() as u32))
     }
 }
 

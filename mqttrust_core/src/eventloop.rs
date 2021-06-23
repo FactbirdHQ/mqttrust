@@ -96,7 +96,7 @@ where
         &mut self,
         network: &mut N,
     ) -> nb::Result<Notification, EventError> {
-        let packet_buf = &mut [0_u8; 1024];
+        let packet_buf = &mut [0u8; 1024];
 
         let now = self
             .last_outgoing_timer
@@ -236,6 +236,7 @@ where
                     .or_insert(now)
                     .has_elapsed(&now, 50_000.milliseconds())
                 {
+                    println!("TIMEOUT!!");
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
@@ -411,9 +412,13 @@ impl PacketBuffer {
         N: TcpClientStack<TcpSocket = S>,
     {
         let buffer = self.buffer();
-        let len = network.receive(socket, buffer).map_err(|_| {
-            defmt::error!("[receive] NetworkError::Read");
-            NetworkError::Read
+        let len = network.receive(socket, buffer).map_err(|e| {
+            if matches!(e, nb::Error::WouldBlock) {
+                nb::Error::WouldBlock
+            } else {
+                defmt::error!("[receive] NetworkError::Read");
+                nb::Error::Other(NetworkError::Read)
+            }
         })?;
         self.range.end += len;
         Ok(())

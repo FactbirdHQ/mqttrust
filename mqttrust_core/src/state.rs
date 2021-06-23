@@ -487,7 +487,7 @@ impl<'a> PublishPacketBuilder<'a> {
             qospid,
             retain: request.retain,
             topic_name,
-            payload: payload_buf,
+            payload: &payload_buf[..payload_len],
         }
         .into())
     }
