@@ -6,7 +6,7 @@ use heapless::{String, Vec};
 pub use mqttrs::{QoS, SubscribeTopic};
 pub use requests::{PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MqttError {
     Full,
     Borrow,
