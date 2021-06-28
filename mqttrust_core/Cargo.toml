@@ -24,7 +24,7 @@ embedded-time = "0.11.0"
 nb = "^1"
 heapless = { version = "^0.7", features = ["serde"] }
 mqttrs = { version = "0.4.1", default-features = false }
-mqttrust = { version = "^0.2.0", path = "../mqttrust" }
+mqttrust = { version = "^0.2.1-alpha.0", path = "../mqttrust" }
 defmt = { version = "^0.2" }
 
 [dev-dependencies]
