@@ -3,9 +3,7 @@
 pub mod encoding;
 
 pub use encoding::v4::{
-    subscribe::{SubscribeTopic},
-    utils::QoS,
-    Packet, Publish, Subscribe, Unsubscribe,
+    subscribe::SubscribeTopic, utils::QoS, Packet, Publish, Subscribe, Unsubscribe,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

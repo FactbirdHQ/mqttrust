@@ -227,7 +227,7 @@ impl<'a> MqttOptions<'a> {
 mod test {
     use super::{Ipv4Addr, MqttOptions};
     use embedded_nal::{IpAddr, Ipv6Addr};
-    use mqttrust::{QoS, encoding::v4::LastWill};
+    use mqttrust::{encoding::v4::LastWill, QoS};
 
     #[test]
     #[should_panic]

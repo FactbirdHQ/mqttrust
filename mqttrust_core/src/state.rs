@@ -456,11 +456,11 @@ impl<TIM, const L: usize> Inflight<TIM, L> {
 
 #[cfg(test)]
 mod test {
-    use core::convert::TryFrom;
     use super::{
         Clock, Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError,
     };
     use crate::{packet::SerializedPacket, Notification};
+    use core::convert::TryFrom;
     use embedded_time::{duration::Extensions, Instant};
     use mqttrust::{
         encoding::v4::{decode_slice, encode_slice, Pid},

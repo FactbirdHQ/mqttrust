@@ -38,7 +38,7 @@ impl<'a> Publish<'a> {
             payload: &buf[*offset..payload_end],
         })
     }
-    
+
     pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
         // Header
         let mut header: u8 = match self.qos {

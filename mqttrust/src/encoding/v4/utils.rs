@@ -258,9 +258,10 @@ impl QosPid {
 
 #[cfg(test)]
 mod test {
-    use crate::Pid;
     use core::convert::TryFrom;
     use std::vec;
+
+    use crate::encoding::v4::Pid;
 
     #[test]
     fn pid_add_sub() {
