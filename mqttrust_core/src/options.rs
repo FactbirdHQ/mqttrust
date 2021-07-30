@@ -1,5 +1,5 @@
 use embedded_nal::{IpAddr, Ipv4Addr};
-use mqttrs::LastWill;
+use mqttrust::encoding::v4::LastWill;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Broker<'a> {
@@ -227,7 +227,7 @@ impl<'a> MqttOptions<'a> {
 mod test {
     use super::{Ipv4Addr, MqttOptions};
     use embedded_nal::{IpAddr, Ipv6Addr};
-    use mqttrs::LastWill;
+    use mqttrust::{QoS, encoding::v4::LastWill};
 
     #[test]
     #[should_panic]
@@ -339,7 +339,7 @@ mod test {
         let will = LastWill {
             topic: "topic",
             message: b"Will message",
-            qos: mqttrs::QoS::AtLeastOnce,
+            qos: QoS::AtLeastOnce,
             retain: false,
         };
         assert_eq!(opts.set_last_will(will.clone()).last_will(), Some(will));

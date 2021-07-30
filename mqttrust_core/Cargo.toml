@@ -1,6 +1,6 @@
 [package]
 name = "mqttrust_core"
-version = "0.2.1-alpha.0"
+version = "0.2.0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "MQTT Client "
 readme = "../README.md"
@@ -22,10 +22,10 @@ embedded-hal = { version = "1.0.0-alpha.4" }
 embedded-nal = "0.6.0"
 embedded-time = "0.11.0"
 nb = "^1"
-heapless = { version = "^0.7", features = ["serde"] }
-mqttrs = { version = "0.4.1", default-features = false }
-mqttrust = { version = "^0.2.1-alpha.0", path = "../mqttrust" }
+heapless = { version = "^0.7", features = ["serde", "defmt-impl"] }
+mqttrust = { version = "^0.2.0", path = "../mqttrust" }
 defmt = { version = "^0.2" }
+bbqueue = "0.4.12"
 
 [dev-dependencies]
 dns-lookup = "1.0.3"

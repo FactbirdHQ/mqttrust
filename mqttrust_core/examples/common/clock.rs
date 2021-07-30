@@ -28,9 +28,3 @@ impl Clock for SysClock {
         ))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    extern crate nb;
-}

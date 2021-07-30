@@ -3,3 +3,7 @@ members = [
     "mqttrust",
     "mqttrust_core",
 ]
+
+
+[patch.crates-io]
+bbqueue = { git = "https://github.com/mriise/bbqueue" }
