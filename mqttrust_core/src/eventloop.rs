@@ -338,7 +338,10 @@ impl<S> NetworkHandle<S> {
             Some(socket) => socket,
         };
 
-        nb::block!(network.connect(socket, socket_addr)).map_err(|_| NetworkError::SocketConnect)
+        nb::block!(network.connect(socket, socket_addr)).map_err(|_| {
+            self.socket.take();
+            NetworkError::SocketConnect
+        })
     }
 
     pub fn send_packet<'d, N: TcpClientStack<TcpSocket = S>>(
