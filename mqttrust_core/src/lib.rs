@@ -3,28 +3,25 @@
 mod client;
 mod eventloop;
 mod options;
+mod packet;
 mod state;
 
-pub use client::{temp::OwnedRequest, Client};
+pub use bbqueue;
+
+pub use client::Client;
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
 use heapless::{String, Vec};
-use mqttrs::Pid;
-pub use mqttrs::{
-    Connect, Packet, Protocol, Publish, QoS, QosPid, Suback, Subscribe, SubscribeReturnCodes,
-    SubscribeTopic, Unsubscribe,
-};
-pub use mqttrust::{
-    Mqtt, MqttError, PublishRequest, Request, SubscribeRequest, UnsubscribeRequest,
-};
+pub use mqttrust::encoding::v4::{Pid, Publish, QoS, QosPid, Suback};
+pub use mqttrust::*;
 pub use options::{Broker, MqttOptions};
 use state::StateError;
 
 #[derive(Debug, PartialEq)]
 pub struct PublishNotification {
     pub dup: bool,
-    pub qospid: QosPid,
+    pub qospid: QoS,
     pub retain: bool,
     pub topic_name: String<256>,
     pub payload: Vec<u8, 2048>,
@@ -45,7 +42,7 @@ pub enum Notification {
     /// Incoming pubcomp from the broker
     Pubcomp(Pid),
     /// Incoming suback from the broker
-    Suback(Suback),
+    // Suback(Suback),
     /// Incoming unsuback from the broker
     Unsuback(Pid),
     // Eventloop error
@@ -58,7 +55,7 @@ impl<'a> TryFrom<Publish<'a>> for PublishNotification {
     fn try_from(p: Publish<'a>) -> Result<Self, Self::Error> {
         Ok(PublishNotification {
             dup: p.dup,
-            qospid: p.qospid,
+            qospid: p.qos,
             retain: p.retain,
             topic_name: String::from(p.topic_name),
             payload: Vec::from_slice(p.payload).map_err(|_| {
@@ -74,7 +71,7 @@ impl<'a> TryFrom<Publish<'a>> for PublishNotification {
 pub enum EventError {
     MqttState(StateError),
     Timeout,
-    Encoding(mqttrs::Error),
+    Encoding(mqttrust::encoding::v4::Error),
     Network(NetworkError),
     BufferSize,
     Clock,
@@ -91,8 +88,8 @@ pub enum NetworkError {
     DnsLookupFailed,
 }
 
-impl From<mqttrs::Error> for EventError {
-    fn from(e: mqttrs::Error) -> Self {
+impl From<mqttrust::encoding::v4::Error> for EventError {
+    fn from(e: mqttrust::encoding::v4::Error) -> Self {
         EventError::Encoding(e)
     }
 }

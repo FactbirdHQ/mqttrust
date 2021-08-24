@@ -1,10 +1,10 @@
 #![cfg_attr(not(test), no_std)]
 
-mod requests;
+pub mod encoding;
 
-use heapless::{String, Vec};
-pub use mqttrs::{QoS, SubscribeTopic};
-pub use requests::{PublishRequest, Request, SubscribeRequest, UnsubscribeRequest};
+pub use encoding::v4::{
+    subscribe::SubscribeTopic, utils::QoS, Packet, Publish, Subscribe, Unsubscribe,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MqttError {
@@ -14,46 +14,30 @@ pub enum MqttError {
 }
 
 pub trait Mqtt {
-    fn send(&self, request: Request<'_>) -> Result<(), MqttError>;
+    fn send(&self, packet: Packet<'_>) -> Result<(), MqttError>;
 
     fn client_id(&self) -> &str;
 
     fn publish(&self, topic_name: &str, payload: &[u8], qos: QoS) -> Result<(), MqttError> {
-        let req: Request = PublishRequest {
+        let packet = Packet::Publish(Publish {
             dup: false,
             qos,
+            pid: None,
             retain: false,
             topic_name,
             payload,
-        }
-        .into();
+        });
 
-        self.send(req)
+        self.send(packet)
     }
 
-    fn subscribe(&self, topic: SubscribeTopic) -> Result<(), MqttError> {
-        let req: Request = SubscribeRequest {
-            topics: Vec::from_slice(&[topic]).unwrap(),
-        }
-        .into();
-        self.send(req)
+    fn subscribe(&self, topics: &[SubscribeTopic<'_>]) -> Result<(), MqttError> {
+        let packet = Packet::Subscribe(Subscribe::new(topics));
+        self.send(packet)
     }
 
-    fn subscribe_many(&self, topics: Vec<SubscribeTopic, 5>) -> Result<(), MqttError> {
-        let req: Request = SubscribeRequest { topics }.into();
-        self.send(req)
-    }
-
-    fn unsubscribe(&self, topic: String<256>) -> Result<(), MqttError> {
-        let req: Request = UnsubscribeRequest {
-            topics: Vec::from_slice(&[topic]).unwrap(),
-        }
-        .into();
-        self.send(req)
-    }
-
-    fn unsubscribe_many(&self, topics: Vec<String<256>, 5>) -> Result<(), MqttError> {
-        let req: Request = UnsubscribeRequest { topics }.into();
-        self.send(req)
+    fn unsubscribe(&self, topics: &[&str]) -> Result<(), MqttError> {
+        let packet = Packet::Unsubscribe(Unsubscribe::new(topics));
+        self.send(packet)
     }
 }

@@ -1,5 +1,5 @@
 use embedded_nal::{IpAddr, Ipv4Addr};
-use mqttrs::LastWill;
+use mqttrust::encoding::v4::LastWill;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Broker<'a> {
@@ -56,8 +56,6 @@ pub struct MqttOptions<'a> {
     credentials: Option<(&'a str, &'a [u8])>,
     /// Minimum delay time between consecutive outgoing packets
     // throttle: Duration,
-    /// maximum number of outgoing inflight messages
-    inflight: usize,
     /// Last will that will be issued on unexpected disconnect
     last_will: Option<LastWill<'a>>,
 }
@@ -80,7 +78,6 @@ impl<'a> MqttOptions<'a> {
             // alpn: None,
             credentials: None,
             // throttle: Duration::from_micros(0),
-            inflight: 3,
             last_will: None,
         }
     }
@@ -207,27 +204,13 @@ impl<'a> MqttOptions<'a> {
     // pub fn throttle(&self) -> Duration {
     //     self.throttle
     // }
-
-    /// Set number of concurrent in flight messages
-    pub fn set_inflight(self, inflight: usize) -> Self {
-        if inflight == 0 {
-            panic!("zero in flight is not allowed")
-        }
-
-        Self { inflight, ..self }
-    }
-
-    /// Number of concurrent in flight messages
-    pub fn inflight(&self) -> usize {
-        self.inflight
-    }
 }
 
 #[cfg(test)]
 mod test {
     use super::{Ipv4Addr, MqttOptions};
     use embedded_nal::{IpAddr, Ipv6Addr};
-    use mqttrs::LastWill;
+    use mqttrust::{encoding::v4::LastWill, QoS};
 
     #[test]
     #[should_panic]
@@ -269,21 +252,6 @@ mod test {
     fn client_id() {
         let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
         assert_eq!(opts.client_id(), "client_a");
-    }
-
-    #[test]
-    fn inflight() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
-        assert_eq!(opts.inflight, 3);
-        assert_eq!(opts.set_inflight(5).inflight(), 5);
-    }
-
-    #[test]
-    #[should_panic]
-    fn zero_inflight() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
-        assert_eq!(opts.inflight, 3);
-        assert_eq!(opts.set_inflight(0).inflight(), 5);
     }
 
     #[test]
@@ -339,7 +307,7 @@ mod test {
         let will = LastWill {
             topic: "topic",
             message: b"Will message",
-            qos: mqttrs::QoS::AtLeastOnce,
+            qos: QoS::AtLeastOnce,
             retain: false,
         };
         assert_eq!(opts.set_last_will(will.clone()).last_will(), Some(will));
