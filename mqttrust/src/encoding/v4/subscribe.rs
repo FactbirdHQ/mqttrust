@@ -197,17 +197,21 @@ impl<'a> Subscribe<'a> {
         })
     }
 
+    /// Length: pid(2) + topic.for_each(2+len + qos(1))
+    pub(crate) fn len(&self) -> usize {
+        let mut length = 2;
+        for topic in self.topics() {
+            length += topic.topic_path.len() + 2 + 1;
+        }
+        length
+    }
+
     pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
         let header: u8 = 0b10000010;
         check_remaining(buf, offset, 1)?;
         write_u8(buf, offset, header)?;
 
-        // Length: pid(2) + topic.for_each(2+len + qos(1))
-        let mut length = 2;
-        for topic in self.topics() {
-            length += topic.topic_path.len() + 2 + 1;
-        }
-        let write_len = write_length(buf, offset, length)? + 1;
+        let write_len = write_length(buf, offset, self.len())? + 1;
 
         // Pid
         self.pid.unwrap_or(Pid::default()).to_buffer(buf, offset)?;
@@ -252,16 +256,22 @@ impl<'a> Unsubscribe<'a> {
         })
     }
 
-    pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
-        let header: u8 = 0b10100010;
+    /// Length: pid(2) + topic.for_each(2+len)
+    pub(crate) fn len(&self) -> usize {
         let mut length = 2;
         for topic in self.topics() {
             length += 2 + topic.len();
         }
+        length
+    }
+
+    pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
+        let header: u8 = 0b10100010;
+
         check_remaining(buf, offset, 1)?;
         write_u8(buf, offset, header)?;
 
-        let write_len = write_length(buf, offset, length)? + 1;
+        let write_len = write_length(buf, offset, self.len())? + 1;
 
         // Pid
         self.pid.unwrap_or(Pid::default()).to_buffer(buf, offset)?;
@@ -279,7 +289,8 @@ impl<'a> Suback<'a> {
         buf: &'a [u8],
         offset: &mut usize,
     ) -> Result<Self, Error> {
-        let payload_end = *offset + remaining_len;
+        // FIXME:
+        // let payload_end = *offset + remaining_len;
         let pid = Pid::from_buffer(buf, offset)?;
 
         // let mut return_codes = LimitedVec::new();

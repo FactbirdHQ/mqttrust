@@ -180,24 +180,37 @@ impl<'a> Connect<'a> {
         })
     }
 
-    pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
-        let header: u8 = 0b00010000;
+    pub(crate) fn len(&self) -> usize {
         let mut length: usize = 6 + 1 + 1; // NOTE: protocol_name(6) + protocol_level(1) + flags(1);
-        let mut connect_flags: u8 = 0b00000000;
-        if self.clean_session {
-            connect_flags |= 0b10;
-        };
         length += 2 + self.client_id.len();
         length += 2; // keep alive
         if let Some(username) = self.username {
-            connect_flags |= 0b10000000;
             length += username.len();
             length += 2;
         };
         if let Some(password) = self.password {
-            connect_flags |= 0b01000000;
             length += password.len();
             length += 2;
+        };
+        if let Some(last_will) = &self.last_will {
+            length += last_will.message.len();
+            length += last_will.topic.len();
+            length += 4;
+        };
+        length
+    }
+
+    pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
+        let header: u8 = 0b00010000;
+        let mut connect_flags: u8 = 0b00000000;
+        if self.clean_session {
+            connect_flags |= 0b10;
+        };
+        if self.username.is_some() {
+            connect_flags |= 0b10000000;
+        };
+        if self.password.is_some() {
+            connect_flags |= 0b01000000;
         };
         if let Some(last_will) = &self.last_will {
             connect_flags |= 0b00000100;
@@ -205,10 +218,8 @@ impl<'a> Connect<'a> {
             if last_will.retain {
                 connect_flags |= 0b00100000;
             };
-            length += last_will.message.len();
-            length += last_will.topic.len();
-            length += 4;
         };
+        let length = self.len();
         check_remaining(buf, offset, length + 1)?;
 
         // NOTE: putting data into buffer.

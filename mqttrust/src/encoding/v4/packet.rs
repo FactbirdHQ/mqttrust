@@ -1,5 +1,9 @@
 use super::*;
 
+/// https://docs.solace.com/MQTT-311-Prtl-Conformance-Spec/MQTT%20Control%20Packets.htm#_Toc430864901
+const FIXED_HEADER_LEN: usize = 5;
+const PID_LEN: usize = 2;
+
 /// Base enum for all MQTT packet types.
 ///
 /// This is the main type you'll be interacting with, as an output of [`decode_slice()`] and an input of
@@ -78,6 +82,25 @@ impl<'a> Packet<'a> {
             Packet::Disconnect => PacketType::Disconnect,
         }
     }
+
+    pub fn len(&self) -> usize {
+        let variable_len = match self {
+            Packet::Connect(c) => c.len(),
+            Packet::Connack(_) => 2,
+            Packet::Publish(p) => p.len(),
+            Packet::Puback(_)
+            | Packet::Pubrec(_)
+            | Packet::Pubrel(_)
+            | Packet::Pubcomp(_)
+            | Packet::Unsuback(_) => PID_LEN,
+            Packet::Suback(_) => PID_LEN + 1,
+            Packet::Subscribe(s) => s.len(),
+            Packet::Unsubscribe(u) => u.len(),
+            Packet::Pingreq | Packet::Pingresp | Packet::Disconnect => 0,
+        };
+
+        FIXED_HEADER_LEN + variable_len
+    }
 }
 
 macro_rules! packet_from_borrowed {
@@ -107,7 +130,7 @@ packet_from_borrowed!(Suback, Connect, Publish, Subscribe, Unsubscribe);
 packet_from!(Connack);
 
 /// Packet type variant, without the associated data.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, defmt::Format)]
 pub enum PacketType {
     Connect,
     Connack,

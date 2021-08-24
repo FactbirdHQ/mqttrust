@@ -25,7 +25,8 @@ nb = "^1"
 heapless = { version = "^0.7", features = ["serde", "defmt-impl"] }
 mqttrust = { version = "^0.2.0", path = "../mqttrust" }
 defmt = { version = "^0.2" }
-bbqueue = "0.4.12"
+# bbqueue = "0.4.12"
+bbqueue = { git = "https://github.com/mriise/bbqueue" }
 
 [dev-dependencies]
 dns-lookup = "1.0.3"

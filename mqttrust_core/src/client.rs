@@ -46,8 +46,8 @@ impl<'a, 'b, 'c, const T: usize, const P: usize, const L: usize> Mqtt for Client
             .try_borrow_mut()
             .map_err(|_| MqttError::Borrow)?;
 
-        // TODO: Size
-        let mut grant = prod.grant(1024).map_err(|_| MqttError::Full)?;
+        let max_size = packet.len();
+        let mut grant = prod.grant(max_size).map_err(|_| MqttError::Full)?;
 
         let len = encode_slice(&packet, grant.deref_mut()).map_err(|_| MqttError::Full)?;
 

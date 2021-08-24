@@ -22,7 +22,7 @@ pub enum Error {
     /// It is the caller's responsiblity to pass a big enough buffer to `encode()`.
     WriteZero,
     /// Tried to encode or decode a ProcessIdentifier==0.
-    InvalidPid,
+    InvalidPid(u16),
     /// Tried to decode a QoS > 2.
     InvalidQos(u8),
     /// Tried to decode a ConnectReturnCode > 5.
@@ -169,7 +169,7 @@ impl TryFrom<u16> for Pid {
     fn try_from(u: u16) -> Result<Self, Error> {
         match NonZeroU16::new(u) {
             Some(nz) => Ok(Pid(nz)),
-            None => Err(Error::InvalidPid),
+            None => Err(Error::InvalidPid(u)),
         }
     }
 }

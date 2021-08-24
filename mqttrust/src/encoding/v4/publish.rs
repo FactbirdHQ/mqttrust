@@ -39,6 +39,16 @@ impl<'a> Publish<'a> {
         })
     }
 
+    pub(crate) fn len(&self) -> usize {
+        // Length: topic (2+len) + pid (0/2) + payload (len)
+        2 + self.topic_name.len()
+            + match self.qos {
+                QoS::AtMostOnce => 0,
+                _ => 2,
+            }
+            + self.payload.len()
+    }
+
     pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
         // Header
         let mut header: u8 = match self.qos {
@@ -55,14 +65,7 @@ impl<'a> Publish<'a> {
         check_remaining(buf, offset, 1)?;
         write_u8(buf, offset, header)?;
 
-        // Length: topic (2+len) + pid (0/2) + payload (len)
-        let length = self.topic_name.len()
-            + match self.qos {
-                QoS::AtMostOnce => 2,
-                _ => 4,
-            }
-            + self.payload.len();
-
+        let length = self.len();
         let write_len = write_length(buf, offset, length)? + 1;
 
         // Topic
