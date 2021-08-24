@@ -1,20 +1,19 @@
 mod common;
 
 use mqttrust::{QoS, SubscribeTopic};
+use mqttrust_core::bbqueue::{BBBuffer, ConstBBBuffer};
+use mqttrust_core::Mqtt;
 use mqttrust_core::{EventLoop, MqttOptions, Notification};
-use mqttrust_core::{Mqtt, OwnedRequest};
 
 use common::clock::SysClock;
 use common::network::Network;
-use heapless::{spsc::Queue, String, Vec};
 use std::thread;
 
-static mut Q: Queue<OwnedRequest<128, 512>, 10> = Queue::new();
-
+static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer(ConstBBBuffer::new());
 const MSG_CNT: u32 = 5;
 
 fn main() {
-    let (p, c) = unsafe { Q.split() };
+    let (p, c) = unsafe { Q.try_split_framed().unwrap() };
 
     let mut network = Network;
 
@@ -52,19 +51,16 @@ fn main() {
         .unwrap();
 
     mqtt_client
-        .subscribe_many(
-            Vec::from_slice(&[
-                SubscribeTopic {
-                    topic_path: String::from("mqttrust/tester/subscriber"),
-                    qos: QoS::AtLeastOnce,
-                },
-                SubscribeTopic {
-                    topic_path: String::from("mqttrust/tester/subscriber2"),
-                    qos: QoS::AtLeastOnce,
-                },
-            ])
-            .unwrap(),
-        )
+        .subscribe(&[
+            SubscribeTopic {
+                topic_path: "mqttrust/tester/subscriber",
+                qos: QoS::AtLeastOnce,
+            },
+            SubscribeTopic {
+                topic_path: "mqttrust/tester/subscriber2",
+                qos: QoS::AtLeastOnce,
+            },
+        ])
         .expect("Failed to subscribe to topics!");
 
     let mut send_cnt = 0;

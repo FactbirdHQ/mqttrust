@@ -21,12 +21,12 @@ use mqttrust::{
 /// **Generics**:
 /// - L: The length of the queue, exhanging packets between the client and the
 ///   event loop. Length in number of request packets
-pub struct Client<'a, 'b, const T: usize, const P: usize, const L: usize> {
+pub struct Client<'a, 'b, const L: usize> {
     client_id: &'b str,
     producer: RefCell<FrameProducer<'a, L>>,
 }
 
-impl<'a, 'b, const T: usize, const P: usize, const L: usize> Client<'a, 'b, T, P, L> {
+impl<'a, 'b, const L: usize> Client<'a, 'b, L> {
     pub fn new(producer: FrameProducer<'a, L>, client_id: &'b str) -> Self {
         Self {
             client_id,
@@ -35,7 +35,7 @@ impl<'a, 'b, const T: usize, const P: usize, const L: usize> Client<'a, 'b, T, P
     }
 }
 
-impl<'a, 'b, 'c, const T: usize, const P: usize, const L: usize> Mqtt for Client<'a, 'b, T, P, L> {
+impl<'a, 'b, 'c, const L: usize> Mqtt for Client<'a, 'b, L> {
     fn client_id(&self) -> &str {
         &self.client_id
     }
