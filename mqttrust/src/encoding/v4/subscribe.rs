@@ -285,7 +285,7 @@ impl<'a> Unsubscribe<'a> {
 
 impl<'a> Suback<'a> {
     pub(crate) fn from_buffer(
-        remaining_len: usize,
+        _remaining_len: usize,
         buf: &'a [u8],
         offset: &mut usize,
     ) -> Result<Self, Error> {

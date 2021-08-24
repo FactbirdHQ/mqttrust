@@ -190,7 +190,7 @@ where
 
     fn handle_incoming_suback<'a>(
         &mut self,
-        suback: Suback<'a>,
+        _suback: Suback<'a>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         // TODO:
         // let request = None;
