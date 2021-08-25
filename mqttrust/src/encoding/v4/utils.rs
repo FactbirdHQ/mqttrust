@@ -4,13 +4,6 @@ use core::{convert::TryFrom, fmt, num::NonZeroU16};
 #[cfg(feature = "derive")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "std")]
-use std::{
-    error::Error as ErrorTrait,
-    format,
-    io::{Error as IoError, ErrorKind},
-};
-
 /// Errors returned by [`encode()`] and [`decode()`].
 ///
 /// [`encode()`]: fn.encode.html
@@ -41,32 +34,9 @@ pub enum Error {
     InvalidString,
 }
 
-#[cfg(feature = "std")]
-impl ErrorTrait for Error {}
-
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
-    }
-}
-
-#[cfg(feature = "std")]
-impl From<Error> for IoError {
-    fn from(err: Error) -> IoError {
-        match err {
-            Error::WriteZero => IoError::new(ErrorKind::WriteZero, err),
-            _ => IoError::new(ErrorKind::InvalidData, err),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl From<IoError> for Error {
-    fn from(err: IoError) -> Error {
-        match err.kind() {
-            ErrorKind::WriteZero => Error::WriteZero,
-            k => Error::IoError(k, format!("{}", err)),
-        }
     }
 }
 
@@ -75,7 +45,7 @@ impl From<IoError> for Error {
 /// For packets with [`QoS::AtLeastOne` or `QoS::ExactlyOnce`] delivery.
 ///
 /// ```rust
-/// # use mqttrs::{Packet, Pid, QosPid};
+/// # use mqttrust::encoding::v4::{Packet, Pid, QosPid};
 /// # use std::convert::TryFrom;
 /// #[derive(Default)]
 /// struct Session {
@@ -99,6 +69,7 @@ impl From<IoError> for Error {
 /// [MQTT-2.3.1-1]: https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718025
 /// [MQTT-2.2.1-3]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901026
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 #[cfg_attr(feature = "derive", derive(Serialize, Deserialize))]
 pub struct Pid(NonZeroU16);
 impl Pid {
@@ -112,7 +83,7 @@ impl Pid {
         self.0.get()
     }
 
-    pub(crate) fn from_buffer<'a>(buf: &'a [u8], offset: &mut usize) -> Result<Self, Error> {
+    pub(crate) fn from_buffer(buf: &[u8], offset: &mut usize) -> Result<Self, Error> {
         let pid = ((buf[*offset] as u16) << 8) | buf[*offset + 1] as u16;
         *offset += 2;
         Self::try_from(pid)
@@ -180,6 +151,7 @@ impl TryFrom<u16> for Pid {
 /// [Quality of Service]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718099
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "derive", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum QoS {
     /// `QoS 0`. No ack needed.
     AtMostOnce,
@@ -190,7 +162,7 @@ pub enum QoS {
 }
 
 impl QoS {
-    pub(crate) fn to_u8(&self) -> u8 {
+    pub(crate) fn as_u8(&self) -> u8 {
         match *self {
             QoS::AtMostOnce => 0,
             QoS::AtLeastOnce => 1,
@@ -217,6 +189,7 @@ impl QoS {
 /// [`Pid`]: struct.Pid.html
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "derive", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum QosPid {
     AtMostOnce,
     AtLeastOnce(Pid),

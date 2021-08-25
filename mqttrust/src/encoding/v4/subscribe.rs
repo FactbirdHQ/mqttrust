@@ -64,10 +64,10 @@ impl<'a> FromBuffer<'a> for SubscribeReturnCodes {
 }
 
 impl SubscribeReturnCodes {
-    pub(crate) fn to_u8(&self) -> u8 {
+    pub(crate) fn as_u8(&self) -> u8 {
         match *self {
             SubscribeReturnCodes::Failure => 0x80,
-            SubscribeReturnCodes::Success(qos) => qos.to_u8(),
+            SubscribeReturnCodes::Success(qos) => qos.as_u8(),
         }
     }
 }
@@ -131,7 +131,7 @@ where
         match self.list {
             List::Owned(data) => {
                 // FIXME: Can we get rid of this clone?
-                let item = data.get(self.index).map(|t| t.clone());
+                let item = data.get(self.index).cloned();
                 self.index += 1;
                 item
             }
@@ -214,12 +214,12 @@ impl<'a> Subscribe<'a> {
         let write_len = write_length(buf, offset, self.len())? + 1;
 
         // Pid
-        self.pid.unwrap_or(Pid::default()).to_buffer(buf, offset)?;
+        self.pid.unwrap_or_default().to_buffer(buf, offset)?;
 
         // Topics
         for topic in self.topics() {
             write_string(buf, offset, topic.topic_path)?;
-            write_u8(buf, offset, topic.qos.to_u8())?;
+            write_u8(buf, offset, topic.qos.as_u8())?;
         }
 
         Ok(write_len)
@@ -274,7 +274,7 @@ impl<'a> Unsubscribe<'a> {
         let write_len = write_length(buf, offset, self.len())? + 1;
 
         // Pid
-        self.pid.unwrap_or(Pid::default()).to_buffer(buf, offset)?;
+        self.pid.unwrap_or_default().to_buffer(buf, offset)?;
 
         for topic in self.topics() {
             write_string(buf, offset, topic)?;
@@ -296,9 +296,6 @@ impl<'a> Suback<'a> {
         // let mut return_codes = LimitedVec::new();
         // while *offset < payload_end {
         //     let _res = return_codes.push(SubscribeReturnCodes::from_buffer(buf, offset)?);
-
-        //     #[cfg(not(feature = "std"))]
-        //     _res.map_err(|_| Error::InvalidLength)?;
         // }
 
         Ok(Suback {
@@ -316,7 +313,7 @@ impl<'a> Suback<'a> {
         let write_len = write_length(buf, offset, length)? + 1;
         self.pid.to_buffer(buf, offset)?;
         for rc in self.return_codes {
-            write_u8(buf, offset, rc.to_u8())?;
+            write_u8(buf, offset, rc.as_u8())?;
         }
         Ok(write_len)
     }

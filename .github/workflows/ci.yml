@@ -34,7 +34,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --all --all-features --target thumbv7m-none-eabi
+          args: --all --target thumbv7m-none-eabi
 
       - name: Test
         uses: actions-rs/cargo@v1
@@ -130,7 +130,7 @@ jobs:
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features -- ${{ env.CLIPPY_PARAMS }}
+          args: -- ${{ env.CLIPPY_PARAMS }}
   grcov:
     name: Coverage
     runs-on: ubuntu-latest
@@ -220,7 +220,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: doc
-          args: --verbose --no-deps --all-features
+          args: --verbose --no-deps
 
       # - name: Finalize documentation
       #   run: |

@@ -7,15 +7,13 @@ use super::{decoder::*, encoder::*, *};
 /// [`Connect`]: struct.Connect.html
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
-    /// [MQTT 3.1.1] is the most commonly implemented version. [MQTT 5] isn't yet supported my by
-    /// `mqttrs`.
+    /// [MQTT 3.1.1] is the most commonly implemented version.
     ///
     /// [MQTT 3.1.1]: https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
     /// [MQTT 5]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html
     MQTT311,
     /// MQIsdp, aka SCADA are pre-standardisation names of MQTT. It should mostly conform to MQTT
-    /// 3.1.1, but you should watch out for implementation discrepancies. `Mqttrs` handles it like
-    /// standard MQTT 3.1.1.
+    /// 3.1.1, but you should watch out for implementation discrepancies.
     MQIsdp,
 }
 impl Protocol {
@@ -26,7 +24,7 @@ impl Protocol {
             _ => Err(Error::InvalidProtocol(name.into(), level)),
         }
     }
-    pub(crate) fn from_buffer<'a>(buf: &'a [u8], offset: &mut usize) -> Result<Self, Error> {
+    pub(crate) fn from_buffer(buf: &[u8], offset: &mut usize) -> Result<Self, Error> {
         let protocol_name = read_str(buf, offset)?;
         let protocol_level = buf[*offset];
         *offset += 1;
@@ -36,16 +34,14 @@ impl Protocol {
     pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
         match self {
             Protocol::MQTT311 => {
-                let slice = &[0u8, 4, 'M' as u8, 'Q' as u8, 'T' as u8, 'T' as u8, 4];
+                let slice = &[0u8, 4, b'M', b'Q', b'T', b'T', 4];
                 for &byte in slice {
                     write_u8(buf, offset, byte)?;
                 }
                 Ok(slice.len())
             }
             Protocol::MQIsdp => {
-                let slice = &[
-                    0u8, 4, 'M' as u8, 'Q' as u8, 'i' as u8, 's' as u8, 'd' as u8, 'p' as u8, 4,
-                ];
+                let slice = &[0u8, 4, b'M', b'Q', b'i', b's', b'd', b'p', 4];
                 for &byte in slice {
                     write_u8(buf, offset, byte)?;
                 }
@@ -86,7 +82,7 @@ pub enum ConnectReturnCode {
     NotAuthorized,
 }
 impl ConnectReturnCode {
-    fn to_u8(&self) -> u8 {
+    fn as_u8(&self) -> u8 {
         match *self {
             ConnectReturnCode::Accepted => 0,
             ConnectReturnCode::RefusedProtocolVersion => 1,
@@ -174,10 +170,10 @@ impl<'a> Connect<'a> {
             protocol,
             keep_alive,
             client_id,
+            clean_session,
+            last_will,
             username,
             password,
-            last_will,
-            clean_session,
         })
     }
 
@@ -215,7 +211,7 @@ impl<'a> Connect<'a> {
         };
         if let Some(last_will) = &self.last_will {
             connect_flags |= 0b00000100;
-            connect_flags |= last_will.qos.to_u8() << 3;
+            connect_flags |= last_will.qos.as_u8() << 3;
             if last_will.retain {
                 connect_flags |= 0b00100000;
             };
@@ -251,7 +247,7 @@ impl<'a> Connect<'a> {
 }
 
 impl Connack {
-    pub(crate) fn from_buffer<'a>(buf: &'a [u8], offset: &mut usize) -> Result<Self, Error> {
+    pub(crate) fn from_buffer(buf: &[u8], offset: &mut usize) -> Result<Self, Error> {
         let flags = buf[*offset];
         let return_code = buf[*offset + 1];
         *offset += 2;
@@ -268,7 +264,7 @@ impl Connack {
         if self.session_present {
             flags |= 0b1;
         };
-        let rc = self.code.to_u8();
+        let rc = self.code.as_u8();
         write_u8(buf, offset, header)?;
         write_u8(buf, offset, length)?;
         write_u8(buf, offset, flags)?;

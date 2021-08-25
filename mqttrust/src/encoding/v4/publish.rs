@@ -57,10 +57,10 @@ impl<'a> Publish<'a> {
             QoS::ExactlyOnce => 0b00110100,
         };
         if self.dup {
-            header |= 0b00001000 as u8;
+            header |= 0b00001000_u8;
         };
         if self.retain {
-            header |= 0b00000001 as u8;
+            header |= 0b00000001_u8;
         };
         check_remaining(buf, offset, 1)?;
         write_u8(buf, offset, header)?;

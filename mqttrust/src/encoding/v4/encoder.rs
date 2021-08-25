@@ -1,17 +1,17 @@
 use super::{Error, Packet};
 
-/// Encode a [Packet] enum into a [BufMut] buffer.
+/// Encode a [Packet] enum into a u8 slice.
 ///
 /// ```
-/// # use mqttrs::*;
-/// # use bytes::*;
+/// # use mqttrust::encoding::v4::*;
 /// // Instantiate a `Packet` to encode.
 /// let packet = Publish {
 ///    dup: false,
-///    qospid: QosPid::AtMostOnce,
+///    qos: QoS::AtMostOnce,
 ///    retain: false,
 ///    topic_name: "test",
 ///    payload: b"hello",
+///    pid: None,
 /// }.into();
 ///
 /// // Allocate buffer (should be appropriately-sized or able to grow as needed).
@@ -20,18 +20,11 @@ use super::{Error, Packet};
 /// // Write bytes corresponding to `&Packet` into the `BytesMut`.
 /// let len = encode_slice(&packet, &mut buf).expect("failed encoding");
 /// assert_eq!(&buf[..len], &[0b00110000, 11,
-///                     0, 4, 't' as u8, 'e' as u8, 's' as u8, 't' as u8,
-///                    'h' as u8, 'e' as u8, 'l' as u8, 'l' as u8, 'o' as u8]);
+///                     0, 4, b't', b'e', b's', b't',
+///                    b'h', b'e', b'l', b'l', b'o']);
 /// ```
 ///
 /// [Packet]: ../enum.Packet.html
-/// [BufMut]: https://docs.rs/bytes/1.0.0/bytes/trait.BufMut.html
-// #[cfg(feature = "std")]
-// pub fn encode_slice(packet: &Packet, buf: impl BufMut) -> Result<usize, Error> {
-//     let mut offset = 0;
-//     encode_slice(packet, buf.bytes_mut(), &mut offset)
-// }
-
 pub fn encode_slice(packet: &Packet, buf: &mut [u8]) -> Result<usize, Error> {
     let mut offset = 0;
 
@@ -149,12 +142,12 @@ pub(crate) fn write_length(buf: &mut [u8], offset: &mut usize, len: usize) -> Re
     let mut x = len;
     while !done {
         let mut byte = (x % 128) as u8;
-        x = x / 128;
+        x /= 128;
         if x > 0 {
-            byte = byte | 128;
+            byte |= 128;
         }
         write_u8(buf, offset, byte)?;
-        done = x <= 0;
+        done = x == 0;
     }
     Ok(write_len)
 }

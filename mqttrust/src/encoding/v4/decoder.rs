@@ -1,6 +1,6 @@
 use super::*;
 
-pub fn decode_slice<'a>(buf: &'a [u8]) -> Result<Option<Packet<'a>>, Error> {
+pub fn decode_slice(buf: &[u8]) -> Result<Option<Packet<'_>>, Error> {
     let mut offset = 0;
     if let Some((header, remaining_len)) = read_header(buf, &mut offset)? {
         let r = read_packet(header, remaining_len, buf, &mut offset)?;
@@ -37,10 +37,7 @@ fn read_packet<'a>(
 
 /// Read the parsed header and remaining_len from the buffer. Only return Some() and advance the
 /// buffer position if there is enough data in the buffer to read the full packet.
-pub fn read_header<'a>(
-    buf: &'a [u8],
-    offset: &mut usize,
-) -> Result<Option<(Header, usize)>, Error> {
+pub fn read_header(buf: &[u8], offset: &mut usize) -> Result<Option<(Header, usize)>, Error> {
     let mut len: usize = 0;
     for pos in 0..=3 {
         if buf.len() > *offset + pos + 1 {

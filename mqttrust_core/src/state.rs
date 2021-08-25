@@ -4,7 +4,6 @@ use crate::Notification;
 use core::convert::TryInto;
 use core::ops::Add;
 use embedded_time::duration::Milliseconds;
-use embedded_time::Clock;
 use heapless::{FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrust::encoding::v4::*;
 
@@ -409,10 +408,10 @@ where
 }
 
 #[cfg(feature = "defmt-impl")]
-impl<O> defmt::Format for StartTime<Instant<O>>
+impl<O> defmt::Format for StartTime<embedded_time::Instant<O>>
 where
-    O: Clock,
-    Generic<O::T>: TryInto<Milliseconds>,
+    O: embedded_time::Clock,
+    embedded_time::duration::Generic<O::T>: TryInto<embedded_time::duration::Milliseconds>,
 {
     fn format(&self, fmt: defmt::Formatter) {
         let start_time = self
@@ -468,12 +467,10 @@ impl<TIM, const L: usize> Inflight<TIM, L> {
 
 #[cfg(test)]
 mod test {
-    use super::{
-        Clock, Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError,
-    };
+    use super::{Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError};
     use crate::{packet::SerializedPacket, Notification};
     use core::convert::TryFrom;
-    use embedded_time::{duration::Extensions, Instant};
+    use embedded_time::{duration::Extensions, Clock, Instant};
     use mqttrust::{
         encoding::v4::{decode_slice, encode_slice, Pid},
         Publish, QoS,

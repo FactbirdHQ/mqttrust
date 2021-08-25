@@ -10,15 +10,16 @@ const PID_LEN: usize = 2;
 /// [`encode()`]. Most variants can be constructed directly without using methods.
 ///
 /// ```
-/// # use mqttrs::*;
+/// # use mqttrust::encoding::v4::*;
 /// # use core::convert::TryFrom;
 /// // Simplest form
 /// let pkt = Packet::Connack(Connack { session_present: false,
 ///                                     code: ConnectReturnCode::Accepted });
 /// // Using `Into` trait
 /// let publish = Publish { dup: false,
-///                         qospid: QosPid::AtMostOnce,
+///                         qos: QoS::AtMostOnce,
 ///                         retain: false,
+///                         pid: None,
 ///                         topic_name: "to/pic",
 ///                         payload: b"payload" };
 /// let pkt: Packet = publish.into();
