@@ -2,6 +2,7 @@
 
 mod client;
 mod eventloop;
+mod logging;
 mod options;
 mod packet;
 mod state;
@@ -19,6 +20,7 @@ pub use options::{Broker, MqttOptions};
 use state::StateError;
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub struct PublishNotification {
     pub dup: bool,
     pub qospid: QoS,
@@ -30,6 +32,7 @@ pub struct PublishNotification {
 /// Includes incoming packets from the network and other interesting events
 /// happening in the eventloop
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Notification {
     /// Incoming connection acknowledge
     ConnAck,
@@ -59,7 +62,7 @@ impl<'a> TryFrom<Publish<'a>> for PublishNotification {
             retain: p.retain,
             topic_name: String::from(p.topic_name),
             payload: Vec::from_slice(p.payload).map_err(|_| {
-                defmt::error!("Failed to convert payload to notification!");
+                mqtt_log!(error, "Failed to convert payload to notification!");
                 StateError::PayloadEncoding
             })?,
         })
@@ -68,6 +71,7 @@ impl<'a> TryFrom<Publish<'a>> for PublishNotification {
 
 /// Critical errors during eventloop polling
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum EventError {
     MqttState(StateError),
     Timeout,
@@ -77,7 +81,8 @@ pub enum EventError {
     Clock,
 }
 
-#[derive(Debug, PartialEq, defmt::Format)]
+#[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum NetworkError {
     Read,
     Write,

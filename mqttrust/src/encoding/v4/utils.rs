@@ -15,7 +15,8 @@ use std::{
 ///
 /// [`encode()`]: fn.encode.html
 /// [`decode()`]: fn.decode.html
-#[derive(Debug, Clone, PartialEq, Eq, defmt::Format)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Error {
     /// Not enough space in the write buffer.
     ///
@@ -223,16 +224,6 @@ pub enum QosPid {
 }
 
 impl QosPid {
-    #[cfg(test)]
-    pub(crate) fn from_u8u16(qos: u8, pid: u16) -> Self {
-        match qos {
-            0 => QosPid::AtMostOnce,
-            1 => QosPid::AtLeastOnce(Pid::try_from(pid).expect("pid == 0")),
-            2 => QosPid::ExactlyOnce(Pid::try_from(pid).expect("pid == 0")),
-            _ => panic!("Qos > 2"),
-        }
-    }
-
     /// Extract the [`Pid`] from a `QosPid`, if any.
     ///
     /// [`Pid`]: struct.Pid.html

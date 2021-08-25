@@ -22,11 +22,13 @@ embedded-hal = { version = "1.0.0-alpha.4" }
 embedded-nal = "0.6.0"
 embedded-time = "0.11.0"
 nb = "^1"
-heapless = { version = "^0.7", features = ["serde", "defmt-impl"] }
+heapless = { version = "^0.7", features = ["serde"] }
 mqttrust = { version = "^0.2.0", path = "../mqttrust" }
-defmt = { version = "^0.2" }
 # bbqueue = "0.4.12"
 bbqueue = { git = "https://github.com/mriise/bbqueue" }
+
+log = { version = "^0.4", default-features = false, optional = true }
+defmt = { version = "^0.2", optional = true }
 
 [dev-dependencies]
 dns-lookup = "1.0.3"
@@ -35,9 +37,11 @@ dns-lookup = "1.0.3"
 [features]
 default = []
 
-defmt-default = []
-defmt-trace = []
-defmt-debug = []
-defmt-info = []
-defmt-warn = []
-defmt-error = []
+defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl"]
+
+defmt-default = ["defmt-impl"]
+defmt-trace = ["defmt-impl"]
+defmt-debug = ["defmt-impl"]
+defmt-info = ["defmt-impl"]
+defmt-warn = ["defmt-impl"]
+defmt-error = ["defmt-impl"]

@@ -1,14 +1,16 @@
+use crate::mqtt_log;
 use crate::packet::SerializedPacket;
 use crate::Notification;
 use core::convert::TryInto;
 use core::ops::Add;
-use embedded_time::duration::{Generic, Milliseconds};
-use embedded_time::{Clock, Instant};
+use embedded_time::duration::Milliseconds;
+use embedded_time::Clock;
 use heapless::{FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrust::encoding::v4::*;
 
 #[allow(unused)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum MqttConnectionStatus {
     Handshake,
     Connected,
@@ -16,6 +18,7 @@ pub enum MqttConnectionStatus {
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum StateError {
     /// Broker's error reply to client's connect packet
     Connect(ConnectReturnCode),
@@ -134,7 +137,7 @@ where
             Packet::Pubrel(pid) => self.handle_incoming_pubrel(pid),
             Packet::Pubcomp(pid) => self.handle_incoming_pubcomp(pid),
             _ => {
-                defmt::error!("Invalid incoming packet!");
+                mqtt_log!(error, "Invalid incoming packet!");
                 Ok((None, None))
             }
         }
@@ -183,7 +186,7 @@ where
             let notification = Some(Notification::Puback(pid));
             Ok((notification, request))
         } else {
-            defmt::error!("Unsolicited puback packet: {:?}", pid.get());
+            mqtt_log!(error, "Unsolicited puback packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -225,7 +228,7 @@ where
             let notification = Some(Notification::Pubrec(pid));
             Ok((notification, reply))
         } else {
-            defmt::error!("Unsolicited pubrec packet: {:?}", pid.get());
+            mqtt_log!(error, "Unsolicited pubrec packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -244,7 +247,7 @@ where
             (QoS::AtLeastOnce, Some(pid)) => Some(Packet::Puback(pid)),
             (QoS::ExactlyOnce, Some(pid)) => {
                 self.incoming_pub.insert(pid.get()).map_err(|_| {
-                    defmt::error!("Failed to insert incoming pub!");
+                    mqtt_log!(error, "Failed to insert incoming pub!");
                     StateError::InvalidState
                 })?;
 
@@ -264,7 +267,7 @@ where
             let reply = Packet::Pubcomp(pid);
             Ok((None, Some(reply)))
         } else {
-            defmt::error!("Unsolicited pubrel packet: {:?}", pid.get());
+            mqtt_log!(error, "Unsolicited pubrel packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -279,7 +282,7 @@ where
             let reply = None;
             Ok((notification, reply))
         } else {
-            defmt::error!("Unsolicited pubcomp packet: {:?}", pid.get());
+            mqtt_log!(error, "Unsolicited pubcomp packet: {:?}", pid.get());
             Err(StateError::Unsolicited)
         }
     }
@@ -290,13 +293,13 @@ where
     fn handle_outgoing_ping<'b>(&mut self) -> Result<Packet<'b>, StateError> {
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
-            defmt::error!("Error awaiting for last ping response");
+            mqtt_log!(error, "Error awaiting for last ping response");
             return Err(StateError::AwaitPingResp);
         }
 
         self.await_pingresp = true;
 
-        defmt::trace!("Pingreq");
+        mqtt_log!(trace, "Pingreq");
 
         Ok(Packet::Pingreq)
     }
@@ -305,7 +308,7 @@ where
         &mut self,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         self.await_pingresp = false;
-        defmt::trace!("Pingresp");
+        mqtt_log!(trace, "Pingresp");
         Ok((None, None))
     }
 
@@ -318,14 +321,15 @@ where
             ConnectReturnCode::Accepted
                 if self.connection_status == MqttConnectionStatus::Handshake =>
             {
-                defmt::debug!("MQTT connected!");
+                mqtt_log!(debug, "MQTT connected!");
                 self.connection_status = MqttConnectionStatus::Connected;
                 Ok(())
             }
             ConnectReturnCode::Accepted
                 if self.connection_status != MqttConnectionStatus::Handshake =>
             {
-                defmt::error!(
+                mqtt_log!(
+                    error,
                     "Invalid state. Expected = {:?}, Current = {:?}",
                     MqttConnectionStatus::Handshake,
                     self.connection_status
@@ -334,7 +338,11 @@ where
                 Err(StateError::InvalidState)
             }
             code => {
-                defmt::error!("Connection failed. Connection error = {:?}", code as u8);
+                mqtt_log!(
+                    error,
+                    "Connection failed. Connection error = {:?}",
+                    code as u8
+                );
                 self.connection_status = MqttConnectionStatus::Disconnected;
                 Err(StateError::Connect(code))
             }
@@ -400,6 +408,7 @@ where
     }
 }
 
+#[cfg(feature = "defmt-impl")]
 impl<O> defmt::Format for StartTime<Instant<O>>
 where
     O: Clock,
@@ -690,7 +699,7 @@ mod test {
             .unwrap();
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
-        let mut backup = mqtt.outgoing_pub.get_mut(&3).unwrap().packet(1).unwrap();
+        let backup = mqtt.outgoing_pub.get_mut(&3).unwrap().packet(1).unwrap();
         let publish_out = match decode_slice(backup).unwrap() {
             Some(Packet::Publish(p)) => p,
             _ => panic!(),
@@ -723,8 +732,12 @@ mod test {
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
         // check if the remaining element's pid is 2
-        let backup = mqtt.outgoing_pub.get(&2);
-        // assert_eq!(backup.unwrap().publish.qos, QoS::AtLeastOnce);
+        let backup = mqtt.outgoing_pub.get_mut(&2).unwrap().packet(2).unwrap();
+        let publish_out = match decode_slice(backup).unwrap() {
+            Some(Packet::Publish(p)) => p,
+            _ => panic!(),
+        };
+        assert_eq!(publish_out.qos, QoS::AtLeastOnce);
 
         assert_eq!(mqtt.outgoing_rel.len(), 1);
 

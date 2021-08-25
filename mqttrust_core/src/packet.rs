@@ -59,7 +59,7 @@ mod tests {
     use core::convert::TryFrom;
 
     use mqttrust::{
-        encoding::v4::{decode_slice, encode_slice, subscribe::List},
+        encoding::v4::{decode_slice, encode_slice},
         Packet, Publish, Subscribe, SubscribeTopic,
     };
 

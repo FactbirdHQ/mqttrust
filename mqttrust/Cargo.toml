@@ -18,5 +18,10 @@ name = "mqttrust"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-heapless = { version = "^0.7", features = ["serde", "defmt-impl"] }
-defmt = "^0.2"
+heapless = { version = "^0.7", features = ["serde"] }
+defmt = { version = "^0.2", optional = true }
+
+[features]
+default = []
+
+defmt-impl = ["defmt", "heapless/defmt-impl"]

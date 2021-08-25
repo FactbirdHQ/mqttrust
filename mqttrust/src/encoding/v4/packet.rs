@@ -130,7 +130,8 @@ packet_from_borrowed!(Suback, Connect, Publish, Subscribe, Unsubscribe);
 packet_from!(Connack);
 
 /// Packet type variant, without the associated data.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, defmt::Format)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum PacketType {
     Connect,
     Connack,
