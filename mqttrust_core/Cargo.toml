@@ -22,7 +22,7 @@ embedded-hal = { version = "1.0.0-alpha.4" }
 embedded-nal = "0.6.0"
 embedded-time = "0.11.0"
 nb = "^1"
-heapless = { version = "^0.7", features = ["serde"] }
+heapless = { version = "^0.7", features = ["serde", "x86-sync-pool"] }
 mqttrust = { version = "^0.2.0", path = "../mqttrust" }
 # bbqueue = "0.4.12"
 bbqueue = { git = "https://github.com/mriise/bbqueue" }

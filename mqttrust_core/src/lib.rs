@@ -13,11 +13,12 @@ pub use client::Client;
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
+use heapless::pool::{singleton::Box, Init};
 use heapless::{String, Vec};
 pub use mqttrust::encoding::v4::{Pid, Publish, QoS, QosPid, Suback};
 pub use mqttrust::*;
 pub use options::{Broker, MqttOptions};
-use state::StateError;
+use state::{StateError, BOXED_PUBLISH};
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
@@ -26,18 +27,18 @@ pub struct PublishNotification {
     pub qospid: QoS,
     pub retain: bool,
     pub topic_name: String<256>,
-    pub payload: Vec<u8, 2048>,
+    pub payload: Vec<u8, 1024>,
 }
 
 /// Includes incoming packets from the network and other interesting events
 /// happening in the eventloop
 #[derive(Debug, PartialEq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+// #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Notification {
     /// Incoming connection acknowledge
     ConnAck,
     /// Incoming publish from the broker
-    Publish(PublishNotification),
+    Publish(Box<BOXED_PUBLISH, Init>),
     /// Incoming puback from the broker
     Puback(Pid),
     /// Incoming pubrec from the broker
