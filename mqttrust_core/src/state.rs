@@ -85,6 +85,7 @@ where
             + core::mem::align_of::<PublishNotification>()
             - core::mem::size_of::<PublishNotification>()
                 % core::mem::align_of::<PublishNotification>();
+
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
         BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
 
@@ -485,10 +486,13 @@ impl<TIM, const L: usize> Inflight<TIM, L> {
 
 #[cfg(test)]
 mod test {
-    use super::{Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError};
+    use super::{
+        Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError, BOXED_PUBLISH,
+    };
     use crate::{packet::SerializedPacket, Notification};
     use core::convert::TryFrom;
     use embedded_time::{duration::Extensions, Clock, Instant};
+    use heapless::pool::singleton::Pool;
     use mqttrust::{
         encoding::v4::{decode_slice, encode_slice, Pid},
         Publish, QoS,
@@ -524,7 +528,11 @@ mod test {
     }
 
     fn build_mqttstate() -> MqttState<Milliseconds> {
-        MqttState::new()
+        let state = MqttState::new();
+        const LEN: usize = 1024 * 10;
+        static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
+        BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
+        state
     }
 
     #[test]
@@ -642,20 +650,6 @@ mod test {
         assert_eq!(publish_out.qos, QoS::AtLeastOnce);
         assert_eq!(publish_out.pid, Some(Pid::try_from(2).unwrap()));
         assert_eq!(mqtt.outgoing_pub.len(), 1);
-
-        let publish = Packet::Publish(build_publish(QoS::AtLeastOnce, None));
-        let len = encode_slice(&publish, buf).unwrap();
-        let mut pkg = SerializedPacket(&mut buf[..len]);
-
-        // Packet id should be incremented and publish should be saved in queue
-        mqtt.handle_outgoing_publish(&mut pkg, &now).unwrap();
-        let publish_out = match decode_slice(pkg.to_inner()).unwrap() {
-            Some(Packet::Publish(p)) => p,
-            _ => panic!(),
-        };
-        assert_eq!(publish_out.qos, QoS::AtLeastOnce);
-        assert_eq!(publish_out.pid, Some(Pid::try_from(3).unwrap()));
-        assert_eq!(mqtt.outgoing_pub.len(), 2);
     }
 
     #[test]
@@ -705,23 +699,16 @@ mod test {
         let mut pkg1 = SerializedPacket(&mut buf[..len]);
         mqtt.handle_outgoing_publish(&mut pkg1, &now).unwrap();
 
-        let publish2 = Packet::Publish(build_publish(QoS::ExactlyOnce, None));
-        let len = encode_slice(&publish2, buf).unwrap();
-        let mut pkg2 = SerializedPacket(&mut buf[..len]);
-        mqtt.handle_outgoing_publish(&mut pkg2, &now).unwrap();
-
-        mqtt.handle_incoming_puback(Pid::try_from(2).unwrap())
-            .unwrap();
         assert_eq!(mqtt.outgoing_pub.len(), 1);
 
-        let backup = mqtt.outgoing_pub.get_mut(&3).unwrap().packet(1).unwrap();
+        let backup = mqtt.outgoing_pub.get_mut(&2).unwrap().packet(1).unwrap();
         let publish_out = match decode_slice(backup).unwrap() {
             Some(Packet::Publish(p)) => p,
             _ => panic!(),
         };
-        assert_eq!(publish_out.qos, QoS::ExactlyOnce);
+        assert_eq!(publish_out.qos, QoS::AtLeastOnce);
 
-        mqtt.handle_incoming_puback(Pid::try_from(3).unwrap())
+        mqtt.handle_incoming_puback(Pid::try_from(2).unwrap())
             .unwrap();
         assert_eq!(mqtt.outgoing_pub.len(), 0);
     }
@@ -732,32 +719,18 @@ mod test {
         let buf = &mut [0u8; 256];
         let now = 0u32.milliseconds();
 
-        let publish1 = Packet::Publish(build_publish(QoS::AtLeastOnce, None));
-        let len = encode_slice(&publish1, buf).unwrap();
-        let mut pkg1 = SerializedPacket(&mut buf[..len]);
-        mqtt.handle_outgoing_publish(&mut pkg1, &now).unwrap();
+        let publish = Packet::Publish(build_publish(QoS::ExactlyOnce, None));
+        let len = encode_slice(&publish, buf).unwrap();
+        let mut pkg = SerializedPacket(&mut buf[..len]);
+        mqtt.handle_outgoing_publish(&mut pkg, &now).unwrap();
 
-        let publish2 = Packet::Publish(build_publish(QoS::ExactlyOnce, None));
-        let len = encode_slice(&publish2, buf).unwrap();
-        let mut pkg2 = SerializedPacket(&mut buf[..len]);
-        mqtt.handle_outgoing_publish(&mut pkg2, &now).unwrap();
-
-        mqtt.handle_incoming_pubrec(Pid::try_from(3).unwrap())
+        mqtt.handle_incoming_pubrec(Pid::try_from(2).unwrap())
             .unwrap();
-        assert_eq!(mqtt.outgoing_pub.len(), 1);
-
-        // check if the remaining element's pid is 2
-        let backup = mqtt.outgoing_pub.get_mut(&2).unwrap().packet(2).unwrap();
-        let publish_out = match decode_slice(backup).unwrap() {
-            Some(Packet::Publish(p)) => p,
-            _ => panic!(),
-        };
-        assert_eq!(publish_out.qos, QoS::AtLeastOnce);
-
+        assert_eq!(mqtt.outgoing_pub.len(), 0);
         assert_eq!(mqtt.outgoing_rel.len(), 1);
 
-        // check if the  element's pid is 3
-        assert!(mqtt.outgoing_rel.contains(&3));
+        // check if the  element's pid is 2
+        assert!(mqtt.outgoing_rel.contains(&2));
     }
 
     #[test]

@@ -558,12 +558,13 @@ impl<'a> Drop for PacketDecoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Inflight, StartTime};
+    use crate::state::{Inflight, StartTime, BOXED_PUBLISH};
     use bbqueue::BBBuffer;
     use embedded_time::clock::Error;
     use embedded_time::duration::Milliseconds;
     use embedded_time::fraction::Fraction;
     use embedded_time::Instant;
+    use heapless::pool::singleton::Pool;
     use mqttrust::encoding::v4::{Connack, ConnectReturnCode, Error as EncodingError, Pid};
     use mqttrust::{Publish, QoS};
 
@@ -661,6 +662,10 @@ mod tests {
     #[test]
     fn success_receive_multiple_packets() {
         let mut state = MqttState::<Milliseconds>::new();
+        const LEN: usize = 1024 * 10;
+        static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
+        BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
+
         let mut rx_buf = PacketBuffer::new();
         let connack = Connack {
             session_present: false,
@@ -706,6 +711,10 @@ mod tests {
     #[test]
     fn failure_receive_multiple_packets() {
         let mut state = MqttState::<Milliseconds>::new();
+        const LEN: usize = 1024 * 10;
+        static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
+        BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
+
         let mut rx_buf = PacketBuffer::new();
         let connack_malformed = Connack {
             session_present: false,
@@ -783,12 +792,6 @@ mod tests {
             .state
             .outgoing_pub
             .insert(2, Inflight::new(now, &rx_buf.buffer))
-            .unwrap();
-
-        event
-            .state
-            .outgoing_pub
-            .insert(3, Inflight::new(now, &rx_buf.buffer))
             .unwrap();
 
         event.state.connection_status = MqttConnectionStatus::Handshake;
