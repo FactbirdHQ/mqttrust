@@ -165,7 +165,7 @@ where
         // By comparing the current time, select pending non-zero QoS publish
         // requests staying longer than the retry interval, and handle their
         // retrial.
-        for (pid, inflight) in self.state.retries(now, 50_000.milliseconds()) {
+        for (pid, inflight) in self.state.retries(now, 10_000.milliseconds()) {
             mqtt_log!(warn, "Retrying PID {:?}", pid);
             // Update inflight's timestamp for later retrials
             inflight.last_touch_entry().insert(now);
@@ -221,7 +221,6 @@ where
                 self.state.last_ping_entry().insert(now);
 
                 self.state.await_pingresp = false;
-                self.state.outgoing_pub.clear();
                 self.network_handle.rx_buf.init();
 
                 let (username, password) = self.options.credentials();
