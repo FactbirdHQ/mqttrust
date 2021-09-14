@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: BBBuffer<1024> = BBBuffer(bbqueue::ConstBBBuffer::new());
+        static mut Q: BBBuffer<1024> = BBBuffer::new();
 
         let mut network = MockNetwork {
             should_fail_read: false,

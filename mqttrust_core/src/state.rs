@@ -7,7 +7,7 @@ use core::ops::Add;
 use embedded_time::duration::Milliseconds;
 use heapless::{
     pool,
-    pool::singleton::{Box, Pool},
+    pool::singleton::Pool,
 };
 use heapless::{FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrust::encoding::v4::*;

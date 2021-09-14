@@ -1,6 +1,6 @@
 [package]
 name = "mqttrust"
-version = "0.2.0"
+version = "0.3.1-alpha0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "MQTT Client "
 readme = "../README.md"
