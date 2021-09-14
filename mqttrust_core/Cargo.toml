@@ -1,6 +1,6 @@
 [package]
 name = "mqttrust_core"
-version = "0.4.0"
+version = "0.4.1-alpha0"
 authors = ["Mathias Koch <mk@blackbird.online>"]
 description = "MQTT Client "
 readme = "../README.md"
@@ -23,7 +23,7 @@ embedded-nal = "0.6.0"
 embedded-time = "0.11.0"
 nb = "^1"
 heapless = { version = "^0.7", features = ["serde", "x86-sync-pool"] }
-mqttrust = { version = "^0.4.0", path = "../mqttrust" }
+mqttrust = { version = "^0.4.1-alpha0", path = "../mqttrust" }
 bbqueue = "0.5"
 
 log = { version = "^0.4", default-features = false, optional = true }
