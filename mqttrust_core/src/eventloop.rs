@@ -46,7 +46,7 @@ where
         }
     }
 
-    pub fn connect<N: Dns + TcpClientStack<TcpSocket = S>>(
+    pub fn connect<N: Dns + TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
     ) -> nb::Result<bool, EventError> {
@@ -108,7 +108,7 @@ where
 
     /// Selects an event from the client's requests, incoming packets from the
     /// broker and keepalive ping cycle.
-    fn select_event<N: TcpClientStack<TcpSocket = S>>(
+    fn select_event<N: TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
     ) -> nb::Result<Notification, EventError> {
@@ -179,7 +179,7 @@ where
     /// Yields notification from events. All the error raised while processing
     /// event is reported as an `Ok` value of `Notification::Abort`.
     #[must_use = "Eventloop should be iterated over a loop to make progress"]
-    pub fn yield_event<N: TcpClientStack<TcpSocket = S>>(
+    pub fn yield_event<N: TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
     ) -> nb::Result<Notification, Infallible> {
@@ -199,14 +199,14 @@ where
         })
     }
 
-    pub fn disconnect<N: TcpClientStack<TcpSocket = S>>(&mut self, network: &mut N) {
+    pub fn disconnect<N: TcpClientStack<TcpSocket = S> + ?Sized>(&mut self, network: &mut N) {
         self.state.connection_status = MqttConnectionStatus::Disconnected;
         if let Some(socket) = self.network_handle.socket.take() {
             network.close(socket).ok();
         }
     }
 
-    fn mqtt_connect<N: TcpClientStack<TcpSocket = S>>(
+    fn mqtt_connect<N: TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
     ) -> nb::Result<bool, EventError> {
@@ -277,7 +277,7 @@ struct NetworkHandle<S> {
 }
 
 impl<S> NetworkHandle<S> {
-    fn lookup_host<N: Dns + TcpClientStack<TcpSocket = S>>(
+    fn lookup_host<N: Dns + TcpClientStack<TcpSocket = S> + ?Sized>(
         network: &mut N,
         broker: Broker,
         port: u16,
@@ -315,7 +315,7 @@ impl<S> NetworkHandle<S> {
 
     /// Checks if this socket is present and connected. Raises `NetworkError` when
     /// the socket is present and in its error state.
-    fn is_connected<N: Dns + TcpClientStack<TcpSocket = S>>(
+    fn is_connected<N: Dns + TcpClientStack<TcpSocket = S> + ?Sized>(
         &self,
         network: &mut N,
     ) -> Result<bool, NetworkError> {
@@ -327,7 +327,7 @@ impl<S> NetworkHandle<S> {
         }
     }
 
-    fn connect<N: Dns + TcpClientStack<TcpSocket = S>>(
+    fn connect<N: Dns + TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
         socket_addr: SocketAddr,
@@ -346,7 +346,7 @@ impl<S> NetworkHandle<S> {
         })
     }
 
-    pub fn send_packet<'d, N: TcpClientStack<TcpSocket = S>>(
+    pub fn send_packet<'d, N: TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
         pkt: &Packet,
@@ -371,7 +371,7 @@ impl<S> NetworkHandle<S> {
         Ok(length)
     }
 
-    pub fn send<'d, N: TcpClientStack<TcpSocket = S>>(
+    pub fn send<'d, N: TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
         pkt: &[u8],
@@ -389,7 +389,7 @@ impl<S> NetworkHandle<S> {
         Ok(length)
     }
 
-    fn receive<N: TcpClientStack<TcpSocket = S>>(
+    fn receive<N: TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
     ) -> nb::Result<PacketDecoder<'_>, NetworkError> {
@@ -449,7 +449,7 @@ impl PacketBuffer {
     /// bytes found, the range gets extended covering them.
     fn receive<N, S>(&mut self, socket: &mut S, network: &mut N) -> nb::Result<(), NetworkError>
     where
-        N: TcpClientStack<TcpSocket = S>,
+        N: TcpClientStack<TcpSocket = S> + ?Sized,
     {
         let buffer = self.buffer();
         let len = network.receive(socket, buffer).map_err(|e| {
