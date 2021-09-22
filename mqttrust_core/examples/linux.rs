@@ -1,7 +1,7 @@
 mod common;
 
 use mqttrust::{QoS, SubscribeTopic};
-use mqttrust_core::bbqueue::{BBBuffer, ConstBBBuffer};
+use mqttrust_core::bbqueue::BBBuffer;
 use mqttrust_core::Mqtt;
 use mqttrust_core::{EventLoop, MqttOptions, Notification};
 
@@ -9,7 +9,7 @@ use common::clock::SysClock;
 use common::network::Network;
 use std::thread;
 
-static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer(ConstBBBuffer::new());
+static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
 const MSG_CNT: u32 = 5;
 
 fn main() {
