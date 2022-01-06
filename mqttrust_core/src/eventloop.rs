@@ -18,13 +18,13 @@ where
     O: Clock,
 {
     /// Current state of the connection
-    pub state: MqttState<Instant<O>>,
+    pub(crate) state: MqttState<Instant<O>>,
     /// Last outgoing packet time
-    pub last_outgoing_timer: O,
+    pub(crate) last_outgoing_timer: O,
     /// Options of the current mqtt connection
-    pub options: MqttOptions<'b>,
+    pub(crate) options: MqttOptions<'b>,
     /// Request stream
-    pub requests: FrameConsumer<'a, L>,
+    pub(crate) requests: FrameConsumer<'a, L>,
     network_handle: NetworkHandle<S>,
 }
 
@@ -121,7 +121,6 @@ where
         if self.should_handle_request() {
             if let Some(mut grant) = self.requests.read() {
                 let mut packet = SerializedPacket(grant.deref_mut());
-
                 match self.state.handle_outgoing_request(&mut packet, &now) {
                     Ok(()) => {
                         self.network_handle.send(network, packet.to_inner())?;
@@ -558,7 +557,7 @@ impl<'a> Drop for PacketDecoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Inflight, StartTime, BOXED_PUBLISH};
+    use crate::state::{BoxedPublish, Inflight, StartTime};
     use bbqueue::BBBuffer;
     use embedded_time::clock::Error;
     use embedded_time::duration::Milliseconds;
@@ -664,7 +663,7 @@ mod tests {
         let mut state = MqttState::<Milliseconds>::new();
         const LEN: usize = 1024 * 10;
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
-        BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
+        BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
 
         let mut rx_buf = PacketBuffer::new();
         let connack = Connack {
@@ -713,7 +712,7 @@ mod tests {
         let mut state = MqttState::<Milliseconds>::new();
         const LEN: usize = 1024 * 10;
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
-        BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
+        BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
 
         let mut rx_buf = PacketBuffer::new();
         let connack_malformed = Connack {

@@ -18,7 +18,6 @@ macro_rules! mqtt_log {
     ($level:ident, $($arg:expr),*) => {
         {
             $( let _ = $arg; )*
-            ()
         }
 
     }

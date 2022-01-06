@@ -35,7 +35,7 @@ impl<'a, 'b, const L: usize> Client<'a, 'b, L> {
     }
 }
 
-impl<'a, 'b, 'c, const L: usize> Mqtt for Client<'a, 'b, L> {
+impl<'a, 'b, const L: usize> Mqtt for Client<'a, 'b, L> {
     fn client_id(&self) -> &str {
         &self.client_id
     }
