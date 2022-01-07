@@ -79,6 +79,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v1
 
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Get AWS_HOSTNAME
+        id: hostname
+        run: |
+          hostname=$(aws iotdeviceadvisor get-endpoint --output text --query endpoint)
+          ret=$?
+          echo "::set-output name=AWS_HOSTNAME::$hostname"
+          exit $ret
+
+      - name: Build test binary
+        uses: actions-rs/cargo@v1
+        env:
+          AWS_HOSTNAME: ${{ steps.hostname.outputs.AWS_HOSTNAME }}
+        with:
+          command: build
+          args: --features=x86,log --example aws_device_advisor --release
+
       - name: Start test suite
         id: test_suite
         run: |
@@ -90,11 +113,10 @@ jobs:
       - name: Execute test binary
         id: binary
         env:
-          RUST_LOG: trace
           DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
+          RUST_LOG: trace
         run: | 
-          export AWS_HOSTNAME=$(aws iotdeviceadvisor get-endpoint --thing-arn ${{ env.THING_ARN }} --output text --query endpoint)
-          nohup cargo run --example aws_device_advisor --features="x86,log" > device_advisor_integration.log &
+          nohup ./target/release/examples/aws_device_advisor > device_advisor_integration.log &
           echo "::set-output name=PID::$!"
       
       - name: Monitor test run
