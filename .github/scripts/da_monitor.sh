@@ -20,6 +20,9 @@ suite_definition_id=$1
 # The suite should be run prior to this script being invoked.
 suite_run_id=$2
 
+# The PID of the binary being tested.
+pid=$3
+
 STATUS_FILE=/tmp/myapp-run-$$.status
 IN_PROGRESS=1
 MONITOR_STATUS=0
@@ -71,8 +74,14 @@ while test ${IN_PROGRESS} == 1; do
     elif test x"${overall_status}" == x${STATUS_STOPPED}; then
         MONITOR_STATUS=1
         IN_PROGRESS=0
+    elif { ps -p $pid > /dev/null; }; [ "$?" = 1 ]; then
+        echo Binary is not running any more?
+
+        MONITOR_STATUS=1
+        IN_PROGRESS=0
     else
         echo Sleeping 10 seconds for the next status.
+        cat device_advisor_integration.log
         sleep 10
     fi
 done

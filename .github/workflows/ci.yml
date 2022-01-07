@@ -61,13 +61,17 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: -p mqttrust_core --example echo --features="x86,log"
+          args: --features=x86,log --example echo
 
   device_advisor:
     name: AWS IoT Device Advisor
     runs-on: ubuntu-latest
     needs: test
     env:
+      AWS_EC2_METADATA_DISABLED: true
+      AWS_DEFAULT_REGION: ${{ secrets.MGMT_AWS_DEFAULT_REGION }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.MGMT_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.MGMT_AWS_SECRET_ACCESS_KEY }}
       SUITE_ID: greb3uy2wtq3
       THING_ARN: arn:aws:iot:eu-west-1:274906834921:thing/mqttrust
       CERTIFICATE_ARN: arn:aws:iot:eu-west-1:274906834921:cert/e7280d8d316b58da3058037a2c1730d9eb15de50e96f4d47e54ea655266b76db
@@ -77,7 +81,11 @@ jobs:
 
       - name: Start test suite
         id: test_suite
-        run: echo "::set-output name=SUITE_RUN_ID::$(aws iotdeviceadvisor start-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-configuration "primaryDevice={thingArn=${{ env.THING_ARN }},certificateArn=${{ env.CERTIFICATE_ARN }}}" --output text --query suiteRunId)"
+        run: |
+          suite_id=$(aws iotdeviceadvisor start-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-configuration "primaryDevice={thingArn=${{ env.THING_ARN }},certificateArn=${{ env.CERTIFICATE_ARN }}}" --output text --query suiteRunId)
+          ret=$?
+          echo "::set-output name=SUITE_RUN_ID::$suite_id"
+          exit $ret
       
       - name: Execute test binary
         id: binary
@@ -85,18 +93,19 @@ jobs:
           RUST_LOG: debug
           DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
         run: | 
-          export AWS_HOSTNAME=$(aws iotdeviceadvisor get-endpoint --thing-arn ${{ env.THING_ARN }} --output text --query endpoint )
-          nohup cargo run --example aws_device_advisor --features="x86,log" > device_advisor_integration.log
+          export AWS_HOSTNAME=$(aws iotdeviceadvisor get-endpoint --thing-arn ${{ env.THING_ARN }} --output text --query endpoint)
+          nohup cargo run --example aws_device_advisor --features="x86,log" > device_advisor_integration.log &
           echo "::set-output name=PID::$!"
       
       - name: Monitor test run
         run: |
           chmod +x ./.github/scripts/da_monitor.sh
-          ./.github/scripts/da_monitor.sh ${{ env.SUITE_ID }} ${{ steps.test_suite.outputs.SUITE_RUN_ID }}
+          echo ${{ env.SUITE_ID }} ${{ steps.test_suite.outputs.SUITE_RUN_ID }} ${{ steps.binary.outputs.PID }}
+          ./.github/scripts/da_monitor.sh ${{ env.SUITE_ID }} ${{ steps.test_suite.outputs.SUITE_RUN_ID }} ${{ steps.binary.outputs.PID }}
 
       - name: Kill test binary process
         if: ${{ always() }}
-        run: kill $(cat ${{ steps.binary.outputs.PID }})
+        run: kill ${{ steps.binary.outputs.PID }}
 
       - name: Log binary output 
         if: ${{ always() }}
