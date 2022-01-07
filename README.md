@@ -1,16 +1,14 @@
 # MQTT Client for Embedded devices
 
-**Work in progress**
-
 > no_std, no_alloc crate implementing secure MQTT Client capabilities.
 
 ![Test][test]
 [![Code coverage][codecov-badge]][codecov]
 ![No Std][no-std-badge]
-<!--
 [![Crates.io Version][crates-io-badge]][crates-io]
 [![Crates.io Downloads][crates-io-download-badge]][crates-io-download]
--->
+
+This crate is highly inspired by the great work in [rumqttc](https://github.com/bytebeamio/rumqtt/tree/master/rumqttc).
 
 ## Tests
 
@@ -38,9 +36,8 @@ dual licensed as above, without any additional terms or conditions.
 [no-std-badge]: https://img.shields.io/badge/no__std-yes-blue
 [codecov-badge]: https://codecov.io/gh/BlackbirdHQ/mqttrust/branch/master/graph/badge.svg
 [codecov]: https://codecov.io/gh/BlackbirdHQ/mqttrust
-<!--
 [crates-io]: https://crates.io/crates/mqttrust
 [crates-io-badge]: https://img.shields.io/crates/v/mqttrust.svg?maxAge=3600
 [crates-io-download]: https://crates.io/crates/mqttrust
 [crates-io-download-badge]: https://img.shields.io/crates/d/mqttrust.svg?maxAge=3600
--->
+
