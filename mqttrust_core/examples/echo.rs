@@ -1,9 +1,7 @@
 mod common;
 
 use mqttrust::{QoS, SubscribeTopic};
-use mqttrust_core::bbqueue::BBBuffer;
-use mqttrust_core::Mqtt;
-use mqttrust_core::{EventLoop, MqttOptions, Notification};
+use mqttrust_core::{bbqueue::BBBuffer, EventLoop, Mqtt, MqttOptions, Notification};
 
 use common::clock::SysClock;
 use common::network::Network;
@@ -13,9 +11,11 @@ static mut Q: BBBuffer<{ 1024 * 6 }> = BBBuffer::new();
 const MSG_CNT: u32 = 5;
 
 fn main() {
+    env_logger::init();
+
     let (p, c) = unsafe { Q.try_split_framed().unwrap() };
 
-    let mut network = Network;
+    let mut network = Network::new();
 
     let client_id = "mqtt_test_client_id";
 
@@ -37,11 +37,11 @@ fn main() {
             while receive_cnt < MSG_CNT {
                 match mqtt_eventloop.yield_event(&mut network) {
                     Ok(Notification::Publish(publish)) => {
-                        println!("Received {:?}", publish);
+                        log::debug!("Received {:?}", publish);
                         receive_cnt += 1;
                     }
                     Ok(n) => {
-                        println!("{:?}", n);
+                        log::debug!("{:?}", n);
                     }
                     _ => {}
                 }
@@ -66,7 +66,7 @@ fn main() {
     let mut send_cnt = 0;
 
     while send_cnt < MSG_CNT {
-        println!("Sending {}", send_cnt);
+        log::debug!("Sending {}", send_cnt);
         mqtt_client
             .publish(
                 "mqttrust/tester/subscriber",
@@ -82,4 +82,6 @@ fn main() {
     let receive_cnt = handle.join().expect("Receiving thread failed!");
 
     assert_eq!(receive_cnt, send_cnt);
+
+    println!("Success!");
 }
