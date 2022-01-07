@@ -90,7 +90,7 @@ jobs:
       - name: Execute test binary
         id: binary
         env:
-          RUST_LOG: debug
+          RUST_LOG: trace
           DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
         run: | 
           export AWS_HOSTNAME=$(aws iotdeviceadvisor get-endpoint --thing-arn ${{ env.THING_ARN }} --output text --query endpoint)
