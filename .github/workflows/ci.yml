@@ -40,7 +40,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib
+          args: --lib --features "x86,log"
   integration:
     name: Integration Test
     runs-on: ubuntu-latest
@@ -56,11 +56,52 @@ jobs:
           toolchain: stable
           target: thumbv7m-none-eabi
           override: true
+          
       - name: Run integration test
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: -p mqttrust_core --example linux
+          args: -p mqttrust_core --example echo --features="x86,log"
+
+  device_advisor:
+    name: AWS IoT Device Advisor
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      SUITE_ID: greb3uy2wtq3
+      THING_ARN: arn:aws:iot:eu-west-1:274906834921:thing/mqttrust
+      CERTIFICATE_ARN: arn:aws:iot:eu-west-1:274906834921:cert/e7280d8d316b58da3058037a2c1730d9eb15de50e96f4d47e54ea655266b76db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Start test suite
+        id: test_suite
+        run: echo "::set-output name=SUITE_RUN_ID::$(aws iotdeviceadvisor start-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-configuration "primaryDevice={thingArn=${{ env.THING_ARN }},certificateArn=${{ env.CERTIFICATE_ARN }}}" --output text --query suiteRunId)"
+      
+      - name: Execute test binary
+        id: binary
+        env:
+          RUST_LOG: debug
+          DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
+        run: | 
+          export AWS_HOSTNAME=$(aws iotdeviceadvisor get-endpoint --thing-arn ${{ env.THING_ARN }} --output text --query endpoint )
+          nohup cargo run --example aws_device_advisor --features="x86,log" > device_advisor_integration.log
+          echo "::set-output name=PID::$!"
+      
+      - name: Monitor test run
+        run: |
+          chmod +x ./.github/scripts/da_monitor.sh
+          ./.github/scripts/da_monitor.sh ${{ env.SUITE_ID }} ${{ steps.test_suite.outputs.SUITE_RUN_ID }}
+
+      - name: Kill test binary process
+        if: ${{ always() }}
+        run: kill $(cat ${{ steps.binary.outputs.PID }})
+
+      - name: Log binary output 
+        if: ${{ always() }}
+        run: cat device_advisor_integration.log 
+
   rustfmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -130,7 +171,7 @@ jobs:
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: -- ${{ env.CLIPPY_PARAMS }}
+          args: --features "x86,log" -- ${{ env.CLIPPY_PARAMS }}
   grcov:
     name: Coverage
     runs-on: ubuntu-latest
@@ -160,7 +201,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --no-fail-fast
+          args: --lib --no-fail-fast --features "x86,log"
         env:
           CARGO_INCREMENTAL: "0"
           RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off -Cpanic=unwind -Zpanic_abort_tests"
@@ -220,7 +261,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: doc
-          args: --verbose --no-deps
+          args: --verbose --no-deps --features "x86,log"
 
       # - name: Finalize documentation
       #   run: |

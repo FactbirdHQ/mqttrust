@@ -3,13 +3,9 @@
     // "can't find crate for `test`" when the default compilation target is a no_std target
     // with these changes RA will call `cargo check --bins` on save
     "rust-analyzer.checkOnSave.allTargets": false,
-    "rust-analyzer.checkOnSave.extraArgs": [
-        "-bins",
-        "--target",
-        "x86_64-unknown-linux-gnu"
-    ],
-    "rust-analyzer.cargo.target": "thumbv7em-none-eabihf",
+    "rust-analyzer.cargo.target": "x86_64-unknown-linux-gnu",
     "rust-analyzer.diagnostics.disabled": [
         "unresolved-import"
-    ]
+    ],
+    "rust-analyzer.cargo.features": ["log", "x86"]
 }

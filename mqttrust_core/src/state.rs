@@ -62,11 +62,11 @@ pub struct MqttState<TIM> {
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<TIM, 1536>, 1>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<TIM, 1536>, 2>,
     /// Packet ids of released QoS 2 publishes
-    pub outgoing_rel: FnvIndexSet<u16, 1>,
+    pub outgoing_rel: FnvIndexSet<u16, 2>,
     /// Packet ids on incoming QoS 2 publishes
-    pub incoming_pub: FnvIndexSet<u16, 1>,
+    pub incoming_pub: FnvIndexSet<u16, 2>,
     last_ping: StartTime<TIM>,
 }
 
