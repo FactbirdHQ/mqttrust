@@ -81,9 +81,6 @@ while test ${IN_PROGRESS} == 1; do
         IN_PROGRESS=0
     else
         echo Sleeping 10 seconds for the next status.
-        echo DEVICE LOG  ----------------------------------------
-        cat device_advisor_integration.log
-        echo ----------------------------------------------------
         sleep 10
     fi
 done
