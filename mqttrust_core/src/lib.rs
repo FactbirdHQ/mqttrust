@@ -18,7 +18,7 @@ use heapless::{String, Vec};
 pub use mqttrust::encoding::v4::{Pid, Publish, QoS, QosPid, Suback};
 pub use mqttrust::*;
 pub use options::{Broker, MqttOptions};
-use state::{StateError, BOXED_PUBLISH};
+use state::{BoxedPublish, StateError};
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
@@ -38,15 +38,17 @@ pub enum Notification {
     /// Incoming connection acknowledge
     ConnAck,
     /// Incoming publish from the broker
-    Publish(Box<BOXED_PUBLISH, Init>),
+    Publish(Box<BoxedPublish, Init>),
     /// Incoming puback from the broker
     Puback(Pid),
     /// Incoming pubrec from the broker
     Pubrec(Pid),
     /// Incoming pubcomp from the broker
     Pubcomp(Pid),
-    /// Incoming suback from the broker
+    // TODO:
     // Suback(Suback),
+    /// Incoming suback from the broker
+    Suback(Pid),
     /// Incoming unsuback from the broker
     Unsuback(Pid),
     // Eventloop error

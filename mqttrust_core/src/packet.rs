@@ -33,9 +33,11 @@ impl<'a> SerializedPacket<'a> {
                     offset += len;
                 }
             }
-            (PacketType::Subscribe | PacketType::Unsubscribe | PacketType::Suback, _) => {}
             (
-                PacketType::Puback
+                PacketType::Subscribe
+                | PacketType::Unsubscribe
+                | PacketType::Suback
+                | PacketType::Puback
                 | PacketType::Pubrec
                 | PacketType::Pubrel
                 | PacketType::Pubcomp

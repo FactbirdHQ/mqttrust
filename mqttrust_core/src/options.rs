@@ -25,10 +25,6 @@ impl<'a> From<Ipv4Addr> for Broker<'a> {
     }
 }
 
-type Certificate<'a> = &'a [u8];
-type PrivateKey<'a> = &'a [u8];
-type Password<'a> = &'a [u8];
-
 /// Options to configure the behaviour of mqtt connection
 ///
 /// **Lifetimes**:
@@ -46,15 +42,11 @@ pub struct MqttOptions<'a> {
     clean_session: bool,
     /// client identifier
     client_id: &'a str,
-    /// certificate authority certificate
-    ca: Option<&'a [u8]>,
-    /// tls client_authentication
-    client_auth: Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)>,
-    /// alpn settings
+    // alpn settings
     // alpn: Option<Vec<Vec<u8>>>,
     /// username and password
     credentials: Option<(&'a str, &'a [u8])>,
-    /// Minimum delay time between consecutive outgoing packets
+    // Minimum delay time between consecutive outgoing packets
     // throttle: Duration,
     /// Last will that will be issued on unexpected disconnect
     last_will: Option<LastWill<'a>>,
@@ -73,8 +65,6 @@ impl<'a> MqttOptions<'a> {
             keep_alive_ms: 60_000,
             clean_session: true,
             client_id: id,
-            ca: None,
-            client_auth: None,
             // alpn: None,
             credentials: None,
             // throttle: Duration::from_micros(0),
@@ -96,33 +86,6 @@ impl<'a> MqttOptions<'a> {
 
     pub fn last_will(&self) -> Option<LastWill<'a>> {
         self.last_will.clone()
-    }
-
-    pub fn set_ca(self, ca: &'a [u8]) -> Self {
-        Self {
-            ca: Some(ca),
-            ..self
-        }
-    }
-
-    pub fn ca(&self) -> Option<&[u8]> {
-        self.ca
-    }
-
-    pub fn set_client_auth(
-        self,
-        cert: Certificate<'a>,
-        key: PrivateKey<'a>,
-        password: Option<Password<'a>>,
-    ) -> Self {
-        Self {
-            client_auth: Some((cert, key, password)),
-            ..self
-        }
-    }
-
-    pub fn client_auth(&self) -> Option<(Certificate<'a>, PrivateKey<'a>, Option<Password<'a>>)> {
-        self.client_auth
     }
 
     // pub fn set_alpn(self, alpn: Vec<Vec<u8>>) -> Self {
@@ -252,37 +215,6 @@ mod test {
     fn client_id() {
         let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
         assert_eq!(opts.client_id(), "client_a");
-    }
-
-    #[test]
-    fn client_auth() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
-        assert_eq!(opts.client_auth, None);
-        assert_eq!(
-            opts.clone()
-                .set_client_auth(b"Certificate", b"PrivateKey", None)
-                .client_auth(),
-            Some((&b"Certificate"[..], &b"PrivateKey"[..], None))
-        );
-        assert_eq!(
-            opts.set_client_auth(b"Certificate", b"PrivateKey", Some(b"Password"))
-                .client_auth(),
-            Some((
-                &b"Certificate"[..],
-                &b"PrivateKey"[..],
-                Some(&b"Password"[..])
-            ))
-        );
-    }
-
-    #[test]
-    fn ca() {
-        let opts = MqttOptions::new("client_a", Ipv4Addr::localhost().into(), 1883);
-        assert_eq!(opts.ca, None);
-        assert_eq!(
-            opts.set_ca(b"My Certificate Authority").ca(),
-            Some(&b"My Certificate Authority"[..])
-        );
     }
 
     #[test]

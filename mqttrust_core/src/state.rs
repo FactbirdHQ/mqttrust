@@ -40,7 +40,10 @@ pub enum StateError {
     InvalidHeader,
 }
 
-pool!(BOXED_PUBLISH: PublishNotification);
+pool!(
+    #[allow(non_upper_case_globals)]
+    BoxedPublish: PublishNotification
+);
 
 /// State of the mqtt connection.
 ///
@@ -84,7 +87,7 @@ where
                 % core::mem::align_of::<PublishNotification>();
 
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
-        BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
+        BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
 
         MqttState {
             connection_status: MqttConnectionStatus::Disconnected,
@@ -119,10 +122,19 @@ where
     ) -> Result<(), StateError> {
         match request.header()?.typ {
             PacketType::Publish => self.handle_outgoing_publish(request, now)?,
-            PacketType::Subscribe => request.set_pid(self.next_pid())?,
-            PacketType::Unsubscribe => request.set_pid(self.next_pid())?,
+            PacketType::Subscribe => {
+                let pid = self.next_pid();
+                mqtt_log!(trace, "Sending Subscribe({:?})", pid);
+                request.set_pid(pid)?
+            }
+            PacketType::Unsubscribe => {
+                let pid = self.next_pid();
+                mqtt_log!(trace, "Sending Unsubscribe({:?})", pid);
+                request.set_pid(pid)?
+            }
             _ => unreachable!(),
         }
+
         Ok(())
     }
 
@@ -162,9 +174,12 @@ where
         now: &TIM,
     ) -> Result<(), StateError> {
         match request.header()?.qos {
-            QoS::AtMostOnce => {}
+            QoS::AtMostOnce => {
+                mqtt_log!(trace, "Sending Publish({:?})", QoS::AtMostOnce);
+            }
             QoS::AtLeastOnce => {
                 let pid = self.next_pid();
+                mqtt_log!(trace, "Sending Publish({:?}, {:?})", pid, QoS::AtLeastOnce);
                 self.outgoing_pub
                     .insert(pid.get(), Inflight::new(StartTime::new(*now), &request.0))
                     .map_err(|_| StateError::MaxMessagesInflight)?;
@@ -172,6 +187,7 @@ where
             }
             QoS::ExactlyOnce => {
                 let pid = self.next_pid();
+                mqtt_log!(trace, "Sending Publish({:?}, {:?})", pid, QoS::ExactlyOnce);
                 self.outgoing_pub
                     .insert(pid.get(), Inflight::new(StartTime::new(*now), &request.0))
                     .map_err(|_| StateError::MaxMessagesInflight)?;
@@ -195,6 +211,7 @@ where
 
             let request = None;
             let notification = Some(Notification::Puback(pid));
+            mqtt_log!(trace, "Received Puback({:?})", pid);
             Ok((notification, request))
         } else {
             mqtt_log!(error, "Unsolicited puback packet: {:?}", pid.get());
@@ -205,12 +222,13 @@ where
 
     fn handle_incoming_suback<'a>(
         &mut self,
-        _suback: Suback<'a>,
+        suback: Suback<'a>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
-        // TODO:
-        // let request = None;
-        // let notification = Some(Notification::Suback(suback));
-        Ok((None, None))
+        let request = None;
+        mqtt_log!(trace, "Received Suback({:?})", suback.pid);
+        // TODO: Add suback packet info here
+        let notification = Some(Notification::Suback(suback.pid));
+        Ok((notification, request))
     }
 
     fn handle_incoming_unsuback(
@@ -218,6 +236,7 @@ where
         pid: Pid,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let request = None;
+        mqtt_log!(trace, "Received Unsuback({:?})", pid);
         let notification = Some(Notification::Unsuback(pid));
         Ok((notification, request))
     }
@@ -253,7 +272,7 @@ where
         publish: Publish<'b>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let qospid = (publish.qos, publish.pid);
-        let boxed_publish = BOXED_PUBLISH::alloc().unwrap();
+        let boxed_publish = BoxedPublish::alloc().unwrap();
         let notification = Notification::Publish(boxed_publish.init(publish.try_into().unwrap()));
 
         let request = match qospid {
@@ -315,7 +334,7 @@ where
 
         self.await_pingresp = true;
 
-        mqtt_log!(trace, "Pingreq");
+        mqtt_log!(trace, "Sending Pingreq");
 
         Ok(Packet::Pingreq)
     }
@@ -324,7 +343,7 @@ where
         &mut self,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         self.await_pingresp = false;
-        mqtt_log!(trace, "Pingresp");
+        mqtt_log!(trace, "Received Pingresp");
         Ok((None, None))
     }
 
@@ -484,7 +503,7 @@ impl<TIM, const L: usize> Inflight<TIM, L> {
 #[cfg(test)]
 mod test {
     use super::{
-        Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError, BOXED_PUBLISH,
+        BoxedPublish, Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError,
     };
     use crate::{packet::SerializedPacket, Notification};
     use core::convert::TryFrom;
@@ -528,7 +547,7 @@ mod test {
         let state = MqttState::new();
         const LEN: usize = 1024 * 10;
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
-        BOXED_PUBLISH::grow(unsafe { &mut PUBLISH_MEM });
+        BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
         state
     }
 
