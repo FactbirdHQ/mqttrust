@@ -77,6 +77,18 @@ impl<'a> MqttOptions<'a> {
         (self.broker_addr.clone(), self.port)
     }
 
+    /// Broker address
+    pub fn set_broker(self, broker: Broker<'a>) -> Self {
+        Self {
+            broker_addr: broker,
+            ..self
+        }
+    }
+
+    pub fn set_port(self, port: u16) -> Self {
+        Self { port, ..self }
+    }
+
     pub fn set_last_will(self, will: LastWill<'a>) -> Self {
         Self {
             last_will: Some(will),

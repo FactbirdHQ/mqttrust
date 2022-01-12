@@ -27,7 +27,7 @@ pub struct PublishNotification {
     pub qospid: QoS,
     pub retain: bool,
     pub topic_name: String<256>,
-    pub payload: Vec<u8, 1024>,
+    pub payload: Vec<u8, 4096>,
 }
 
 /// Includes incoming packets from the network and other interesting events
