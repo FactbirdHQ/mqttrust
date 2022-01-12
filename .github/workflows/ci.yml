@@ -132,6 +132,10 @@ jobs:
       - name: Log binary output 
         if: ${{ always() }}
         run: cat device_advisor_integration.log 
+      
+      - name: Stop test suite 
+        if: ${{ failure() }}
+        run: aws iotdeviceadvisor start-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-id ${{ steps.test_suite.outputs.SUITE_RUN_ID }}
 
   rustfmt:
     name: rustfmt

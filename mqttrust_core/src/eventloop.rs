@@ -22,7 +22,7 @@ where
     /// Last outgoing packet time
     pub(crate) last_outgoing_timer: O,
     /// Options of the current mqtt connection
-    pub(crate) options: MqttOptions<'b>,
+    pub options: MqttOptions<'b>,
     /// Request stream
     pub(crate) requests: FrameConsumer<'a, L>,
     network_handle: NetworkHandle<S>,
@@ -406,7 +406,7 @@ impl<S> NetworkHandle<S> {
 #[derive(Debug)]
 struct PacketBuffer {
     range: RangeTo<usize>,
-    buffer: Vec<u8, 1024>,
+    buffer: Vec<u8, 4096>,
 }
 
 impl PacketBuffer {
@@ -676,7 +676,7 @@ mod tests {
             pid: Some(Pid::new()),
             retain: false,
             topic_name: "test/topic",
-            payload: &[0xff; 1003],
+            payload: &[0xff; { 1003 + 3 * 1024 }],
         };
 
         let connack_len = encode_slice(&Packet::from(connack), rx_buf.buffer()).unwrap();
@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(&publish_notification.payload, publish.payload);
         assert_eq!(p, Some(Packet::Puback(Pid::default())));
         assert_eq!(rx_buf.range.end, 0);
-        assert!((0..1024).all(|i| rx_buf.buffer[i] == 0));
+        assert!((0..4096).all(|i| rx_buf.buffer[i] == 0));
     }
 
     #[test]
@@ -725,7 +725,7 @@ mod tests {
             pid: Some(Pid::new()),
             retain: false,
             topic_name: "test/topic",
-            payload: &[0xff; 1003],
+            payload: &[0xff; { 1003 + 3 * 1024 }],
         };
 
         let connack_malformed_len =
@@ -750,12 +750,12 @@ mod tests {
         }
         assert_eq!(state.connection_status, MqttConnectionStatus::Handshake);
         assert_eq!(rx_buf.range.end, 0);
-        assert!((0..1024).all(|i| rx_buf.buffer[i] == 0));
+        assert!((0..4096).all(|i| rx_buf.buffer[i] == 0));
     }
 
     #[test]
     fn retry_behaviour() {
-        static mut Q: BBBuffer<1024> = BBBuffer::new();
+        static mut Q: BBBuffer<{ 1024 * 10 }> = BBBuffer::new();
 
         let mut network = MockNetwork {
             should_fail_read: false,
@@ -763,7 +763,7 @@ mod tests {
         };
 
         let (_p, c) = unsafe { Q.try_split_framed().unwrap() };
-        let mut event = EventLoop::<(), _, 1024>::new(
+        let mut event = EventLoop::new(
             c,
             ClockMock { time: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
@@ -790,7 +790,7 @@ mod tests {
         event
             .state
             .outgoing_pub
-            .insert(2, Inflight::new(now, &rx_buf.buffer))
+            .insert(2, Inflight::new(now, &rx_buf.buffer[..rx_buf.range.end]))
             .unwrap();
 
         event.state.connection_status = MqttConnectionStatus::Handshake;
