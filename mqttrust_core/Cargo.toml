@@ -30,7 +30,7 @@ embedded-hal = { version = "=1.0.0-alpha.4" }
 embedded-nal = "0.6.0"
 embedded-time = "0.11.0"
 nb = "^1"
-heapless = { version = "^0.7", features = ["serde"] }
+heapless = { version = "^0.7", features = ["serde", "x86-sync-pool"] }
 mqttrust = { version = "^0.4.1-alpha.0", path = "../mqttrust" }
 bbqueue = "0.5"
 
@@ -45,7 +45,7 @@ env_logger = "0.9.0"
 [features]
 default = []
 
-x86 = ["heapless/x86-sync-pool"]
+std = []
 
 defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl"]
 

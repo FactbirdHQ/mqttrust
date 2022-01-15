@@ -1,5 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(feature = "std")]
+extern crate std;
+
 mod client;
 mod eventloop;
 mod logging;
@@ -13,12 +16,11 @@ pub use client::Client;
 use core::convert::TryFrom;
 use embedded_time::clock;
 pub use eventloop::EventLoop;
-use heapless::pool::{singleton::Box, Init};
 use heapless::{String, Vec};
 pub use mqttrust::encoding::v4::{Pid, Publish, QoS, QosPid, Suback};
 pub use mqttrust::*;
 pub use options::{Broker, MqttOptions};
-use state::{BoxedPublish, StateError};
+use state::StateError;
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
@@ -38,7 +40,10 @@ pub enum Notification {
     /// Incoming connection acknowledge
     ConnAck,
     /// Incoming publish from the broker
-    Publish(Box<BoxedPublish, Init>),
+    #[cfg(not(feature = "std"))]
+    Publish(heapless::pool::singleton::Box<state::BoxedPublish, heapless::pool::Init>),
+    #[cfg(feature = "std")]
+    Publish(std::boxed::Box<PublishNotification>),
     /// Incoming puback from the broker
     Puback(Pid),
     /// Incoming pubrec from the broker

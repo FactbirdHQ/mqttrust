@@ -1,10 +1,12 @@
 use crate::mqtt_log;
 use crate::packet::SerializedPacket;
 use crate::Notification;
+#[cfg(not(feature = "std"))]
 use crate::PublishNotification;
 use core::convert::TryInto;
 use core::ops::Add;
 use embedded_time::duration::Milliseconds;
+#[cfg(not(feature = "std"))]
 use heapless::{pool, pool::singleton::Pool};
 use heapless::{FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrust::encoding::v4::*;
@@ -40,6 +42,7 @@ pub enum StateError {
     InvalidHeader,
 }
 
+#[cfg(not(feature = "std"))]
 pool!(
     #[allow(non_upper_case_globals)]
     BoxedPublish: PublishNotification
@@ -81,13 +84,16 @@ where
     /// connection for persistent sessions while new state should
     /// instantiated for clean sessions
     pub fn new() -> Self {
-        const LEN: usize = core::mem::size_of::<PublishNotification>()
-            + core::mem::align_of::<PublishNotification>()
-            - core::mem::size_of::<PublishNotification>()
-                % core::mem::align_of::<PublishNotification>();
+        #[cfg(not(feature = "std"))]
+        {
+            const LEN: usize = core::mem::size_of::<PublishNotification>()
+                + core::mem::align_of::<PublishNotification>()
+                - core::mem::size_of::<PublishNotification>()
+                    % core::mem::align_of::<PublishNotification>();
 
-        static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
-        BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
+            static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
+            BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
+        }
 
         MqttState {
             connection_status: MqttConnectionStatus::Disconnected,
@@ -272,8 +278,14 @@ where
         publish: Publish<'b>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let qospid = (publish.qos, publish.pid);
+
+        #[cfg(not(feature = "std"))]
         let boxed_publish = BoxedPublish::alloc().unwrap();
+        #[cfg(not(feature = "std"))]
         let notification = Notification::Publish(boxed_publish.init(publish.try_into().unwrap()));
+
+        #[cfg(feature = "std")]
+        let notification = Notification::Publish(std::boxed::Box::new(publish.try_into().unwrap()));
 
         let request = match qospid {
             (QoS::AtMostOnce, _) => None,

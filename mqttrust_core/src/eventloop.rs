@@ -56,9 +56,17 @@ where
                 // Socket is present, but not connected. Usually this implies
                 // that the socket is closed for writes. Disconnect to close &
                 // recycle the socket.
-                mqtt_log!(warn, "Socket cleanup!");
-                self.disconnect(network);
-                return Err(EventError::Network(NetworkError::SocketClosed).into());
+
+                // Fallthrough to allow reading mqtt client error codes, unless
+                // MQTT is actually connected
+                if matches!(
+                    self.state.connection_status,
+                    MqttConnectionStatus::Connected
+                ) {
+                    mqtt_log!(warn, "Socket cleanup!");
+                    self.disconnect(network);
+                    return Err(EventError::Network(NetworkError::SocketClosed).into());
+                }
             }
             Err(_) => {
                 // We have no socket present at all
