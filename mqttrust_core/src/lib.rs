@@ -11,7 +11,6 @@ pub use bbqueue;
 
 pub use client::Client;
 use core::convert::TryFrom;
-use embedded_time::clock;
 pub use eventloop::EventLoop;
 use heapless::pool::{singleton::Box, Init};
 use heapless::{String, Vec};
@@ -105,11 +104,5 @@ impl From<mqttrust::encoding::v4::Error> for EventError {
 impl From<StateError> for EventError {
     fn from(e: StateError) -> Self {
         EventError::MqttState(e)
-    }
-}
-
-impl From<clock::Error> for EventError {
-    fn from(_e: clock::Error) -> Self {
-        EventError::Clock
     }
 }
