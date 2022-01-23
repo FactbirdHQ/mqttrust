@@ -5,20 +5,18 @@ use crate::{mqtt_log, EventError, MqttOptions, NetworkError, Notification};
 use bbqueue::framed::FrameConsumer;
 use core::convert::Infallible;
 use core::ops::DerefMut;
-use core::ops::{Add, RangeTo};
+use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
-use embedded_time::duration::Extensions;
-use embedded_time::duration::Milliseconds;
-use embedded_time::{Clock, Instant};
+use fugit::ExtU32;
 use heapless::{String, Vec};
 use mqttrust::encoding::v4::{decode_slice, encode_slice, Connect, Packet, Protocol};
 
-pub struct EventLoop<'a, 'b, S, O, const L: usize>
+pub struct EventLoop<'a, 'b, S, O, const TIMER_HZ: u32, const L: usize>
 where
-    O: Clock,
+    O: fugit_timer::Timer<TIMER_HZ>,
 {
     /// Current state of the connection
-    pub(crate) state: MqttState<Instant<O>>,
+    pub(crate) state: MqttState<TIMER_HZ>,
     /// Last outgoing packet time
     pub(crate) last_outgoing_timer: O,
     /// Options of the current mqtt connection
@@ -28,9 +26,9 @@ where
     network_handle: NetworkHandle<S>,
 }
 
-impl<'a, 'b, S, O, const L: usize> EventLoop<'a, 'b, S, O, L>
+impl<'a, 'b, S, O, const TIMER_HZ: u32, const L: usize> EventLoop<'a, 'b, S, O, TIMER_HZ, L>
 where
-    O: Clock,
+    O: fugit_timer::Timer<TIMER_HZ>,
 {
     pub fn new(
         requests: FrameConsumer<'a, L>,
@@ -112,10 +110,7 @@ where
         &mut self,
         network: &mut N,
     ) -> nb::Result<Notification, EventError> {
-        let now = self
-            .last_outgoing_timer
-            .try_now()
-            .map_err(EventError::from)?;
+        let now = self.last_outgoing_timer.now();
 
         // Handle a request
         if self.should_handle_request() {
@@ -137,7 +132,7 @@ where
             .state
             .last_ping_entry()
             .or_insert(now)
-            .has_elapsed(&now, self.options.keep_alive_ms().milliseconds())
+            .has_elapsed(&now, self.options.keep_alive_ms().millis())
         {
             // Handle keepalive ping
             let packet = self
@@ -164,7 +159,7 @@ where
         // By comparing the current time, select pending non-zero QoS publish
         // requests staying longer than the retry interval, and handle their
         // retrial.
-        for (pid, inflight) in self.state.retries(now, 10_000.milliseconds()) {
+        for (pid, inflight) in self.state.retries(now, 10.secs()) {
             mqtt_log!(warn, "Retrying PID {:?}", pid);
             // Update inflight's timestamp for later retrials
             inflight.last_touch_entry().insert(now);
@@ -213,10 +208,7 @@ where
             MqttConnectionStatus::Connected => Ok(false),
             MqttConnectionStatus::Disconnected => {
                 mqtt_log!(info, "MQTT connecting..");
-                let now = self
-                    .last_outgoing_timer
-                    .try_now()
-                    .map_err(EventError::from)?;
+                let now = self.last_outgoing_timer.now();
                 self.state.last_ping_entry().insert(now);
 
                 self.state.await_pingresp = false;
@@ -240,15 +232,13 @@ where
                 Err(nb::Error::WouldBlock)
             }
             MqttConnectionStatus::Handshake => {
-                let now = self
-                    .last_outgoing_timer
-                    .try_now()
-                    .map_err(EventError::from)?;
+                let now = self.last_outgoing_timer.now();
+
                 if self
                     .state
                     .last_ping_entry()
                     .or_insert(now)
-                    .has_elapsed(&now, 50_000.milliseconds())
+                    .has_elapsed(&now, 50.secs())
                 {
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
@@ -512,13 +502,10 @@ impl<'a> PacketDecoder<'a> {
             .into()
     }
 
-    fn decode<TIM>(
+    fn decode<const TIMER_HZ: u32>(
         mut self,
-        state: &mut MqttState<TIM>,
-    ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError>
-    where
-        TIM: Add<Milliseconds, Output = TIM> + PartialOrd + Copy,
-    {
+        state: &mut MqttState<TIMER_HZ>,
+    ) -> nb::Result<(Option<Notification>, Option<Packet<'static>>), EventError> {
         let buffer = self.packet_buffer.buffer[self.packet_buffer.range].as_ref();
         match decode_slice(buffer) {
             Err(e) => {
@@ -559,25 +546,33 @@ mod tests {
     use super::*;
     use crate::state::{BoxedPublish, Inflight, StartTime};
     use bbqueue::BBBuffer;
-    use embedded_time::clock::Error;
-    use embedded_time::duration::Milliseconds;
-    use embedded_time::fraction::Fraction;
-    use embedded_time::Instant;
+    use fugit::TimerInstantU32;
     use heapless::pool::singleton::Pool;
     use mqttrust::encoding::v4::{Connack, ConnectReturnCode, Error as EncodingError, Pid};
     use mqttrust::{Publish, QoS};
 
     #[derive(Debug)]
     struct ClockMock {
-        time: u32,
+        ticks: u32,
     }
 
-    impl Clock for ClockMock {
-        const SCALING_FACTOR: Fraction = Fraction::new(1000, 1);
-        type T = u32;
+    impl fugit_timer::Timer<1000> for ClockMock {
+        type Error = ();
 
-        fn try_now(&self) -> Result<Instant<Self>, Error> {
-            Ok(Instant::new(self.time))
+        fn now(&mut self) -> fugit::TimerInstantU32<1000> {
+            fugit::TimerInstantU32::from_ticks(self.ticks)
+        }
+
+        fn start(&mut self, _duration: fugit::TimerDurationU32<1000>) -> Result<(), Self::Error> {
+            todo!()
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            todo!()
+        }
+
+        fn wait(&mut self) -> nb::Result<(), Self::Error> {
+            todo!()
         }
     }
 
@@ -660,7 +655,7 @@ mod tests {
 
     #[test]
     fn success_receive_multiple_packets() {
-        let mut state = MqttState::<Milliseconds>::new();
+        let mut state = MqttState::<1000>::new();
         const LEN: usize = 1024 * 10;
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
         BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
@@ -709,7 +704,7 @@ mod tests {
 
     #[test]
     fn failure_receive_multiple_packets() {
-        let mut state = MqttState::<Milliseconds>::new();
+        let mut state = MqttState::<1000>::new();
         const LEN: usize = 1024 * 10;
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
         BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
@@ -765,11 +760,11 @@ mod tests {
         let (_p, c) = unsafe { Q.try_split_framed().unwrap() };
         let mut event = EventLoop::new(
             c,
-            ClockMock { time: 0 },
+            ClockMock { ticks: 0 },
             MqttOptions::new("client", Broker::Hostname(""), 8883),
         );
 
-        let now = StartTime::from(0);
+        let now = StartTime::new(TimerInstantU32::from_ticks(0));
 
         let topic = "hello/world";
         let payload = &[1, 2, 3];

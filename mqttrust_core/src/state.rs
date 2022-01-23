@@ -3,8 +3,8 @@ use crate::packet::SerializedPacket;
 use crate::Notification;
 use crate::PublishNotification;
 use core::convert::TryInto;
-use core::ops::Add;
-use embedded_time::duration::Milliseconds;
+use fugit::TimerDurationU32;
+use fugit::TimerInstantU32;
 use heapless::{pool, pool::singleton::Pool};
 use heapless::{FnvIndexMap, FnvIndexSet, IndexMap, IndexSet};
 use mqttrust::encoding::v4::*;
@@ -57,7 +57,7 @@ pool!(
 /// **Generics**:
 /// - O: The output timer used for keeping track of keep-alive ping-pongs. Must
 ///   implement the [`embedded_hal::timer::CountDown`] trait
-pub struct MqttState<TIM> {
+pub struct MqttState<const TIMER_HZ: u32> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,
     /// Status of last ping
@@ -65,18 +65,15 @@ pub struct MqttState<TIM> {
     /// Packet id of the last outgoing packet
     pub last_pid: Pid,
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<TIM, 1536>, 2>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<TIMER_HZ, 1536>, 2>,
     /// Packet ids of released QoS 2 publishes
     pub outgoing_rel: FnvIndexSet<u16, 2>,
     /// Packet ids on incoming QoS 2 publishes
     pub incoming_pub: FnvIndexSet<u16, 2>,
-    last_ping: StartTime<TIM>,
+    last_ping: StartTime<TIMER_HZ>,
 }
 
-impl<TIM> MqttState<TIM>
-where
-    TIM: Add<Milliseconds, Output = TIM> + PartialOrd + Copy,
-{
+impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
     /// Creates new mqtt state. Same state should be used during a
     /// connection for persistent sessions while new state should
     /// instantiated for clean sessions
@@ -118,7 +115,7 @@ where
     pub fn handle_outgoing_request(
         &mut self,
         request: &mut SerializedPacket<'_>,
-        now: &TIM,
+        now: &TimerInstantU32<TIMER_HZ>,
     ) -> Result<(), StateError> {
         match request.header()?.typ {
             PacketType::Publish => self.handle_outgoing_publish(request, now)?,
@@ -171,7 +168,7 @@ where
     fn handle_outgoing_publish(
         &mut self,
         request: &mut SerializedPacket<'_>,
-        now: &TIM,
+        now: &TimerInstantU32<TIMER_HZ>,
     ) -> Result<(), StateError> {
         match request.header()?.qos {
             QoS::AtMostOnce => {
@@ -389,15 +386,15 @@ where
         self.last_pid
     }
 
-    pub(crate) fn last_ping_entry(&mut self) -> &mut StartTime<TIM> {
+    pub(crate) fn last_ping_entry(&mut self) -> &mut StartTime<TIMER_HZ> {
         &mut self.last_ping
     }
 
     pub(crate) fn retries(
         &mut self,
-        now: TIM,
-        interval: Milliseconds,
-    ) -> impl Iterator<Item = (&u16, &mut Inflight<TIM, 1536>)> + '_ {
+        now: TimerInstantU32<TIMER_HZ>,
+        interval: TimerDurationU32<TIMER_HZ>,
+    ) -> impl Iterator<Item = (&u16, &mut Inflight<TIMER_HZ, 1536>)> + '_ {
         self.outgoing_pub
             .iter_mut()
             .filter(move |(_, inflight)| inflight.last_touch.has_elapsed(&now, interval))
@@ -405,35 +402,36 @@ where
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StartTime<T>(Option<T>);
+pub struct StartTime<const TIMER_HZ: u32>(Option<TimerInstantU32<TIMER_HZ>>);
 
-impl<T> Default for StartTime<T> {
+impl<const TIMER_HZ: u32> Default for StartTime<TIMER_HZ> {
     fn default() -> Self {
         Self(None)
     }
 }
 
-impl<T> StartTime<T> {
-    pub fn new(start_time: T) -> Self {
+impl<const TIMER_HZ: u32> StartTime<TIMER_HZ> {
+    pub fn new(start_time: TimerInstantU32<TIMER_HZ>) -> Self {
         Self(start_time.into())
     }
 
-    pub fn or_insert(&mut self, now: T) -> &mut Self {
+    pub fn or_insert(&mut self, now: TimerInstantU32<TIMER_HZ>) -> &mut Self {
         self.0.get_or_insert(now);
         self
     }
 
-    pub fn insert(&mut self, now: T) {
+    pub fn insert(&mut self, now: TimerInstantU32<TIMER_HZ>) {
         self.0.replace(now);
     }
 }
 
-impl<T> StartTime<T>
-where
-    T: Add<Milliseconds, Output = T> + PartialOrd + Copy,
-{
+impl<const TIMER_HZ: u32> StartTime<TIMER_HZ> {
     /// Check whether an interval has elapsed since this start time.
-    pub fn has_elapsed(&self, now: &T, interval: Milliseconds) -> bool {
+    pub fn has_elapsed(
+        &self,
+        now: &TimerInstantU32<TIMER_HZ>,
+        interval: TimerDurationU32<TIMER_HZ>,
+    ) -> bool {
         if let Some(start_time) = self.0 {
             let elapse_time = start_time + interval;
             elapse_time <= *now
@@ -443,36 +441,17 @@ where
     }
 }
 
-#[cfg(feature = "defmt-impl")]
-impl<O> defmt::Format for StartTime<embedded_time::Instant<O>>
-where
-    O: embedded_time::Clock,
-    embedded_time::duration::Generic<O::T>: TryInto<embedded_time::duration::Milliseconds>,
-{
-    fn format(&self, fmt: defmt::Formatter) {
-        let start_time = self
-            .0
-            .and_then(|t| t.duration_since_epoch().try_into().ok())
-            .unwrap_or(Milliseconds(0u32))
-            .0;
-        defmt::write!(fmt, "{=u32}", start_time)
-    }
-}
-
 /// Client publication message data.
 #[derive(Debug)]
-pub(crate) struct Inflight<TIM, const L: usize> {
+pub(crate) struct Inflight<const TIMER_HZ: u32, const L: usize> {
     /// A publish of non-zero QoS.
     publish: heapless::Vec<u8, L>,
     /// A timestmap used for retry and expiry.
-    last_touch: StartTime<TIM>,
+    last_touch: StartTime<TIMER_HZ>,
 }
 
-impl<TIM, const L: usize> Inflight<TIM, L>
-where
-    TIM: Add<Milliseconds, Output = TIM> + PartialOrd + Copy,
-{
-    pub(crate) fn new(last_touch: StartTime<TIM>, publish: &[u8]) -> Self {
+impl<const TIMER_HZ: u32, const L: usize> Inflight<TIMER_HZ, L> {
+    pub(crate) fn new(last_touch: StartTime<TIMER_HZ>, publish: &[u8]) -> Self {
         assert!(
             !matches!(
                 decoder::Header::new(publish[0]).unwrap().qos,
@@ -486,12 +465,12 @@ where
         }
     }
 
-    pub(crate) fn last_touch_entry(&mut self) -> &mut StartTime<TIM> {
+    pub(crate) fn last_touch_entry(&mut self) -> &mut StartTime<TIMER_HZ> {
         &mut self.last_touch
     }
 }
 
-impl<TIM, const L: usize> Inflight<TIM, L> {
+impl<const TIMER_HZ: u32, const L: usize> Inflight<TIMER_HZ, L> {
     pub(crate) fn packet<'b>(&'b mut self, pid: u16) -> Result<&'b [u8], StateError> {
         let pid = pid.try_into().map_err(|_| StateError::PayloadEncoding)?;
         let mut packet = SerializedPacket(self.publish.as_mut());
@@ -502,26 +481,15 @@ impl<TIM, const L: usize> Inflight<TIM, L> {
 
 #[cfg(test)]
 mod test {
-    use super::{
-        BoxedPublish, Milliseconds, MqttConnectionStatus, MqttState, Packet, StartTime, StateError,
-    };
+    use super::{BoxedPublish, MqttConnectionStatus, MqttState, Packet, StateError};
     use crate::{packet::SerializedPacket, Notification};
     use core::convert::TryFrom;
-    use embedded_time::{duration::Extensions, Clock, Instant};
+    use fugit::TimerInstantU32;
     use heapless::pool::singleton::Pool;
     use mqttrust::{
         encoding::v4::{decode_slice, encode_slice, Pid},
         Publish, QoS,
     };
-
-    impl<O> From<u32> for StartTime<Instant<O>>
-    where
-        O: Clock<T = u32>,
-    {
-        fn from(now: u32) -> Self {
-            Self::new(Instant::new(now))
-        }
-    }
 
     fn build_publish<'a>(qos: QoS, pid: Option<u16>) -> Publish<'a> {
         let topic = "hello/world";
@@ -543,7 +511,7 @@ mod test {
         }
     }
 
-    fn build_mqttstate() -> MqttState<Milliseconds> {
+    fn build_mqttstate() -> MqttState<1000> {
         let state = MqttState::new();
         const LEN: usize = 1024 * 10;
         static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
@@ -554,7 +522,7 @@ mod test {
     #[test]
     fn handle_outgoing_requests() {
         let buf = &mut [0u8; 256];
-        let now = 0u32.milliseconds();
+        let now = TimerInstantU32::from_ticks(0);
         let mut mqtt = build_mqttstate();
 
         // Publish
@@ -633,7 +601,7 @@ mod test {
     #[test]
     fn outgoing_publish_handle_should_set_pid_correctly_and_add_publish_to_queue_correctly() {
         let buf = &mut [0u8; 256];
-        let now = 0u32.milliseconds();
+        let now = TimerInstantU32::from_ticks(0);
 
         let mut mqtt = build_mqttstate();
 
@@ -708,7 +676,7 @@ mod test {
     fn incoming_puback_should_remove_correct_publish_from_queue() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
-        let now = 0u32.milliseconds();
+        let now = TimerInstantU32::from_ticks(0);
 
         let publish1 = Packet::Publish(build_publish(QoS::AtLeastOnce, None));
         let len = encode_slice(&publish1, buf).unwrap();
@@ -733,7 +701,7 @@ mod test {
     fn incoming_pubrec_should_release_correct_publish_from_queue_and_add_releaseid_to_rel_queue() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
-        let now = 0u32.milliseconds();
+        let now = TimerInstantU32::from_ticks(0);
 
         let publish = Packet::Publish(build_publish(QoS::ExactlyOnce, None));
         let len = encode_slice(&publish, buf).unwrap();
@@ -753,7 +721,7 @@ mod test {
     fn incoming_pubrec_should_send_release_to_network_and_nothing_to_user() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
-        let now = 0u32.milliseconds();
+        let now = TimerInstantU32::from_ticks(0);
         let pid = Pid::try_from(2).unwrap();
         assert_eq!(pid.get(), 2);
 
@@ -787,7 +755,7 @@ mod test {
     fn incoming_pubcomp_should_release_correct_pid_from_release_queue() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
-        let now = 0u32.milliseconds();
+        let now = TimerInstantU32::from_ticks(0);
         let publish = Packet::Publish(build_publish(QoS::ExactlyOnce, None));
         let len = encode_slice(&publish, buf).unwrap();
         let mut pkg = SerializedPacket(&mut buf[..len]);
@@ -805,7 +773,7 @@ mod test {
     fn outgoing_ping_handle_should_throw_errors_for_no_pingresp() {
         let mut mqtt = build_mqttstate();
         let buf = &mut [0u8; 256];
-        let now = 0u32.milliseconds();
+        let now = TimerInstantU32::from_ticks(0);
         mqtt.connection_status = MqttConnectionStatus::Connected;
         assert_eq!(mqtt.handle_outgoing_ping(), Ok(Packet::Pingreq));
         assert!(mqtt.await_pingresp);
