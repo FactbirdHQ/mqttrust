@@ -7,5 +7,5 @@
     "rust-analyzer.diagnostics.disabled": [
         "unresolved-import"
     ],
-    "rust-analyzer.cargo.features": ["log", "x86"]
+    "rust-analyzer.cargo.features": ["log"]
 }
