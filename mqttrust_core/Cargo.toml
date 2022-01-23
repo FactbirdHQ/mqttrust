@@ -16,11 +16,11 @@ name = "mqttrust_core"
 
 [[example]]
 name = "echo"
-required-features = ["x86", "log"]
+required-features = ["log"]
 
 [[example]]
 name = "aws_device_advisor"
-required-features = ["x86", "log"]
+required-features = ["log"]
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -48,11 +48,4 @@ default = []
 
 std = []
 
-defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl"]
-
-defmt-default = ["defmt-impl"]
-defmt-trace = ["defmt-impl"]
-defmt-debug = ["defmt-impl"]
-defmt-info = ["defmt-impl"]
-defmt-warn = ["defmt-impl"]
-defmt-error = ["defmt-impl"]
+defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl", "fugit/defmt"]
