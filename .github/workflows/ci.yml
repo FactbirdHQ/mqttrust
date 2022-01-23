@@ -40,7 +40,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --features "x86,log"
+          args: --lib --features "log"
   integration:
     name: Integration Test
     runs-on: ubuntu-latest
@@ -61,7 +61,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: --features=x86,log --example echo
+          args: --features=log --example echo
 
   device_advisor:
     name: AWS IoT Device Advisor
@@ -100,7 +100,7 @@ jobs:
           AWS_HOSTNAME: ${{ steps.hostname.outputs.AWS_HOSTNAME }}
         with:
           command: build
-          args: --features=x86,log --example aws_device_advisor --release
+          args: --features=log --example aws_device_advisor --release
 
       - name: Start test suite
         id: test_suite
@@ -206,7 +206,7 @@ jobs:
         uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --features "x86,log" -- ${{ env.CLIPPY_PARAMS }}
+          args: --features "log" -- ${{ env.CLIPPY_PARAMS }}
   grcov:
     name: Coverage
     runs-on: ubuntu-latest
@@ -236,7 +236,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --lib --no-fail-fast --features "x86,log"
+          args: --lib --no-fail-fast --features "log"
         env:
           CARGO_INCREMENTAL: "0"
           RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off -Cpanic=unwind -Zpanic_abort_tests"
@@ -296,7 +296,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: doc
-          args: --verbose --no-deps --features "x86,log"
+          args: --verbose --no-deps --features "log"
 
       # - name: Finalize documentation
       #   run: |
