@@ -338,7 +338,9 @@ impl<S> NetworkHandle<S> {
         };
 
         nb::block!(network.connect(socket, socket_addr)).map_err(|_| {
-            self.socket.take();
+            if let Some(socket) = self.socket.take() {
+                network.close(socket).ok();
+            }
             NetworkError::SocketConnect
         })
     }
