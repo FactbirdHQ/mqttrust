@@ -68,12 +68,8 @@ where
             }
             Err(_) => {
                 // We have no socket present at all
-                let (broker, port) = self.options.broker();
-                let (_hostname, socket_addr) =
-                    NetworkHandle::<S>::lookup_host(network, broker, port)
-                        .map_err(EventError::Network)?;
                 self.network_handle
-                    .connect(network, socket_addr)
+                    .connect(network, self.options.broker())
                     .map_err(EventError::Network)?;
                 mqtt_log!(debug, "Network connected!");
 
@@ -327,7 +323,7 @@ impl<S> NetworkHandle<S> {
     fn connect<N: Dns + TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
-        socket_addr: SocketAddr,
+        broker: (Broker, u16),
     ) -> Result<(), NetworkError> {
         let socket = match self.socket.as_mut() {
             None => {
@@ -336,6 +332,9 @@ impl<S> NetworkHandle<S> {
             }
             Some(socket) => socket,
         };
+
+        let (broker, port) = broker;
+        let (_hostname, socket_addr) = NetworkHandle::<S>::lookup_host(network, broker, port)?;
 
         nb::block!(network.connect(socket, socket_addr)).map_err(|_| {
             if let Some(socket) = self.socket.take() {
