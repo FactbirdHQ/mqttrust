@@ -1,7 +1,7 @@
 use crate::options::Broker;
 use crate::packet::SerializedPacket;
 use crate::state::{MqttConnectionStatus, MqttState};
-use crate::{mqtt_log, EventError, MqttOptions, NetworkError, Notification};
+use crate::{EventError, MqttOptions, NetworkError, Notification};
 use bbqueue::framed::FrameConsumer;
 use core::convert::Infallible;
 use core::ops::DerefMut;
@@ -61,7 +61,7 @@ where
                     self.state.connection_status,
                     MqttConnectionStatus::Connected
                 ) {
-                    mqtt_log!(warn, "Socket cleanup!");
+                    warn!("Socket cleanup!");
                     self.disconnect(network);
                     return Err(EventError::Network(NetworkError::SocketClosed).into());
                 }
@@ -71,7 +71,7 @@ where
                 self.network_handle
                     .connect(network, self.options.broker())
                     .map_err(EventError::Network)?;
-                mqtt_log!(debug, "Network connected!");
+                debug!("Network connected!");
 
                 self.state.connection_status = MqttConnectionStatus::Disconnected;
             }
@@ -86,7 +86,7 @@ where
                     e,
                     EventError::Network(_) | EventError::MqttState(_) | EventError::Timeout
                 ) {
-                    mqtt_log!(debug, "Disconnecting!");
+                    debug!("Disconnecting!");
                     self.disconnect(network);
                 }
                 e
@@ -164,7 +164,7 @@ where
         // requests staying longer than the retry interval, and handle their
         // retrial.
         for (pid, inflight) in self.state.retries(now, 10.secs()) {
-            mqtt_log!(warn, "Retrying PID {:?}", pid);
+            warn!("Retrying PID {:?}", pid);
             // Update inflight's timestamp for later retrials
             inflight.last_touch_entry().insert(now);
             let packet = inflight.packet(*pid).map_err(EventError::from)?;
@@ -190,7 +190,7 @@ where
         self.select_event(network).or_else(|e| match e {
             nb::Error::WouldBlock => Err(nb::Error::WouldBlock),
             nb::Error::Other(e) => {
-                mqtt_log!(debug, "Disconnecting from an event error");
+                debug!("Disconnecting from an event error");
                 self.disconnect(network);
                 Ok(Notification::Abort(e))
             }
@@ -211,7 +211,7 @@ where
         match self.state.connection_status {
             MqttConnectionStatus::Connected => Ok(false),
             MqttConnectionStatus::Disconnected => {
-                mqtt_log!(info, "MQTT connecting..");
+                info!("MQTT connecting..");
                 let now = self.last_outgoing_timer.now();
                 self.state.last_ping_entry().insert(now);
 
@@ -279,7 +279,7 @@ impl<S> NetworkHandle<S> {
             Broker::Hostname(h) => {
                 let socket_addr = SocketAddr::new(
                     network.get_host_by_name(h, AddrType::IPv4).map_err(|_e| {
-                        mqtt_log!(info, "Failed to resolve IP!");
+                        info!("Failed to resolve IP!");
                         NetworkError::DnsLookupFailed
                     })?,
                     port,
@@ -289,7 +289,7 @@ impl<S> NetworkHandle<S> {
             Broker::IpAddr(ip) => {
                 let socket_addr = SocketAddr::new(ip, port);
                 let domain = network.get_host_by_address(ip).map_err(|_e| {
-                    mqtt_log!(info, "Failed to resolve hostname!");
+                    info!("Failed to resolve hostname!");
                     NetworkError::DnsLookupFailed
                 })?;
 
@@ -362,7 +362,7 @@ impl<S> NetworkHandle<S> {
             .ok_or(EventError::Network(NetworkError::NoSocket))?;
 
         let length = nb::block!(network.send(socket, &self.tx_buf[..size])).map_err(|_| {
-            mqtt_log!(error, "[send] NetworkError::Write");
+            error!("[send] NetworkError::Write");
             EventError::Network(NetworkError::Write)
         })?;
 
@@ -380,7 +380,7 @@ impl<S> NetworkHandle<S> {
             .ok_or(EventError::Network(NetworkError::NoSocket))?;
 
         let length = nb::block!(network.send(socket, &pkt)).map_err(|_| {
-            mqtt_log!(error, "[send] NetworkError::Write");
+            error!("[send] NetworkError::Write");
             EventError::Network(NetworkError::Write)
         })?;
 
@@ -454,7 +454,7 @@ impl PacketBuffer {
             if matches!(e, nb::Error::WouldBlock) {
                 nb::Error::WouldBlock
             } else {
-                mqtt_log!(error, "[receive] NetworkError::Read");
+                error!("[receive] NetworkError::Read");
                 nb::Error::Other(NetworkError::Read)
             }
         })?;
@@ -519,7 +519,7 @@ impl<'a> PacketDecoder<'a> {
         match decode_slice(buffer) {
             Err(e) => {
                 self.is_err.replace(true);
-                mqtt_log!(error, "Packet decode error!");
+                error!("Packet decode error!");
 
                 Err(EventError::Encoding(e).into())
             }

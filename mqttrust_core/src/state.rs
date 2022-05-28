@@ -1,4 +1,3 @@
-use crate::mqtt_log;
 use crate::packet::SerializedPacket;
 use crate::Notification;
 #[cfg(not(feature = "std"))]
@@ -83,10 +82,10 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
     pub fn new() -> Self {
         #[cfg(not(feature = "std"))]
         {
-            const LEN: usize = core::mem::size_of::<PublishNotification>()
-                + core::mem::align_of::<PublishNotification>()
-                - core::mem::size_of::<PublishNotification>()
-                    % core::mem::align_of::<PublishNotification>();
+            const LEN: usize = core::mem::size_of::<heapless::pool::Node<PublishNotification>>()
+                + core::mem::align_of::<heapless::pool::Node<PublishNotification>>()
+                - (core::mem::size_of::<heapless::pool::Node<PublishNotification>>()
+                    % core::mem::align_of::<heapless::pool::Node<PublishNotification>>());
 
             static mut PUBLISH_MEM: [u8; LEN] = [0u8; LEN];
             BoxedPublish::grow(unsafe { &mut PUBLISH_MEM });
@@ -127,12 +126,12 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             PacketType::Publish => self.handle_outgoing_publish(request, now)?,
             PacketType::Subscribe => {
                 let pid = self.next_pid();
-                mqtt_log!(trace, "Sending Subscribe({:?})", pid);
+                trace!("Sending Subscribe({:?})", pid);
                 request.set_pid(pid)?
             }
             PacketType::Unsubscribe => {
                 let pid = self.next_pid();
-                mqtt_log!(trace, "Sending Unsubscribe({:?})", pid);
+                trace!("Sending Unsubscribe({:?})", pid);
                 request.set_pid(pid)?
             }
             _ => unreachable!(),
@@ -163,7 +162,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             Packet::Pubrel(pid) => self.handle_incoming_pubrel(pid),
             Packet::Pubcomp(pid) => self.handle_incoming_pubcomp(pid),
             _ => {
-                mqtt_log!(error, "Invalid incoming packet!");
+                error!("Invalid incoming packet!");
                 Ok((None, None))
             }
         }
@@ -178,11 +177,11 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
     ) -> Result<(), StateError> {
         match request.header()?.qos {
             QoS::AtMostOnce => {
-                mqtt_log!(trace, "Sending Publish({:?})", QoS::AtMostOnce);
+                trace!("Sending Publish({:?})", QoS::AtMostOnce);
             }
             QoS::AtLeastOnce => {
                 let pid = self.next_pid();
-                mqtt_log!(trace, "Sending Publish({:?}, {:?})", pid, QoS::AtLeastOnce);
+                trace!("Sending Publish({:?}, {:?})", pid, QoS::AtLeastOnce);
                 self.outgoing_pub
                     .insert(pid.get(), Inflight::new(StartTime::new(*now), &request.0))
                     .map_err(|_| StateError::MaxMessagesInflight)?;
@@ -190,7 +189,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             }
             QoS::ExactlyOnce => {
                 let pid = self.next_pid();
-                mqtt_log!(trace, "Sending Publish({:?}, {:?})", pid, QoS::ExactlyOnce);
+                trace!("Sending Publish({:?}, {:?})", pid, QoS::ExactlyOnce);
                 self.outgoing_pub
                     .insert(pid.get(), Inflight::new(StartTime::new(*now), &request.0))
                     .map_err(|_| StateError::MaxMessagesInflight)?;
@@ -214,10 +213,10 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
 
             let request = None;
             let notification = Some(Notification::Puback(pid));
-            mqtt_log!(trace, "Received Puback({:?})", pid);
+            trace!("Received Puback({:?})", pid);
             Ok((notification, request))
         } else {
-            mqtt_log!(error, "Unsolicited puback packet: {:?}", pid.get());
+            error!("Unsolicited puback packet: {:?}", pid.get());
             // Err(StateError::Unsolicited)
             Ok((None, None))
         }
@@ -228,7 +227,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
         suback: Suback<'a>,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let request = None;
-        mqtt_log!(trace, "Received Suback({:?})", suback.pid);
+        trace!("Received Suback({:?})", suback.pid);
         // TODO: Add suback packet info here
         let notification = Some(Notification::Suback(suback.pid));
         Ok((notification, request))
@@ -239,7 +238,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
         pid: Pid,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         let request = None;
-        mqtt_log!(trace, "Received Unsuback({:?})", pid);
+        trace!("Received Unsuback({:?})", pid);
         let notification = Some(Notification::Unsuback(pid));
         Ok((notification, request))
     }
@@ -262,7 +261,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             let notification = Some(Notification::Pubrec(pid));
             Ok((notification, reply))
         } else {
-            mqtt_log!(error, "Unsolicited pubrec packet: {:?}", pid.get());
+            error!("Unsolicited pubrec packet: {:?}", pid.get());
             // Err(StateError::Unsolicited)
             Ok((None, None))
         }
@@ -289,7 +288,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             (QoS::AtLeastOnce, Some(pid)) => Some(Packet::Puback(pid)),
             (QoS::ExactlyOnce, Some(pid)) => {
                 self.incoming_pub.insert(pid.get()).map_err(|_| {
-                    mqtt_log!(error, "Failed to insert incoming pub!");
+                    error!("Failed to insert incoming pub!");
                     StateError::InvalidState
                 })?;
 
@@ -309,7 +308,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             let reply = Packet::Pubcomp(pid);
             Ok((None, Some(reply)))
         } else {
-            mqtt_log!(error, "Unsolicited pubrel packet: {:?}", pid.get());
+            error!("Unsolicited pubrel packet: {:?}", pid.get());
             // Err(StateError::Unsolicited)
             Ok((None, None))
         }
@@ -325,7 +324,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             let reply = None;
             Ok((notification, reply))
         } else {
-            mqtt_log!(error, "Unsolicited pubcomp packet: {:?}", pid.get());
+            error!("Unsolicited pubcomp packet: {:?}", pid.get());
             // Err(StateError::Unsolicited)
             Ok((None, None))
         }
@@ -337,13 +336,13 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
     fn handle_outgoing_ping<'b>(&mut self) -> Result<Packet<'b>, StateError> {
         // raise error if last ping didn't receive ack
         if self.await_pingresp {
-            mqtt_log!(error, "Error awaiting for last ping response");
+            error!("Error awaiting for last ping response");
             return Err(StateError::AwaitPingResp);
         }
 
         self.await_pingresp = true;
 
-        mqtt_log!(trace, "Sending Pingreq");
+        trace!("Sending Pingreq");
 
         Ok(Packet::Pingreq)
     }
@@ -352,7 +351,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
         &mut self,
     ) -> Result<(Option<Notification>, Option<Packet<'static>>), StateError> {
         self.await_pingresp = false;
-        mqtt_log!(trace, "Received Pingresp");
+        trace!("Received Pingresp");
         Ok((None, None))
     }
 
@@ -365,15 +364,14 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             ConnectReturnCode::Accepted
                 if self.connection_status == MqttConnectionStatus::Handshake =>
             {
-                mqtt_log!(debug, "MQTT connected!");
+                debug!("MQTT connected!");
                 self.connection_status = MqttConnectionStatus::Connected;
                 Ok(())
             }
             ConnectReturnCode::Accepted
                 if self.connection_status != MqttConnectionStatus::Handshake =>
             {
-                mqtt_log!(
-                    error,
+                error!(
                     "Invalid state. Expected = {:?}, Current = {:?}",
                     MqttConnectionStatus::Handshake,
                     self.connection_status
@@ -382,11 +380,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
                 Err(StateError::InvalidState)
             }
             code => {
-                mqtt_log!(
-                    error,
-                    "Connection failed. Connection error = {:?}",
-                    code as u8
-                );
+                error!("Connection failed. Connection error = {:?}", code as u8);
                 self.connection_status = MqttConnectionStatus::Disconnected;
                 Err(StateError::Connect(code))
             }
