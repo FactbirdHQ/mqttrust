@@ -3,9 +3,11 @@
 #[cfg(feature = "std")]
 extern crate std;
 
+// This mod MUST go first, so that the others see its macros.
+pub(crate) mod fmt;
+
 mod client;
 mod eventloop;
-mod logging;
 mod options;
 mod packet;
 mod state;
@@ -69,7 +71,7 @@ impl<'a> TryFrom<Publish<'a>> for PublishNotification {
             retain: p.retain,
             topic_name: String::from(p.topic_name),
             payload: Vec::from_slice(p.payload).map_err(|_| {
-                mqtt_log!(error, "Failed to convert payload to notification!");
+                error!("Failed to convert payload to notification!");
                 StateError::PayloadEncoding
             })?,
         })

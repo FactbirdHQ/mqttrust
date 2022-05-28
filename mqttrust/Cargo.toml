@@ -19,8 +19,10 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 heapless = { version = "^0.7" }
-defmt = { version = "^0.3", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
+
+log = { version = "^0.4", default-features = false, optional = true }
+defmt = { version = "^0.3", optional = true }
 
 [features]
 default = []
