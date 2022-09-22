@@ -52,13 +52,6 @@ pool!(
 /// Methods will just modify the state of the object without doing any network
 /// operations This abstracts the functionality better so that it's easy to
 /// switch between synchronous code, tokio (or) async/await
-///
-/// **Lifetimes**:
-/// - 'a: The lifetime of the packet fields, backed by a slice buffer
-///
-/// **Generics**:
-/// - O: The output timer used for keeping track of keep-alive ping-pongs. Must
-///   implement the [`embedded_hal::timer::CountDown`] trait
 pub struct MqttState<const TIMER_HZ: u32> {
     /// Connection status
     pub connection_status: MqttConnectionStatus,

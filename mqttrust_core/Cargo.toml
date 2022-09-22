@@ -26,7 +26,6 @@ required-features = ["log"]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-embedded-hal = { version = "=1.0.0-alpha.8" }
 embedded-nal = "0.6.0"
 nb = "^1"
 heapless = { version = "^0.7", features = ["serde", "x86-sync-pool"] }
@@ -40,6 +39,7 @@ defmt = { version = "^0.3", optional = true }
 
 [dev-dependencies]
 native-tls = { version = "^0.2" }
+embedded-hal = { version = "=1.0.0-alpha.8" }
 dns-lookup = "1.0.3"
 env_logger = "0.9.0"
 
