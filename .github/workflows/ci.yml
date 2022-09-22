@@ -127,7 +127,7 @@ jobs:
 
       - name: Kill test binary process
         if: ${{ always() }}
-        run: kill ${{ steps.binary.outputs.PID }}
+        run: kill ${{ steps.binary.outputs.PID }} || true
 
       - name: Log binary output 
         if: ${{ always() }}
@@ -135,7 +135,7 @@ jobs:
       
       - name: Stop test suite 
         if: ${{ failure() }}
-        run: aws iotdeviceadvisor start-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-id ${{ steps.test_suite.outputs.SUITE_RUN_ID }}
+        run: aws iotdeviceadvisor stop-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-id ${{ steps.test_suite.outputs.SUITE_RUN_ID }}
 
   rustfmt:
     name: rustfmt

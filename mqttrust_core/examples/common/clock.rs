@@ -1,4 +1,3 @@
-use embedded_hal::timer::nb::{Cancel, CountDown};
 use fugit::TimerInstantU32;
 use std::{
     convert::Infallible,
@@ -46,38 +45,5 @@ impl fugit_timer::Timer<1000> for SysClock {
 
     fn wait(&mut self) -> nb::Result<(), Self::Error> {
         todo!()
-    }
-}
-
-impl CountDown for SysClock {
-    type Error = ();
-
-    type Time = u32;
-
-    fn start<T>(&mut self, count: T) -> Result<(), Self::Error>
-    where
-        T: Into<Self::Time>,
-    {
-        let count_ms = count.into();
-        self.countdown_end.replace(self.now() + count_ms);
-        Ok(())
-    }
-
-    fn wait(&mut self) -> nb::Result<(), Self::Error> {
-        match self.countdown_end.map(|end| end <= self.now()) {
-            Some(true) => {
-                self.countdown_end.take();
-                Ok(())
-            }
-            Some(false) => Err(nb::Error::WouldBlock),
-            None => Err(nb::Error::Other(())),
-        }
-    }
-}
-
-impl Cancel for SysClock {
-    fn cancel(&mut self) -> Result<(), Self::Error> {
-        self.countdown_end.take();
-        Ok(())
     }
 }
