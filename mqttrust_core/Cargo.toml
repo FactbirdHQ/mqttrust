@@ -39,7 +39,6 @@ defmt = { version = "^0.3", optional = true }
 
 [dev-dependencies]
 native-tls = { version = "^0.2" }
-embedded-hal = { version = "=1.0.0-alpha.8" }
 dns-lookup = "1.0.3"
 env_logger = "0.9.0"
 
