@@ -22,7 +22,7 @@ where
     /// Options of the current mqtt connection
     pub options: MqttOptions<'b>,
     /// Request stream
-    pub(crate) requests: FrameConsumer<'a, L>,
+    pub(crate) requests: Option<FrameConsumer<'a, L>>,
     network_handle: NetworkHandle<S>,
 }
 
@@ -39,9 +39,16 @@ where
             state: MqttState::new(),
             last_outgoing_timer: outgoing_timer,
             options,
-            requests,
+            requests: Some(requests),
             network_handle: NetworkHandle::new(),
         }
+    }
+
+    /// Release `FrameConsumer`
+    ///
+    /// This can be used before dropping `EventLoop` to get back original `FrameConsumer`.
+    pub fn release_consumer(&mut self) -> Option<FrameConsumer<'a, L>> {
+        self.requests.take()
     }
 
     pub fn connect<N: Dns + TcpClientStack<TcpSocket = S> + ?Sized>(
@@ -118,17 +125,22 @@ where
 
         // Handle a request
         if self.should_handle_request() {
-            if let Some(mut grant) = self.requests.read() {
-                let mut packet = SerializedPacket(grant.deref_mut());
-                match self.state.handle_outgoing_request(&mut packet, &now) {
-                    Ok(()) => {
-                        self.network_handle.send(network, packet.to_inner())?;
-                        grant.release();
-                        return Err(nb::Error::WouldBlock);
+            match &mut self.requests {
+                Some(requests) => {
+                    if let Some(mut grant) = requests.read() {
+                        let mut packet = SerializedPacket(grant.deref_mut());
+                        match self.state.handle_outgoing_request(&mut packet, &now) {
+                            Ok(()) => {
+                                self.network_handle.send(network, packet.to_inner())?;
+                                grant.release();
+                                return Err(nb::Error::WouldBlock);
+                            }
+                            Err(crate::state::StateError::MaxMessagesInflight) => {}
+                            Err(e) => return Err(nb::Error::Other(e.into())),
+                        }
                     }
-                    Err(crate::state::StateError::MaxMessagesInflight) => {}
-                    Err(e) => return Err(nb::Error::Other(e.into())),
                 }
+                None => return Err(nb::Error::Other(EventError::RequestsNotAvailable)),
             }
         }
 

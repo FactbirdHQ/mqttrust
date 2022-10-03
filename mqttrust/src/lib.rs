@@ -12,9 +12,12 @@ pub use encoding::v4::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum MqttError {
+    /// Queue full, cannot send/receive more packets
     Full,
+    /// RefCell borrow fault
     Borrow,
-    Overflow,
+    /// Needed resource is unavailable
+    Unavailable,
 }
 
 pub trait Mqtt {
