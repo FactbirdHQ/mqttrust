@@ -13,14 +13,15 @@ use mqttrust::{
 /// the [`Mqtt`] trait.
 ///
 /// **Lifetimes**:
-/// - 'a: The lifetime of the queue exhanging packets between the client and the
+/// - 'a: The lifetime of the queue for exhanging packets between the client and the
 ///   event loop. This must have the same lifetime as the corresponding
 ///   Consumer. Usually 'static.
 /// - 'b: The lifetime of client id str
 ///
 /// **Generics**:
-/// - L: The length of the queue, exhanging packets between the client and the
-///   event loop. Length in number of request packets
+/// - L: The length of the queue for exhanging packets between the client and the
+///   event loop. The length is in bytes and it must also have enough room for
+///   [FrameProducer](bbqueue::framed) header bytes beside MQTT data.
 pub struct Client<'a, 'b, const L: usize> {
     client_id: &'b str,
     producer: RefCell<FrameProducer<'a, L>>,
