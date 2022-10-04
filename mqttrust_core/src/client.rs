@@ -36,8 +36,8 @@ impl<'a, 'b, const L: usize> Client<'a, 'b, L> {
 
     /// Release `FrameProducer`
     ///
-    /// This can be used before dropping `Client` to get back original `FrameProducer`.
-    pub fn release_producer(&mut self) -> Option<FrameProducer<'a, L>> {
+    /// This can be called before dropping `Client` to get back original `FrameProducer`.
+    pub fn release_queue(&mut self) -> Option<FrameProducer<'a, L>> {
         match self.producer.take() {
             Some(prod) => Some(prod.into_inner()),
             None => None,

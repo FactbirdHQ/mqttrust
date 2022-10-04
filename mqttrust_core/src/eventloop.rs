@@ -46,8 +46,8 @@ where
 
     /// Release `FrameConsumer`
     ///
-    /// This can be used before dropping `EventLoop` to get back original `FrameConsumer`.
-    pub fn release_consumer(&mut self) -> Option<FrameConsumer<'a, L>> {
+    /// This can be called before dropping `EventLoop` to get back original `FrameConsumer`.
+    pub fn release_queue(&mut self) -> Option<FrameConsumer<'a, L>> {
         self.requests.take()
     }
 
