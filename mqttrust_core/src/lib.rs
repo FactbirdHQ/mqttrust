@@ -88,6 +88,7 @@ pub enum EventError {
     Network(NetworkError),
     BufferSize,
     Clock,
+    RequestsNotAvailable,
 }
 
 #[derive(Debug, PartialEq)]

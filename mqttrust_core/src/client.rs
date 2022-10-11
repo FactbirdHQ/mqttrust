@@ -23,14 +23,24 @@ use mqttrust::{
 ///   event loop. Length in number of request packets
 pub struct Client<'a, 'b, const L: usize> {
     client_id: &'b str,
-    producer: RefCell<FrameProducer<'a, L>>,
+    producer: Option<RefCell<FrameProducer<'a, L>>>,
 }
 
 impl<'a, 'b, const L: usize> Client<'a, 'b, L> {
     pub fn new(producer: FrameProducer<'a, L>, client_id: &'b str) -> Self {
         Self {
             client_id,
-            producer: RefCell::new(producer),
+            producer: Some(RefCell::new(producer)),
+        }
+    }
+
+    /// Release `FrameProducer`
+    ///
+    /// This can be called before dropping `Client` to get back original `FrameProducer`.
+    pub fn release_queue(&mut self) -> Option<FrameProducer<'a, L>> {
+        match self.producer.take() {
+            Some(prod) => Some(prod.into_inner()),
+            None => None,
         }
     }
 }
@@ -41,18 +51,16 @@ impl<'a, 'b, const L: usize> Mqtt for Client<'a, 'b, L> {
     }
 
     fn send(&self, packet: Packet<'_>) -> Result<(), MqttError> {
-        let mut prod = self
-            .producer
-            .try_borrow_mut()
-            .map_err(|_| MqttError::Borrow)?;
-
-        let max_size = packet.len();
-        let mut grant = prod.grant(max_size).map_err(|_| MqttError::Full)?;
-
-        let len = encode_slice(&packet, grant.deref_mut()).map_err(|_| MqttError::Full)?;
-
-        grant.commit(len);
-
-        Ok(())
+        match &self.producer {
+            Some(producer) => {
+                let mut prod = producer.try_borrow_mut().map_err(|_| MqttError::Borrow)?;
+                let max_size = packet.len();
+                let mut grant = prod.grant(max_size).map_err(|_| MqttError::Full)?;
+                let len = encode_slice(&packet, grant.deref_mut()).map_err(|_| MqttError::Full)?;
+                grant.commit(len);
+                Ok(())
+            }
+            None => Err(MqttError::Unavailable),
+        }
     }
 }
