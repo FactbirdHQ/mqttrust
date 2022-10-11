@@ -7,20 +7,29 @@ use mqttrust::{
 };
 /// MQTT Client
 ///
-/// This client is meerly a convenience wrapper around a
+/// This client is merely a convenience wrapper around a
 /// `heapless::spsc::Producer`, making it easier to send certain MQTT packet
 /// types, and maintaining a common reference to a client id. Also it implements
 /// the [`Mqtt`] trait.
 ///
 /// **Lifetimes**:
-/// - 'a: The lifetime of the queue exhanging packets between the client and the
-///   event loop. This must have the same lifetime as the corresponding
-///   Consumer. Usually 'static.
-/// - 'b: The lifetime of client id str
+/// - `'a`: Lifetime of the queue for exchanging packets between the client and
+///   [Eventloop](crate::eventloop::EventLoop). This must have the same lifetime as the corresponding
+///   Consumer. Usually `'static`.
+/// - `'b`: Lifetime of `client_id` str.
 ///
 /// **Generics**:
-/// - L: The length of the queue, exhanging packets between the client and the
-///   event loop. Length in number of request packets
+/// - `L`: Length of the queue for exchanging packets between the client and
+///   [Eventloop](crate::eventloop::EventLoop).
+///   The length is in bytes and it must be chosen long enough to contain serialized MQTT packets and
+///   [FrameProducer](bbqueue::framed) header bytes.
+///   For example a MQTT packet with 30 bytes payload and 20 bytes topic name takes 59 bytes to serialize
+///   into MQTT frame plus ~2 bytes (depending on grant length) for [FrameProducer](bbqueue::framed) header.
+///   For rough calculation `payload_len + topic_name + 15` can be used to determine
+///   how many bytes one packet consumes.
+///   Packets are read out from queue only when [Eventloop::yield_event](crate::eventloop::EventLoop::yield_event) is called.
+///   Therefore make sure that queue length is long enough to contain multiple packets if you want to call
+///   [send](Client::send) multiple times in the row.
 pub struct Client<'a, 'b, const L: usize> {
     client_id: &'b str,
     producer: Option<RefCell<FrameProducer<'a, L>>>,
