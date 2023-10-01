@@ -1,0 +1,24 @@
+[package]
+name = "embedded-mqtt"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+embedded-io-async = { version = "0.5" }
+embedded-nal-async = { version = "0.5" }
+serde = { version = "1", features = ["derive"], default-features = false }
+heapless = { version = "0.7", features = ["serde"] }
+varint-rs = {version = "2.2", default-features = false }
+num_enum = { version = "0.7", default-features = false }
+bit_field = { version = "0.10" }
+embassy-sync = { version = "0.3", features = ["nightly"] }
+futures = { version = "0.3.28", default-features = false }
+bbqueue = { git = "https://github.com/xgroleau/bbqueue", rev = "3423b34" }
+embassy-futures = "0.1"
+
+
+[dev-dependencies]
+tokio = { version = "1.32", features = ["rt", "macros"] }
+static_cell = { version = "1.1", features = ["nightly"] }
