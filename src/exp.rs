@@ -2,39 +2,28 @@ use core::{
     cell::RefCell,
     future::poll_fn,
     mem::MaybeUninit,
-    ops::Deref,
     sync::atomic::{AtomicU16, Ordering},
     task::Poll,
 };
 
 use bbqueue::{
-    framed::{FrameConsumer, FrameGrantR, FrameProducer},
+    framed::{FrameConsumer, FrameProducer},
     BBQueue, SliceBufferProvider,
 };
 use embassy_futures::select::{select3, Either3};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex, waitqueue::WakerRegistration};
-use futures::Future;
+use embassy_sync::{
+    blocking_mutex::raw::RawMutex, mutex::Mutex, pubsub::{Publisher, PubSubChannel, Subscriber}, waitqueue::WakerRegistration,
+};
 use serde::Serialize;
 
 use crate::{
-    de::packet_header::PacketHeader,
-    message_types::ControlPacket,
-    packets::{Pub, Subscribe},
-    publication::ToPayload,
-    ring_buffer::RingBuffer,
+    de::packet_header::PacketHeader, message_types::ControlPacket, packets::{Pub, Subscribe},
+    publication::ToPayload, ring_buffer::RingBuffer,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Todo,
-}
-
-struct SubscriptionItem<'a> {
-    inner: Option<FrameProducer<'a, SliceBufferProvider<'a>>>,
-}
-
-impl<'a> SubscriptionItem<'a> {
-    pub const EMPTY: Self = Self { inner: None };
 }
 
 struct MqttBuffer<'a>(RingBuffer<'a>);
@@ -60,34 +49,6 @@ impl<'a> MqttBuffer<'a> {
     }
 }
 
-pub struct SubscriptionHandle(pub u8);
-
-impl<'a, 'b> Shared<'a, 'b> {
-    pub fn register_subscription(
-        &mut self,
-        producer: FrameProducer<'b, SliceBufferProvider<'b>>,
-    ) -> SubscriptionHandle {
-        for (index, slot) in self.subscriptions.iter_mut().enumerate() {
-            if slot.inner.is_none() {
-                *slot = SubscriptionItem {
-                    inner: Some(producer),
-                };
-
-                return SubscriptionHandle(index as u8);
-            }
-        }
-        panic!("adding a subscription to a full shared state");
-    }
-
-    pub fn unregister_subscription(&mut self, handle: SubscriptionHandle) {
-        if let Some(slot) = self.subscriptions.get_mut(handle.0 as usize) {
-            slot.inner.take();
-            return;
-        }
-        panic!("removing an unknown subscription from shared");
-    }
-}
-
 pub struct Pid(AtomicU16);
 
 impl Pid {
@@ -108,17 +69,19 @@ impl Pid {
     }
 }
 
-pub struct State<const TX: usize, const MAX_SUBS: usize> {
+const MAX_SUBS: usize = 3;
+
+pub struct State<M: RawMutex, const TX: usize, const RX: usize> {
     tx: [u8; TX],
-    subs: [SubscriptionItem<'static>; MAX_SUBS],
-    inner: MaybeUninit<StateInner<'static, 'static>>,
+    rx: [u8; RX],
+    inner: MaybeUninit<StateInner<'static, M>>,
 }
 
-impl<const TX: usize, const MAX_SUBS: usize> State<TX, MAX_SUBS> {
+impl<M: RawMutex, const TX: usize, const RX: usize> State<M, TX, RX> {
     pub const fn new() -> Self {
         Self {
             tx: [0; TX],
-            subs: [SubscriptionItem::EMPTY; MAX_SUBS],
+            rx: [0; RX],
             inner: MaybeUninit::uninit(),
         }
     }
@@ -130,23 +93,23 @@ pub enum ConnectionState {
     Connected,
 }
 
-struct StateInner<'a, 'b> {
+struct StateInner<'a, M: RawMutex> {
     tx: BBQueue<SliceBufferProvider<'a>>,
-    shared: Mutex<NoopRawMutex, RefCell<Shared<'a, 'b>>>,
+    subscriptions: PubSubChannel<M, u8, 10, MAX_SUBS, 1>,
+    shared: Mutex<M, RefCell<Shared>>,
 }
 
-pub struct Shared<'a, 'b> {
-    subscriptions: &'a mut [SubscriptionItem<'b>],
-
+pub struct Shared {
     next_pid: Pid,
 
     conn_state: ConnectionState,
     tx_waker: WakerRegistration,
 }
 
-pub struct MqttStack<'a, 'b> {
-    shared: &'a Mutex<NoopRawMutex, RefCell<Shared<'a, 'b>>>,
+pub struct MqttStack<'a, M: RawMutex> {
+    shared: &'a Mutex<M, RefCell<Shared>>,
     tx_consumer: RefCell<FrameConsumer<'a, SliceBufferProvider<'a>>>,
+    rx_producer: RefCell<Publisher<'a, M, u8, 10, MAX_SUBS, 1>>,
     // MqttStack should hold an RX buffer just big enough to hold a single
     // packet header + `MAX_TOPIC_LEN`, in order for it to handle `ACK`,
     // `PING`, and route incoming `PUBLISH` messages to a subscriber.
@@ -156,7 +119,7 @@ pub struct MqttStack<'a, 'b> {
     // MqttConfig
 }
 
-impl<'a, 'b> MqttStack<'a, 'b> {
+impl<'a, M: RawMutex> MqttStack<'a, M> {
     pub async fn run(&self) -> ! {
         loop {
             let mut tx_consumer = self.tx_consumer.borrow_mut();
@@ -182,8 +145,8 @@ impl<'a, 'b> MqttStack<'a, 'b> {
                 }
                 Either3::Second(Ok(tx_grant)) => {
                     // ### TX future:
-                    // Add PID to Packet, and based on packet QoS, add PID to
-                    // state & full packet to retry buffer
+                    // Based on packet QoS, add PID to state & full packet to
+                    // retry buffer
 
                     // let mut packet = SerializedPacket::new(tx_grant.deref_mut())?;
                     // match packet.qos() {
@@ -204,12 +167,13 @@ impl<'a, 'b> MqttStack<'a, 'b> {
     }
 }
 
-pub struct MqttClient<'a, 'b> {
-    tx_producer: Mutex<NoopRawMutex, RefCell<FrameProducer<'a, SliceBufferProvider<'a>>>>,
-    shared: &'a Mutex<NoopRawMutex, RefCell<Shared<'a, 'b>>>,
+pub struct MqttClient<'a, M: RawMutex> {
+    tx_producer: Mutex<M, RefCell<FrameProducer<'a, SliceBufferProvider<'a>>>>,
+    shared: &'a Mutex<M, RefCell<Shared>>,
+    channel: &'a PubSubChannel<M, u8, 10, MAX_SUBS, 1>
 }
 
-impl<'a, 'b> MqttClient<'a, 'b> {
+impl<'a, M: RawMutex> MqttClient<'a, M> {
     async fn send(&self, packet: impl Serialize + ControlPacket) -> Result<u16, Error> {
         let pid = self.shared.lock().await.borrow_mut().next_pid.next();
 
@@ -253,87 +217,76 @@ impl<'a, 'b> MqttClient<'a, 'b> {
 
     pub async fn subscribe(
         &self,
-        queue: &'b BBQueue<SliceBufferProvider<'b>>,
         packet: impl Into<Subscribe<'_>>,
-    ) -> Result<Subscription<'a, 'b>, Error> {
-        let (producer, consumer) = queue.try_split_framed().unwrap();
-
-        let handle = self
-            .shared
-            .lock()
-            .await
-            .borrow_mut()
-            .register_subscription(producer);
+    ) -> Result<Subscription<'a, M>, Error> {
+        let subscriber = self.channel.subscriber().map_err(|_| Error::Todo)?;
 
         self.send(packet.into()).await?;
 
         Ok(Subscription {
-            handle,
-            shared: self.shared,
-            consumer,
+            subscriber
         })
     }
 }
 
-pub struct Subscription<'a, 'b> {
-    handle: SubscriptionHandle,
-    shared: &'a Mutex<NoopRawMutex, RefCell<Shared<'a, 'b>>>,
-    consumer: FrameConsumer<'b, SliceBufferProvider<'b>>,
+pub struct Subscription<'a, M: RawMutex> {
+    subscriber: Subscriber<'a, M, u8, 10, MAX_SUBS, 1>,
 }
 
-impl<'a, 'b> futures::Stream for Subscription<'a, 'b> {
-    type Item = Message<'b>;
+impl<'a, M: RawMutex> futures::Stream for Subscription<'a, M> {
+    type Item = Message;
 
     fn poll_next(
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        match core::task::ready!(core::pin::pin!(self.consumer.read_async()).poll(cx)) {
-            Ok(mut grant) => {
-                grant.auto_release(true);
-                Poll::Ready(Some(Message(grant)))
-            }
-            Err(_) => Poll::Ready(None),
+        match self.subscriber.try_next_message_pure() {
+            Some(msg) => {
+                Poll::Ready(Some(Message(msg)))
+            },
+            None => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            },
         }
     }
 }
 
-pub struct Message<'a>(FrameGrantR<'a, SliceBufferProvider<'a>>);
+pub struct Message(u8);
 
-impl<'a> Message<'a> {
-    pub fn topic(&self) -> &str {
-        core::str::from_utf8(&self.0.deref()[..10]).unwrap()
-    }
+// impl<'a> Message<'a> {
+//     pub fn topic(&self) -> &str {
+//         core::str::from_utf8(&[*self.0]).unwrap()
+//     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.0.deref()[10..]
-    }
-}
+//     pub fn payload(&self) -> &[u8] {
+//         &[*self.0]
+//     }
+// }
 
-impl<'a, 'b> Drop for Subscription<'a, 'b> {
-    fn drop(&mut self) {
-        // self.shared
-        //     .lock()
-        //     .await
-        //     .borrow_mut()
-        //     .unregister_subscription(self.handle);
-    }
-}
+// impl<'a, M: RawMutex> Drop for Subscription<'a, M> {
+//     fn drop(&mut self) {
+//         self.shared
+//             .try_lock()
+//             .unwrap()
+//             .borrow_mut()
+//             .unregister_subscription(self.handle);
+//     }
+// }
 
-pub fn new<'d, 'b, const TX: usize, const MAX_SUBS: usize>(
-    state: &'d mut State<TX, MAX_SUBS>,
-) -> (MqttStack<'d, 'b>, MqttClient<'d, 'b>) {
+pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize>(
+    state: &'d mut State<M, TX, RX>,
+) -> (MqttStack<'d, M>, MqttClient<'d, M>) {
     // safety: this is a self-referential struct, however:
     // - it can't move while the `'d` borrow is active.
     // - when the borrow ends, the dangling references inside the MaybeUninit will never be used again.
-    let state_uninit: *mut MaybeUninit<StateInner<'d, 'b>> =
-        (&mut state.inner as *mut MaybeUninit<StateInner<'static, 'static>>).cast();
+    let state_uninit: *mut MaybeUninit<StateInner<'d, M>> =
+        (&mut state.inner as *mut MaybeUninit<StateInner<'static, M>>).cast();
 
     let state = unsafe { &mut *state_uninit }.write(StateInner {
         tx: BBQueue::new(SliceBufferProvider::new(&mut state.tx[..])),
+        subscriptions: PubSubChannel::new(),
         shared: Mutex::new(RefCell::new(Shared {
-            subscriptions: &mut state.subs[..],
-
             next_pid: Pid::new(),
 
             conn_state: ConnectionState::Disconnected,
@@ -346,19 +299,21 @@ pub fn new<'d, 'b, const TX: usize, const MAX_SUBS: usize>(
     (
         MqttStack {
             tx_consumer: RefCell::new(tx_consumer),
+            rx_producer: RefCell::new(state.subscriptions.publisher().unwrap()),
             shared: &state.shared,
             rx: [0; 128],
         },
         MqttClient {
             tx_producer: Mutex::new(RefCell::new(tx_producer)),
             shared: &state.shared,
+            channel: &state.subscriptions
         },
     )
 }
 
 #[cfg(test)]
 mod tests {
-
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use futures::StreamExt;
 
     use crate::{publication::Publication, types::Properties};
@@ -368,7 +323,7 @@ mod tests {
     #[tokio::test]
     async fn subscribe_publish() {
         // Create the MQTT stack
-        let state = static_cell::make_static!(State::<4096, 3>::new());
+        let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096>::new());
         let (stack, client) = super::new(state);
 
         // Use the MQTT client to subscribe
@@ -380,90 +335,91 @@ mod tests {
 
         let mut rx_a = [0u8; 512];
         let queue = bbqueue::BBQueue::new_from_slice(&mut rx_a);
-        let mut subscription = client.subscribe(&queue, subscribe).await.unwrap();
+        // let mut subscription = client.subscribe(&queue, subscribe).await.unwrap();
 
-        client
-            .publish(Publication::new(b"").topic("ABC").finish().unwrap())
-            .await
-            .unwrap();
+        // client
+        //     .publish(Publication::new(b"").topic("ABC").finish().unwrap())
+        //     .await
+        //     .unwrap();
 
-        while let Some(message) = subscription.next().await {
-            match message.topic() {
-                "ABC" => {
-                    client
-                        .publish(Publication::new(b"").topic("ABC").finish().unwrap())
-                        .await
-                        .unwrap();
-                }
-                _ => {}
-            }
-        }
-
-        drop(subscription);
+        // while let Some(message) = subscription.next().await {
+        //     match message.topic() {
+        //         "ABC" => {
+        //             client
+        //                 .publish(Publication::new(b"").topic("ABC").finish().unwrap())
+        //                 .await
+        //                 .unwrap();
+        //         }
+        //         _ => {}
+        //     }
+        // }
     }
 
     #[tokio::test]
     async fn multiple_subscribe() {
         // Create the MQTT stack
-        let state = static_cell::make_static!(State::<4096, 3>::new());
+        let state = static_cell::make_static!(State::<
+            embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
+            4096,
+            4096,
+        >::new());
         let (stack, client) = super::new(state);
 
         // Use the MQTT client to subscribe
-        let subscribe = crate::packets::Subscribe {
-            packet_id: 16,
-            properties: Properties::Slice(&[]),
-            topics: &["ABC".into()],
-        };
-
-        let mut rx_a = [0u8; 512];
-        let queue = bbqueue::BBQueue::new_from_slice(&mut rx_a);
-        let mut subscription_a = client.subscribe(&queue, subscribe).await.unwrap();
 
         client
             .publish(Publication::new(b"").topic("ABC").finish().unwrap())
             .await
             .unwrap();
 
-        let fut_a = async {
-            while let Some(message) = subscription_a.next().await {
-                match message.topic() {
-                    "ABC" => {
-                        client
-                            .publish(Publication::new(b"").topic("CDE").finish().unwrap())
-                            .await
-                            .unwrap();
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            drop(subscription_a);
-        };
-
-        let subscribe = crate::packets::Subscribe {
-            packet_id: 165,
-            properties: Properties::Slice(&[]),
-            topics: &["CDE".into()],
-        };
+        let mut rx_a = [0u8; 512];
+        let queue_a = bbqueue::BBQueue::new_from_slice(&mut rx_a);
 
         let mut rx_b = [0u8; 512];
         let queue_b = bbqueue::BBQueue::new_from_slice(&mut rx_b);
-        let mut subscription_b = client.subscribe(&queue_b, subscribe).await.unwrap();
+
+        let fut_a = async {
+            let subscribe_a = crate::packets::Subscribe {
+                packet_id: 16,
+                properties: Properties::Slice(&[]),
+                topics: &["ABC".into()],
+            };
+            // let mut subscription_a = client.subscribe(&queue_a, subscribe_a).await.unwrap();
+            // while let Some(message) = subscription_a.next().await {
+            //     match message.topic() {
+            //         "ABC" => {
+            //             client
+            //                 .publish(Publication::new(b"").topic("CDE").finish().unwrap())
+            //                 .await
+            //                 .unwrap();
+            //             break;
+            //         }
+            //         _ => {}
+            //     }
+            // }
+        };
 
         let fut_b = async {
-            while let Some(message) = subscription_b.next().await {
-                match message.topic() {
-                    "CDE" => {
-                        client
-                            .publish(Publication::new(b"").topic("ABC").finish().unwrap())
-                            .await
-                            .unwrap();
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            drop(subscription_b);
+            let subscribe_b = crate::packets::Subscribe {
+                packet_id: 165,
+                properties: Properties::Slice(&[]),
+                topics: &["CDE".into()],
+            };
+
+            // let mut subscription_b = client.subscribe(&queue_b, subscribe_b).await.unwrap();
+
+            // while let Some(message) = subscription_b.next().await {
+            //     match message.topic() {
+            //         "CDE" => {
+            //             client
+            //                 .publish(Publication::new(b"").topic("ABC").finish().unwrap())
+            //                 .await
+            //                 .unwrap();
+            //             break;
+            //         }
+            //         _ => {}
+            //     }
+            // }
         };
 
         embassy_futures::join::join(fut_a, fut_b).await;

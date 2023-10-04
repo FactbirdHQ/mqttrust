@@ -38,6 +38,7 @@ mod publication;
 mod properties;
 mod ring_buffer;
 mod exp;
+mod pubsub;
 
 pub use properties::Property;
 
