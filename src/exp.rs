@@ -11,14 +11,16 @@ use bbqueue::{
     BBQueue, SliceBufferProvider,
 };
 use embassy_futures::select::{select3, Either3};
-use embassy_sync::{
-    blocking_mutex::raw::RawMutex, mutex::Mutex, pubsub::{Publisher, PubSubChannel, Subscriber}, waitqueue::WakerRegistration,
-};
+use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex, waitqueue::WakerRegistration};
 use serde::Serialize;
 
 use crate::{
-    de::packet_header::PacketHeader, message_types::ControlPacket, packets::{Pub, Subscribe},
-    publication::ToPayload, ring_buffer::RingBuffer,
+    de::packet_header::PacketHeader,
+    message_types::ControlPacket,
+    packets::{Pub, Subscribe},
+    publication::ToPayload,
+    pubsub::{PubSubChannel, Publisher, Subscriber},
+    ring_buffer::RingBuffer,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,8 +71,6 @@ impl Pid {
     }
 }
 
-const MAX_SUBS: usize = 3;
-
 pub struct State<M: RawMutex, const TX: usize, const RX: usize> {
     tx: [u8; TX],
     rx: [u8; RX],
@@ -87,6 +87,8 @@ impl<M: RawMutex, const TX: usize, const RX: usize> State<M, TX, RX> {
     }
 }
 
+const SUBS: usize = 3;
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum ConnectionState {
     Disconnected,
@@ -95,7 +97,7 @@ pub enum ConnectionState {
 
 struct StateInner<'a, M: RawMutex> {
     tx: BBQueue<SliceBufferProvider<'a>>,
-    subscriptions: PubSubChannel<M, u8, 10, MAX_SUBS, 1>,
+    subscriptions: PubSubChannel<crate::pubsub::SliceBufferProvider<'a>, SUBS>,
     shared: Mutex<M, RefCell<Shared>>,
 }
 
@@ -109,7 +111,7 @@ pub struct Shared {
 pub struct MqttStack<'a, M: RawMutex> {
     shared: &'a Mutex<M, RefCell<Shared>>,
     tx_consumer: RefCell<FrameConsumer<'a, SliceBufferProvider<'a>>>,
-    rx_producer: RefCell<Publisher<'a, M, u8, 10, MAX_SUBS, 1>>,
+    rx_producer: RefCell<Publisher<'a, crate::pubsub::SliceBufferProvider<'a>, SUBS>>,
     // MqttStack should hold an RX buffer just big enough to hold a single
     // packet header + `MAX_TOPIC_LEN`, in order for it to handle `ACK`,
     // `PING`, and route incoming `PUBLISH` messages to a subscriber.
@@ -170,7 +172,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 pub struct MqttClient<'a, M: RawMutex> {
     tx_producer: Mutex<M, RefCell<FrameProducer<'a, SliceBufferProvider<'a>>>>,
     shared: &'a Mutex<M, RefCell<Shared>>,
-    channel: &'a PubSubChannel<M, u8, 10, MAX_SUBS, 1>
+    channel: &'a PubSubChannel<crate::pubsub::SliceBufferProvider<'a>, SUBS>,
 }
 
 impl<'a, M: RawMutex> MqttClient<'a, M> {
@@ -218,61 +220,47 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
     pub async fn subscribe(
         &self,
         packet: impl Into<Subscribe<'_>>,
-    ) -> Result<Subscription<'a, M>, Error> {
+    ) -> Result<Subscription<'a>, Error> {
         let subscriber = self.channel.subscriber().map_err(|_| Error::Todo)?;
 
         self.send(packet.into()).await?;
 
-        Ok(Subscription {
-            subscriber
-        })
+        Ok(Subscription { subscriber })
     }
 }
 
-pub struct Subscription<'a, M: RawMutex> {
-    subscriber: Subscriber<'a, M, u8, 10, MAX_SUBS, 1>,
+pub struct Subscription<'a> {
+    subscriber: Subscriber<'a, crate::pubsub::SliceBufferProvider<'a>, SUBS>,
 }
 
-impl<'a, M: RawMutex> futures::Stream for Subscription<'a, M> {
-    type Item = Message;
+impl<'a> futures::Stream for Subscription<'a> {
+    type Item = Message<'a>;
 
     fn poll_next(
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        match self.subscriber.try_next_message_pure() {
-            Some(msg) => {
-                Poll::Ready(Some(Message(msg)))
-            },
-            None => {
+        match self.subscriber.read() {
+            Ok(msg) => Poll::Ready(Some(Message(msg))),
+            Err(_) => {
                 cx.waker().wake_by_ref();
                 Poll::Pending
-            },
+            }
         }
     }
 }
 
-pub struct Message(u8);
+pub struct Message<'a>(crate::pubsub::GrantR<'a, crate::pubsub::SliceBufferProvider<'a>, SUBS>);
 
-// impl<'a> Message<'a> {
-//     pub fn topic(&self) -> &str {
-//         core::str::from_utf8(&[*self.0]).unwrap()
-//     }
+impl<'a> Message<'a> {
+    pub fn topic(&self) -> &str {
+        core::str::from_utf8(&self.0.buf()[..10]).unwrap()
+    }
 
-//     pub fn payload(&self) -> &[u8] {
-//         &[*self.0]
-//     }
-// }
-
-// impl<'a, M: RawMutex> Drop for Subscription<'a, M> {
-//     fn drop(&mut self) {
-//         self.shared
-//             .try_lock()
-//             .unwrap()
-//             .borrow_mut()
-//             .unregister_subscription(self.handle);
-//     }
-// }
+    pub fn payload(&self) -> &[u8] {
+        &self.0.buf()[10..]
+    }
+}
 
 pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize>(
     state: &'d mut State<M, TX, RX>,
@@ -285,7 +273,9 @@ pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize>(
 
     let state = unsafe { &mut *state_uninit }.write(StateInner {
         tx: BBQueue::new(SliceBufferProvider::new(&mut state.tx[..])),
-        subscriptions: PubSubChannel::new(),
+        subscriptions: PubSubChannel::new(crate::pubsub::SliceBufferProvider::new(
+            &mut state.rx[..],
+        )),
         shared: Mutex::new(RefCell::new(Shared {
             next_pid: Pid::new(),
 
@@ -306,7 +296,7 @@ pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize>(
         MqttClient {
             tx_producer: Mutex::new(RefCell::new(tx_producer)),
             shared: &state.shared,
-            channel: &state.subscriptions
+            channel: &state.subscriptions,
         },
     )
 }
@@ -333,26 +323,24 @@ mod tests {
             topics: &["ABC".into()],
         };
 
-        let mut rx_a = [0u8; 512];
-        let queue = bbqueue::BBQueue::new_from_slice(&mut rx_a);
-        // let mut subscription = client.subscribe(&queue, subscribe).await.unwrap();
+        let mut subscription = client.subscribe(subscribe).await.unwrap();
 
-        // client
-        //     .publish(Publication::new(b"").topic("ABC").finish().unwrap())
-        //     .await
-        //     .unwrap();
+        client
+            .publish(Publication::new(b"").topic("ABC").finish().unwrap())
+            .await
+            .unwrap();
 
-        // while let Some(message) = subscription.next().await {
-        //     match message.topic() {
-        //         "ABC" => {
-        //             client
-        //                 .publish(Publication::new(b"").topic("ABC").finish().unwrap())
-        //                 .await
-        //                 .unwrap();
-        //         }
-        //         _ => {}
-        //     }
-        // }
+        while let Some(message) = subscription.next().await {
+            match message.topic() {
+                "ABC" => {
+                    client
+                        .publish(Publication::new(b"").topic("ABC").finish().unwrap())
+                        .await
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
     }
 
     #[tokio::test]
@@ -372,31 +360,25 @@ mod tests {
             .await
             .unwrap();
 
-        let mut rx_a = [0u8; 512];
-        let queue_a = bbqueue::BBQueue::new_from_slice(&mut rx_a);
-
-        let mut rx_b = [0u8; 512];
-        let queue_b = bbqueue::BBQueue::new_from_slice(&mut rx_b);
-
         let fut_a = async {
             let subscribe_a = crate::packets::Subscribe {
                 packet_id: 16,
                 properties: Properties::Slice(&[]),
                 topics: &["ABC".into()],
             };
-            // let mut subscription_a = client.subscribe(&queue_a, subscribe_a).await.unwrap();
-            // while let Some(message) = subscription_a.next().await {
-            //     match message.topic() {
-            //         "ABC" => {
-            //             client
-            //                 .publish(Publication::new(b"").topic("CDE").finish().unwrap())
-            //                 .await
-            //                 .unwrap();
-            //             break;
-            //         }
-            //         _ => {}
-            //     }
-            // }
+            let mut subscription_a = client.subscribe(subscribe_a).await.unwrap();
+            while let Some(message) = subscription_a.next().await {
+                match message.topic() {
+                    "ABC" => {
+                        client
+                            .publish(Publication::new(b"").topic("CDE").finish().unwrap())
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
         };
 
         let fut_b = async {
@@ -406,20 +388,20 @@ mod tests {
                 topics: &["CDE".into()],
             };
 
-            // let mut subscription_b = client.subscribe(&queue_b, subscribe_b).await.unwrap();
+            let mut subscription_b = client.subscribe(subscribe_b).await.unwrap();
 
-            // while let Some(message) = subscription_b.next().await {
-            //     match message.topic() {
-            //         "CDE" => {
-            //             client
-            //                 .publish(Publication::new(b"").topic("ABC").finish().unwrap())
-            //                 .await
-            //                 .unwrap();
-            //             break;
-            //         }
-            //         _ => {}
-            //     }
-            // }
+            while let Some(message) = subscription_b.next().await {
+                match message.topic() {
+                    "CDE" => {
+                        client
+                            .publish(Publication::new(b"").topic("ABC").finish().unwrap())
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
         };
 
         embassy_futures::join::join(fut_a, fut_b).await;

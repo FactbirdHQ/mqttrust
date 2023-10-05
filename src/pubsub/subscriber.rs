@@ -1,141 +1,271 @@
-//! Implementation of anything directly subscriber related
-
-use core::future::Future;
+use core::cell::RefCell;
+use core::cmp::min;
+use core::mem::{forget, transmute};
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
+use core::slice::from_raw_parts_mut;
 use core::task::{Context, Poll};
 
-use super::{PubSubBehavior, PubSubChannel};
-use embassy_sync::blocking_mutex::raw::RawMutex;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
+use futures::Future;
 
-/// A subscriber to a channel
-pub struct Sub<'a, PSB: PubSubBehavior + ?Sized> {
+use super::{state::PubSubState, BufferProvider, Error, Result};
+
+/// `Subscriber` is the primary interface for reading data from a `PubSubState`.
+pub struct Subscriber<'a, B, const SUBS: usize>
+where
+    B: BufferProvider,
+{
+    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
     /// The message id of the next message we are yet to receive
     next_message_id: u64,
-    /// The channel we are a subscriber to
-    channel: &'a PSB,
 }
 
-impl<'a, PSB: PubSubBehavior + ?Sized> Sub<'a, PSB> {
-    pub(super) fn new(next_message_id: u64, channel: &'a PSB) -> Self {
+unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for Subscriber<'a, B, SUBS> {}
+
+impl<'a, B, const SUBS: usize> Subscriber<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
+    pub(super) fn new(
+        next_message_id: u64,
+        channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
+    ) -> Self {
         Self {
             next_message_id,
             channel,
         }
     }
 
-    /// Wait for a published message
-    pub fn next_message<'s>(&'s mut self) -> SubscriberWaitFuture<'s, 'a, PSB> {
-        SubscriberWaitFuture { subscriber: self }
-    }
-
-    /// Wait for a published message (ignoring lag results)
-    pub async fn next_message_pure(&mut self) -> T {
-        loop {
-            match self.next_message().await {
-                WaitResult::Lagged(_) => continue,
-                WaitResult::Message(message) => break message,
-            }
-        }
-    }
-
-    /// Try to see if there's a published message we haven't received yet.
+    /// Obtains a contiguous slice of committed bytes. This slice may not
+    /// contain ALL available bytes, if the writer has wrapped around. The
+    /// remaining bytes will be available after all readable bytes are
+    /// released
     ///
-    /// This function does not peek. The message is received if there is one.
-    pub fn try_next_message(&mut self) -> Option<WaitResult> {
-        match self.channel.get_message_with_context(&mut self.next_message_id, None) {
-            Poll::Ready(result) => Some(result),
-            Poll::Pending => None,
-        }
-    }
-
-    /// Try to see if there's a published message we haven't received yet (ignoring lag results).
+    /// ```rust
+    /// # // PubSubState test shim!
+    /// # fn bbqtest() {
+    /// use PubSubState::{PubSubState, StaticBufferProvider};
     ///
-    /// This function does not peek. The message is received if there is one.
-    pub fn try_next_message_pure(&mut self) -> Option<T> {
-        loop {
-            match self.try_next_message() {
-                Some(WaitResult::Lagged(_)) => continue,
-                Some(WaitResult::Message(message)) => break Some(message),
-                None => break None,
+    /// // Create and split a new buffer of 6 elements
+    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
+    /// let (mut prod, mut cons) = buffer.try_split().unwrap();
+    ///
+    /// // Successfully obtain and commit a grant of four bytes
+    /// let mut grant = prod.grant_max_remaining(4).unwrap();
+    /// assert_eq!(grant.buf().len(), 4);
+    /// grant.commit(4);
+    ///
+    /// // Obtain a read grant
+    /// let mut grant = cons.read().unwrap();
+    /// assert_eq!(grant.buf().len(), 4);
+    /// # // PubSubState test shim!
+    /// # }
+    /// #
+    /// # fn main() {
+    /// # #[cfg(not(feature = "thumbv6"))]
+    /// # bbqtest();
+    /// # }
+    /// ```
+    pub fn read(&mut self) -> Result<GrantR<'a, B, SUBS>> {
+        self.channel.lock(|channel| {
+            let mut inner = channel.borrow_mut();
+
+            if inner.read_in_progress {
+                return Err(Error::GrantInProgress);
             }
-        }
+            inner.read_in_progress = true;
+
+            let mut read = inner.read;
+
+            // Resolve the inverted case or end of read
+            if (read == inner.last) && (inner.write < read) {
+                read = 0;
+                // This has some room for error, the other thread reads this
+                // Impact to Grant:
+                //   Grant checks if read < write to see if inverted. If not inverted, but
+                //     no space left, Grant will initiate an inversion, but will not trigger it
+                // Impact to Commit:
+                //   Commit does not check read, but if Grant has started an inversion,
+                //   grant could move Last to the prior write position
+                // MOVING READ BACKWARDS!
+                inner.read = 0;
+            }
+
+            let sz = if inner.write < read {
+                // Inverted, only believe last
+                inner.last
+            } else {
+                // Not inverted, only believe write
+                inner.write
+            } - read;
+
+            if sz == 0 {
+                inner.read_in_progress = false;
+                return Err(Error::InsufficientSize);
+            }
+
+            // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
+            // are all `#[repr(Transparent)]
+            let start_of_buf_ptr =
+                unsafe { (&mut *inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
+            let grant_slice =
+                unsafe { from_raw_parts_mut(start_of_buf_ptr.offset(read as isize), sz) };
+
+            Ok(GrantR {
+                buf: grant_slice,
+                channel: self.channel,
+                to_release: 0,
+            })
+        })
     }
 
-    /// The amount of messages this subscriber hasn't received yet
-    pub fn available(&self) -> u64 {
-        self.channel.available(self.next_message_id)
+    /// Obtains two disjoint slices, which are each contiguous of committed bytes.
+    /// Combined these contain all previously commited data.
+    pub fn split_read(&mut self) -> Result<SplitGrantR<'a, B, SUBS>> {
+        self.channel.lock(|channel| {
+            let mut inner = channel.borrow_mut();
+
+            if inner.read_in_progress {
+                return Err(Error::GrantInProgress);
+            }
+            inner.read_in_progress = true;
+
+            let mut read = inner.read;
+
+            // Resolve the inverted case or end of read
+            if (read == inner.last) && (inner.write < read) {
+                read = 0;
+                // This has some room for error, the other thread reads this
+                // Impact to Grant:
+                //   Grant checks if read < write to see if inverted. If not inverted, but
+                //     no space left, Grant will initiate an inversion, but will not trigger it
+                // Impact to Commit:
+                //   Commit does not check read, but if Grant has started an inversion,
+                //   grant could move Last to the prior write position
+                // MOVING READ BACKWARDS!
+                inner.read = 0;
+            }
+
+            let (sz1, sz2) = if inner.write < read {
+                // Inverted, only believe last
+                (inner.last - read, inner.write)
+            } else {
+                // Not inverted, only believe write
+                (inner.write - read, 0)
+            };
+
+            if sz1 == 0 {
+                inner.read_in_progress = false;
+                return Err(Error::InsufficientSize);
+            }
+
+            // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
+            // are all `#[repr(Transparent)]
+            let start_of_buf_ptr =
+                unsafe { (&mut *inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
+            let grant_slice1 =
+                unsafe { from_raw_parts_mut(start_of_buf_ptr.offset(read as isize), sz1) };
+            let grant_slice2 = unsafe { from_raw_parts_mut(start_of_buf_ptr, sz2) };
+
+            Ok(SplitGrantR {
+                buf1: grant_slice1,
+                buf2: grant_slice2,
+                channel: self.channel,
+                to_release: 0,
+            })
+        })
+    }
+
+    /// Async version of [Self::read].
+    /// Will wait for the buffer to have data to read. When data is available, the grant is returned.
+    pub fn read_async<'b>(&'b mut self) -> GrantReadFuture<'a, 'b, B, SUBS> {
+        GrantReadFuture { sub: self }
+    }
+
+    /// Async version of [Self::split_read].
+    /// Will wait just like [Self::read_async], but returns the split grant to obtain all the available data.
+    pub fn split_read_async<'b>(&'b mut self) -> GrantSplitReadFuture<'a, 'b, B, SUBS> {
+        GrantSplitReadFuture { sub: self }
     }
 }
 
-impl<'a, PSB: PubSubBehavior + ?Sized> Drop for Sub<'a, PSB> {
+impl<'a, B, const SUBS: usize> Drop for Subscriber<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
     fn drop(&mut self) {
-        self.channel.unregister_subscriber(self.next_message_id)
+        self.channel.lock(|channel| {
+            let mut inner = channel.borrow_mut();
+            inner.unregister_subscriber(self.next_message_id)
+        });
     }
 }
 
-impl<'a, PSB: PubSubBehavior + ?Sized> Unpin for Sub<'a, PSB> {}
+/// Future returned [Subscriber::read_async]
+pub struct GrantReadFuture<'a, 'b, B, const SUBS: usize>
+where
+    B: BufferProvider,
+{
+    pub(crate) sub: &'b mut Subscriber<'a, B, SUBS>,
+}
 
-/// Warning: The stream implementation ignores lag results and returns all messages.
-/// This might miss some messages without you knowing it.
-impl<'a, PSB: PubSubBehavior + ?Sized> futures::Stream for Sub<'a, PSB> {
-    type Item = T;
+impl<'a, 'b, B, const SUBS: usize> Future for GrantReadFuture<'a, 'b, B, SUBS>
+where
+    B: BufferProvider,
+{
+    type Output = Result<GrantR<'a, B, SUBS>>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self
-            .channel
-            .get_message_with_context(&mut self.next_message_id, Some(cx))
-        {
-            Poll::Ready(WaitResult::Message(message)) => Poll::Ready(Some(message)),
-            Poll::Ready(WaitResult::Lagged(_)) => {
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-            Poll::Pending => Poll::Pending,
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.sub.read() {
+            Ok(grant) => Poll::Ready(Ok(grant)),
+            Err(e) => match e {
+                Error::InsufficientSize | Error::GrantInProgress => {
+                    self.sub.channel.lock(|channel| {
+                        channel.borrow_mut().subscriber_wakers.register(cx.waker());
+                    });
+                    Poll::Pending
+                }
+                _ => Poll::Ready(Err(e)),
+            },
         }
     }
 }
 
-/// A subscriber that holds a dynamic reference to the channel
-pub struct DynSubscriber<'a>(pub(super) Sub<'a, dyn PubSubBehavior + 'a>);
+impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantReadFuture<'a, 'b, B, SUBS> {}
 
-impl<'a> Deref for DynSubscriber<'a> {
-    type Target = Sub<'a, dyn PubSubBehavior + 'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<'a> DerefMut for DynSubscriber<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// A subscriber that holds a generic reference to the channel
-pub struct Subscriber<'a, M: RawMutex, const CAP: usize, const SUBS: usize>(
-    pub(super) Sub<'a, PubSubChannel<M, CAP, SUBS>>,
-);
-
-impl<'a, M: RawMutex, const CAP: usize, const SUBS: usize> Deref
-    for Subscriber<'a, M, CAP, SUBS>
+/// Future returned [Subscriber::split_read_async]
+pub struct GrantSplitReadFuture<'a, 'b, B, const SUBS: usize>
+where
+    B: BufferProvider,
 {
-    type Target = Sub<'a, PubSubChannel<M, CAP, SUBS>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+    pub(crate) sub: &'b mut Subscriber<'a, B, SUBS>,
 }
 
-impl<'a, M: RawMutex, const CAP: usize, const SUBS: usize> DerefMut
-    for Subscriber<'a, M, CAP, SUBS>
+impl<'a, 'b, B, const SUBS: usize> Future for GrantSplitReadFuture<'a, 'b, B, SUBS>
+where
+    B: BufferProvider,
 {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    type Output = Result<SplitGrantR<'a, B, SUBS>>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.sub.split_read() {
+            Ok(grant) => Poll::Ready(Ok(grant)),
+            Err(e) => match e {
+                Error::InsufficientSize | Error::GrantInProgress => {
+                    self.sub.channel.lock(|channel| {
+                        channel.borrow_mut().subscriber_wakers.register(cx.waker());
+                    });
+                    Poll::Pending
+                }
+                _ => Poll::Ready(Err(e)),
+            },
+        }
     }
 }
 
+impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantSplitReadFuture<'a, 'b, B, SUBS> {}
 
 /// A structure representing a contiguous region of memory that
 /// may be read from, and potentially "released" (or cleared)
@@ -149,25 +279,36 @@ impl<'a, M: RawMutex, const CAP: usize, const SUBS: usize> DerefMut
 ///
 /// If the `thumbv6` feature is selected, dropping the grant
 /// without releasing it takes a short critical section,
-#[derive(Debug, PartialEq)]
-pub struct GrantR<'a> {
+pub struct GrantR<'a, B, const SUBS: usize>
+where
+    B: BufferProvider,
+{
     pub(crate) buf: &'a mut [u8],
-    bbq: NonNull<BBQueue<B>>,
+    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
     pub(crate) to_release: usize,
 }
 
 /// A structure representing up to two contiguous regions of memory that
 /// may be read from, and potentially "released" (or cleared)
 /// from the queue
-#[derive(Debug, PartialEq)]
-pub struct SplitGrantR<'a> {
+pub struct SplitGrantR<'a, B, const SUBS: usize>
+where
+    B: BufferProvider,
+{
     pub(crate) buf1: &'a mut [u8],
     pub(crate) buf2: &'a mut [u8],
-    bbq: NonNull<BBQueue<B>>,
+    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
     pub(crate) to_release: usize,
 }
 
-impl<'a> GrantR<'a> {
+unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for GrantR<'a, B, SUBS> {}
+
+unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for SplitGrantR<'a, B, SUBS> {}
+
+impl<'a, B, const SUBS: usize> GrantR<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
     /// Release a sequence of bytes from the buffer, allowing the space
     /// to be used by later writes. This consumes the grant.
     ///
@@ -181,7 +322,7 @@ impl<'a> GrantR<'a> {
         let used = min(self.buf.len(), used);
 
         self.release_inner(used);
-        core::mem::forget(self);
+        forget(self);
     }
 
     pub(crate) fn shrink(&mut self, len: usize) {
@@ -194,12 +335,12 @@ impl<'a> GrantR<'a> {
     /// Obtain access to the inner buffer for reading
     ///
     /// ```
-    /// # // bbqueue test shim!
+    /// # // PubSubState test shim!
     /// # fn bbqtest() {
-    /// use bbqueue::{BBQueue, StaticBufferProvider};
+    /// use PubSubState::{PubSubState, StaticBufferProvider};
     ///
     /// // Create and split a new buffer of 6 elements
-    /// let buffer: BBQueue<StaticBufferProvider<6>> = BBQueue::new_static();
+    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
     /// let (mut prod, mut cons) = buffer.try_split().unwrap();
     ///
     /// // Successfully obtain and commit a grant of four bytes
@@ -212,7 +353,7 @@ impl<'a> GrantR<'a> {
     /// let mut buf = [0u8; 4];
     /// buf.copy_from_slice(grant.buf());
     /// assert_eq!(&buf, &[1, 2, 3, 4]);
-    /// # // bbqueue test shim!
+    /// # // PubSubState test shim!
     /// # }
     /// #
     /// # fn main() {
@@ -244,28 +385,30 @@ impl<'a> GrantR<'a> {
     /// Additionally, you must ensure that a separate reference to this data is not created
     /// to this data, e.g. using `Deref` or the `buf()` method of this grant.
     pub unsafe fn as_static_buf(&self) -> &'static [u8] {
-        core::mem::transmute::<&[u8], &'static [u8]>(self.buf)
+        transmute::<&[u8], &'static [u8]>(self.buf)
     }
 
     #[inline(always)]
     pub(crate) fn release_inner(&mut self, used: usize) {
-        let inner = unsafe { &self.bbq.as_ref() };
+        self.channel.lock(|channel| {
+            let mut inner = channel.borrow_mut();
 
-        // If there is no grant in progress, return early. This
-        // generally means we are dropping the grant within a
-        // wrapper structure
-        if !inner.read_in_progress.load(Acquire) {
-            return;
-        }
+            // If there is no grant in progress, return early. This
+            // generally means we are dropping the grant within a
+            // wrapper structure
+            if !inner.read_in_progress {
+                return;
+            }
 
-        // This should always be checked by the public interfaces
-        debug_assert!(used <= self.buf.len());
+            // This should always be checked by the public interfaces
+            debug_assert!(used <= self.buf.len());
 
-        // This should be fine, purely incrementing
-        let _ = atomic::fetch_add(&inner.read, used, Release);
+            // This should be fine, purely incrementing
+            inner.read += used;
 
-        inner.read_in_progress.store(false, Release);
-        unsafe { self.bbq.as_mut().write_waker.wake() };
+            inner.read_in_progress = false;
+            inner.publisher_waker.wake();
+        })
     }
 
     /// Configures the amount of bytes to be released on drop.
@@ -274,7 +417,10 @@ impl<'a> GrantR<'a> {
     }
 }
 
-impl<'a> SplitGrantR<'a> {
+impl<'a, B, const SUBS: usize> SplitGrantR<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
     /// Release a sequence of bytes from the buffer, allowing the space
     /// to be used by later writes. This consumes the grant.
     ///
@@ -288,18 +434,18 @@ impl<'a> SplitGrantR<'a> {
         let used = min(self.combined_len(), used);
 
         self.release_inner(used);
-        core::mem::forget(self);
+        forget(self);
     }
 
     /// Obtain access to both inner buffers for reading
     ///
     /// ```
-    /// # // bbqueue test shim!
+    /// # // PubSubState test shim!
     /// # fn bbqtest() {
-    /// use bbqueue::{BBQueue, StaticBufferProvider};
+    /// use PubSubState::{PubSubState, StaticBufferProvider};
     ///
     /// // Create and split a new buffer of 6 elements
-    /// let buffer: BBQueue<StaticBufferProvider<6>> = BBQueue::new_static();
+    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
     /// let (mut prod, mut cons) = buffer.try_split().unwrap();
     ///
     /// // Successfully obtain and commit a grant of four bytes
@@ -312,7 +458,7 @@ impl<'a> SplitGrantR<'a> {
     /// let mut buf = [0u8; 4];
     /// buf.copy_from_slice(grant.buf());
     /// assert_eq!(&buf, &[1, 2, 3, 4]);
-    /// # // bbqueue test shim!
+    /// # // PubSubState test shim!
     /// # }
     /// #
     /// # fn main() {
@@ -334,27 +480,29 @@ impl<'a> SplitGrantR<'a> {
 
     #[inline(always)]
     pub(crate) fn release_inner(&mut self, used: usize) {
-        let inner = unsafe { &self.bbq.as_ref() };
+        self.channel.lock(|channel| {
+            let mut inner = channel.borrow_mut();
 
-        // If there is no grant in progress, return early. This
-        // generally means we are dropping the grant within a
-        // wrapper structure
-        if !inner.read_in_progress.load(Acquire) {
-            return;
-        }
+            // If there is no grant in progress, return early. This
+            // generally means we are dropping the grant within a
+            // wrapper structure
+            if !inner.read_in_progress {
+                return;
+            }
 
-        // This should always be checked by the public interfaces
-        debug_assert!(used <= self.combined_len());
+            // This should always be checked by the public interfaces
+            debug_assert!(used <= self.combined_len());
 
-        if used <= self.buf1.len() {
-            // This should be fine, purely incrementing
-            let _ = atomic::fetch_add(&inner.read, used, Release);
-        } else {
-            // Also release parts of the second buffer
-            inner.read.store(used - self.buf1.len(), Release);
-        }
+            if used <= self.buf1.len() {
+                // This should be fine, purely incrementing
+                inner.read += used;
+            } else {
+                // Also release parts of the second buffer
+                inner.read = used - self.buf1.len();
+            }
 
-        inner.read_in_progress.store(false, Release);
+            inner.read_in_progress = false;
+        })
     }
 
     /// Configures the amount of bytes to be released on drop.
@@ -368,19 +516,28 @@ impl<'a> SplitGrantR<'a> {
     }
 }
 
-impl<'a> Drop for GrantR<'a> {
+impl<'a, B, const SUBS: usize> Drop for GrantR<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
     fn drop(&mut self) {
         self.release_inner(self.to_release)
     }
 }
 
-impl<'a> Drop for SplitGrantR<'a> {
+impl<'a, B, const SUBS: usize> Drop for SplitGrantR<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
     fn drop(&mut self) {
         self.release_inner(self.to_release)
     }
 }
 
-impl<'a> Deref for GrantR<'a> {
+impl<'a, B, const SUBS: usize> Deref for GrantR<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -388,52 +545,11 @@ impl<'a> Deref for GrantR<'a> {
     }
 }
 
-impl<'a> DerefMut for GrantR<'a> {
+impl<'a, B, const SUBS: usize> DerefMut for GrantR<'a, B, SUBS>
+where
+    B: BufferProvider,
+{
     fn deref_mut(&mut self) -> &mut [u8] {
         self.buf
-    }
-}
-
-/// Future returned [Consumer::read_async]
-pub struct GrantReadFuture<'a, 'b> {
-    cons: &'b mut Consumer<'a>,
-}
-
-impl<'a, 'b> Future for GrantReadFuture<'a, 'b> {
-    type Output = Result<GrantR<'a>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.cons.read() {
-            Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(e) => match e {
-                Error::InsufficientSize | Error::GrantInProgress => {
-                    unsafe { self.cons.bbq.as_mut().read_waker.set(cx.waker()) };
-                    Poll::Pending
-                }
-                _ => Poll::Ready(Err(e)),
-            },
-        }
-    }
-}
-
-/// Future returned [Consumer::split_read_async]
-pub struct GrantSplitReadFuture<'a, 'b> {
-    cons: &'b mut Consumer<'a>,
-}
-
-impl<'a, 'b> Future for GrantSplitReadFuture<'a, 'b> {
-    type Output = Result<SplitGrantR<'a>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.cons.split_read() {
-            Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(e) => match e {
-                Error::InsufficientSize | Error::GrantInProgress => {
-                    unsafe { self.cons.bbq.as_mut().read_waker.set(cx.waker()) };
-                    Poll::Pending
-                }
-                _ => Poll::Ready(Err(e)),
-            },
-        }
     }
 }
