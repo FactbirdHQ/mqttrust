@@ -5,7 +5,7 @@ use core::pin::Pin;
 use core::slice::from_raw_parts_mut;
 use core::task::{Context, Poll};
 
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use futures::Future;
 
@@ -35,20 +35,25 @@ use super::{state::PubSubState, BufferProvider, Error, Result};
 ///
 /// See [this github issue](https://github.com/jamesmunns/PubSubState/issues/38) for a
 /// discussion of grant methods that could be added in the future.
-pub struct Publisher<'a, B, const SUBS: usize>
+pub struct Publisher<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
+    channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>,
 }
 
-unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for Publisher<'a, B, SUBS> {}
+unsafe impl<'a, M: RawMutex, B: BufferProvider, const SUBS: usize> Send
+    for Publisher<'a, M, B, SUBS>
+{
+}
 
-impl<'a, B, const SUBS: usize> Publisher<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Publisher<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>) -> Self {
+    pub(super) fn new(channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>) -> Self {
         Self { channel }
     }
 
@@ -84,7 +89,7 @@ where
     /// # channeltest();
     /// # }
     /// ```
-    pub fn grant_exact(&mut self, sz: usize) -> Result<GrantW<'a, B, SUBS>> {
+    pub fn grant_exact(&mut self, sz: usize) -> Result<GrantW<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
             if inner.write_in_progress {
@@ -183,7 +188,7 @@ where
     /// # channeltest();
     /// # }
     /// ```
-    pub fn grant_max_remaining(&mut self, mut sz: usize) -> Result<GrantW<'a, B, SUBS>> {
+    pub fn grant_max_remaining(&mut self, mut sz: usize) -> Result<GrantW<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
 
@@ -261,7 +266,7 @@ where
     ///              Write pointer
     /// We cannot request a size of size 7, since we would loop over the read pointer
     /// even if the buffer is empty. In this case, an error is returned
-    pub fn grant_exact_async(&'_ mut self, sz: usize) -> GrantExactFuture<'a, '_, B, SUBS> {
+    pub fn grant_exact_async(&'_ mut self, sz: usize) -> GrantExactFuture<'a, '_, M, B, SUBS> {
         GrantExactFuture {
             publisher: self,
             sz,
@@ -273,7 +278,7 @@ where
     pub fn grant_max_remaining_async(
         &'_ mut self,
         sz: usize,
-    ) -> GrantMaxRemainingFuture<'a, '_, B, SUBS> {
+    ) -> GrantMaxRemainingFuture<'a, '_, M, B, SUBS> {
         GrantMaxRemainingFuture {
             publisher: self,
             sz,
@@ -281,14 +286,15 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Drop for Publisher<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for Publisher<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
-            inner.unregister_publisher();
+            inner.publisher_taken = false;
         })
     }
 }
@@ -303,19 +309,21 @@ where
 ///
 /// If the `thumbv6` feature is selected, dropping the grant
 /// without committing it takes a short critical section,
-pub struct GrantW<'a, B, const SUBS: usize>
+pub struct GrantW<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     pub(crate) buf: &'a mut [u8],
-    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
+    channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>,
     pub(crate) to_commit: usize,
 }
 
-unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for GrantW<'a, B, SUBS> {}
+unsafe impl<'a, M: RawMutex, B: BufferProvider, const SUBS: usize> Send for GrantW<'a, M, B, SUBS> {}
 
-impl<'a, B, const SUBS: usize> GrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> GrantW<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     /// Finalizes a writable grant given by `grant()` or `grant_max()`.
@@ -434,8 +442,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Drop for GrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for GrantW<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
@@ -443,8 +452,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Deref for GrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Deref for GrantW<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -454,8 +464,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> DerefMut for GrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> DerefMut for GrantW<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
@@ -464,19 +475,21 @@ where
 }
 
 /// Future returned [Publisher::grant_exact_async]
-pub struct GrantExactFuture<'a, 'b, B, const SUBS: usize>
+pub struct GrantExactFuture<'a, 'b, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    publisher: &'b mut Publisher<'a, B, SUBS>,
+    publisher: &'b mut Publisher<'a, M, B, SUBS>,
     sz: usize,
 }
 
-impl<'a, 'b, B, const SUBS: usize> Future for GrantExactFuture<'a, 'b, B, SUBS>
+impl<'a, 'b, M, B, const SUBS: usize> Future for GrantExactFuture<'a, 'b, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<GrantW<'a, B, SUBS>>;
+    type Output = Result<GrantW<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Check if it's event  possible to get the requested size
@@ -514,22 +527,27 @@ where
     }
 }
 
-impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantExactFuture<'a, 'b, B, SUBS> {}
+impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
+    for GrantExactFuture<'a, 'b, M, B, SUBS>
+{
+}
 
 /// Future returned [Publisher::grant_max_remaining_async]
-pub struct GrantMaxRemainingFuture<'a, 'b, B, const SUBS: usize>
+pub struct GrantMaxRemainingFuture<'a, 'b, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    publisher: &'b mut Publisher<'a, B, SUBS>,
+    publisher: &'b mut Publisher<'a, M, B, SUBS>,
     sz: usize,
 }
 
-impl<'a, 'b, B, const SUBS: usize> Future for GrantMaxRemainingFuture<'a, 'b, B, SUBS>
+impl<'a, 'b, M, B, const SUBS: usize> Future for GrantMaxRemainingFuture<'a, 'b, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<GrantW<'a, B, SUBS>>;
+    type Output = Result<GrantW<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let sz = self.sz;
@@ -550,4 +568,7 @@ where
     }
 }
 
-impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantMaxRemainingFuture<'a, 'b, B, SUBS> {}
+impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
+    for GrantMaxRemainingFuture<'a, 'b, M, B, SUBS>
+{
+}

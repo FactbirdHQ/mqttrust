@@ -1,0 +1,72 @@
+[package]
+name = "embedded-mqtt-examples-rpi-pico"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-mqtt = { path = "../../" }
+embassy-executor = { version = "0.1.0",  features = ["defmt", "integrated-timers", "nightly"] }
+embassy-time = { version = "0.1.0",  features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-rp = { version = "0.1.0",  features = ["defmt", "unstable-traits", "nightly", "unstable-pac", "time-driver"] }
+embassy-futures = { version = "0.1.0" }
+embassy-sync = { version = "0.3.0" }
+atomic-polyfill = "1.0.2"
+
+static_cell = { version = "1.1", features = ["nightly"] }
+defmt = "0.3.4"
+defmt-rtt = "0.3"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+cortex-m = { version = "0.7.6", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.0"
+futures = { version = "0.3.17", default-features = false, features = ["async-await", "cfg-target-has-atomic", "unstable"] }
+
+embedded-io-async = { version = "0.5.0" }
+heapless = "0.7.15"
+
+
+[patch.crates-io]
+# embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "03d6363d5af5dcaf21b52734994a466ca593d2b6" }
+# embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "03d6363d5af5dcaf21b52734994a466ca593d2b6" }
+# embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "03d6363d5af5dcaf21b52734994a466ca593d2b6" }
+# embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "03d6363d5af5dcaf21b52734994a466ca593d2b6" }
+# embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "03d6363d5af5dcaf21b52734994a466ca593d2b6" }
+# embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "03d6363d5af5dcaf21b52734994a466ca593d2b6" }
+
+
+embassy-executor = { path = "../../../embassy/embassy-executor" }
+embassy-hal-internal = { path = "../../../embassy/embassy-hal-internal" }
+embassy-time = { path = "../../../embassy/embassy-time" }
+embassy-futures = { path = "../../../embassy/embassy-futures" }
+# embassy-sync = { path = "../../../embassy/embassy-sync" }
+embassy-rp = { path = "../../../embassy/embassy-rp" }
+
+[profile.dev]
+debug = 2
+debug-assertions = true
+opt-level = 1
+overflow-checks = true
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 'z'
+overflow-checks = false
+
+# do not optimize proc-macro crates = faster builds from scratch
+[profile.dev.build-override]
+codegen-units = 8
+debug = false
+debug-assertions = false
+opt-level = 0
+overflow-checks = false
+
+[profile.release.build-override]
+codegen-units = 8
+debug = false
+debug-assertions = false
+opt-level = 0
+overflow-checks = false

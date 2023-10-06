@@ -14,17 +14,18 @@
 //! use bbqueue::{BBQueue, StaticBufferProvider};
 //!
 //! let mut bb: BBQueue<StaticBufferProvider<1000>> = BBQueue::new_static();
-//! let (mut prod, mut cons) = bb.try_split_framed().unwrap();
+//! let mut publisher = pubsub.framed_publisher().unwrap();
+//! let mut subscriber = pubsub.framed_subscriber().unwrap();
 //!
 //! // One frame in, one frame out
-//! let mut wgrant = prod.grant(128).unwrap();
+//! let mut wgrant = publisher.grant(128).unwrap();
 //! assert_eq!(wgrant.len(), 128);
 //! for (idx, i) in wgrant.iter_mut().enumerate() {
 //!     *i = idx as u8;
 //! }
 //! wgrant.commit(128);
 //!
-//! let rgrant = cons.read().unwrap();
+//! let rgrant = subscriber.read().unwrap();
 //! assert_eq!(rgrant.len(), 128);
 //! for (idx, i) in rgrant.iter().enumerate() {
 //!     assert_eq!(*i, idx as u8);
@@ -70,7 +71,7 @@
 //! | (2^56)..(2^64)        | 9                    |
 //!
 
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 
 use super::state::PubSubState;
@@ -88,18 +89,20 @@ use core::{
 };
 
 /// A Publisher of Framed data
-pub struct FramePublisher<'a, B, const SUBS: usize>
+pub struct FramePublisher<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) publisher: Publisher<'a, B, SUBS>,
+    pub(crate) publisher: Publisher<'a, M, B, SUBS>,
 }
 
-impl<'a, B, const SUBS: usize> FramePublisher<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FramePublisher<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>) -> Self {
+    pub(super) fn new(channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>) -> Self {
         Self {
             publisher: Publisher::new(channel),
         }
@@ -109,7 +112,7 @@ where
     ///
     /// This size does not include the size of the frame header. The exact size
     /// of the frame can be set on `commit`.
-    pub fn grant(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, B, SUBS>> {
+    pub fn grant(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, M, B, SUBS>> {
         let hdr_len = encoded_len(max_sz);
         Ok(FrameGrantW {
             grant_w: self.publisher.grant_exact(max_sz + hdr_len)?,
@@ -118,7 +121,7 @@ where
     }
 
     /// Async version of [Self::grant]
-    pub async fn grant_async(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, B, SUBS>> {
+    pub async fn grant_async(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, M, B, SUBS>> {
         let hdr_len = encoded_len(max_sz);
         Ok(FrameGrantW {
             grant_w: self.publisher.grant_exact_async(max_sz + hdr_len).await?,
@@ -128,28 +131,27 @@ where
 }
 
 /// A Subscriber of Framed data
-pub struct FrameSubscriber<'a, B, const SUBS: usize>
+pub struct FrameSubscriber<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) subscriber: Subscriber<'a, B, SUBS>,
+    pub(crate) subscriber: Subscriber<'a, M, B, SUBS>,
 }
 
-impl<'a, B, const SUBS: usize> FrameSubscriber<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FrameSubscriber<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(
-        next_message_id: u64,
-        channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
-    ) -> Self {
+    pub(super) fn new(channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>) -> Self {
         Self {
-            subscriber: Subscriber::new(next_message_id, channel),
+            subscriber: Subscriber::new(channel),
         }
     }
 
     /// Obtain the next available frame, if any
-    pub fn read(&mut self) -> Option<FrameGrantR<'a, B, SUBS>> {
+    pub fn read(&mut self) -> Option<FrameGrantR<'a, M, B, SUBS>> {
         // Get all available bytes. We never wrap a frame around,
         // so if a header is available, the whole frame will be.
         let mut grant_r = self.subscriber.read().ok()?;
@@ -175,7 +177,7 @@ where
     }
 
     /// Async version of [Self::read]
-    pub async fn read_async(&mut self) -> Result<FrameGrantR<'a, B, SUBS>> {
+    pub async fn read_async(&mut self) -> Result<FrameGrantR<'a, M, B, SUBS>> {
         // Get all available bytes. We never wrap a frame around,
         // so if a header is available, the whole frame will be.
         let mut grant_r = self.subscriber.read_async().await?;
@@ -206,11 +208,12 @@ where
 /// NOTE: If the grant is dropped without explicitly commiting
 /// the contents without first calling `to_commit()`, then no
 /// frame will be comitted for writing.
-pub struct FrameGrantW<'a, B, const SUBS: usize>
+pub struct FrameGrantW<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    grant_w: GrantW<'a, B, SUBS>,
+    grant_w: GrantW<'a, M, B, SUBS>,
     hdr_len: u8,
 }
 
@@ -218,16 +221,18 @@ where
 ///
 /// NOTE: If the grant is dropped without explicitly releasing
 /// the contents, then no frame will be released.
-pub struct FrameGrantR<'a, B, const SUBS: usize>
+pub struct FrameGrantR<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    grant_r: GrantR<'a, B, SUBS>,
-    hdr_len: u8,
+    pub(crate) grant_r: GrantR<'a, M, B, SUBS>,
+    pub(crate) hdr_len: u8,
 }
 
-impl<'a, B, const SUBS: usize> Deref for FrameGrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Deref for FrameGrantW<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -237,8 +242,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> DerefMut for FrameGrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> DerefMut for FrameGrantW<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
@@ -246,8 +252,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Deref for FrameGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Deref for FrameGrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -257,8 +264,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> DerefMut for FrameGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> DerefMut for FrameGrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
@@ -266,8 +274,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> FrameGrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FrameGrantW<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     /// Commit a frame to make it available to the Subscriber half.
@@ -306,8 +315,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> FrameGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FrameGrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     /// Release a frame to make the space available for future writing
@@ -324,5 +334,363 @@ where
     pub fn auto_release(&mut self, is_auto: bool) {
         self.grant_r
             .to_release(if is_auto { self.grant_r.len() } else { 0 });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use embassy_futures::block_on;
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+
+    use crate::pubsub::{PubSubChannel, StaticBufferProvider};
+
+    #[test]
+    fn frame_wrong_size() {
+        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+            PubSubChannel::new_static();
+        let mut publisher = pubsub.framed_publisher().unwrap();
+        let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+        // Create largeish grants
+        let mut wgr = publisher.grant(127).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        // Note: In debug mode, this hits a debug_assert
+        wgr.commit(256);
+
+        let rgr = subscriber.read().unwrap();
+        assert_eq!(rgr.len(), 127);
+        for (i, by) in rgr.iter().enumerate() {
+            assert_eq!((i as u8), *by);
+        }
+        rgr.release();
+    }
+
+    #[test]
+    fn full_size() {
+        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+            PubSubChannel::new_static();
+        let mut publisher = pubsub.framed_publisher().unwrap();
+        let mut subscriber = pubsub.framed_subscriber().unwrap();
+        let mut ctr = 0;
+
+        for _ in 0..10_000 {
+            // Create largeish grants
+            if let Ok(mut wgr) = publisher.grant(127) {
+                ctr += 1;
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
+                }
+                wgr.commit(127);
+
+                let rgr = subscriber.read().unwrap();
+                assert_eq!(rgr.len(), 127);
+                for (i, by) in rgr.iter().enumerate() {
+                    assert_eq!((i as u8), *by);
+                }
+                rgr.release();
+            } else {
+                // Create smallish grants
+                let mut wgr = publisher.grant(1).unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
+                }
+                wgr.commit(1);
+
+                let rgr = subscriber.read().unwrap();
+                assert_eq!(rgr.len(), 1);
+                for (i, by) in rgr.iter().enumerate() {
+                    assert_eq!((i as u8), *by);
+                }
+                rgr.release();
+            };
+        }
+
+        assert!(ctr > 1);
+    }
+
+    #[test]
+    fn frame_overcommit() {
+        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+            PubSubChannel::new_static();
+        let mut publisher = pubsub.framed_publisher().unwrap();
+        let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+        // Create largeish grants
+        let mut wgr = publisher.grant(128).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        wgr.commit(255);
+
+        let mut wgr = publisher.grant(64).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = (i as u8) + 128;
+        }
+        wgr.commit(127);
+
+        let rgr = subscriber.read().unwrap();
+        assert_eq!(rgr.len(), 128);
+        rgr.release();
+
+        let rgr = subscriber.read().unwrap();
+        assert_eq!(rgr.len(), 64);
+        rgr.release();
+    }
+
+    #[test]
+    fn frame_undercommit() {
+        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<512>, 1> =
+            PubSubChannel::new_static();
+
+        let mut publisher = pubsub.framed_publisher().unwrap();
+        let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+        for _ in 0..100_000 {
+            // Create largeish grants
+            let mut wgr = publisher.grant(128).unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = i as u8;
+            }
+            wgr.commit(13);
+
+            let mut wgr = publisher.grant(64).unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = (i as u8) + 128;
+            }
+            wgr.commit(7);
+
+            let mut wgr = publisher.grant(32).unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = (i as u8) + 192;
+            }
+            wgr.commit(0);
+
+            let rgr = subscriber.read().unwrap();
+            assert_eq!(rgr.len(), 13);
+            rgr.release();
+
+            let rgr = subscriber.read().unwrap();
+            assert_eq!(rgr.len(), 7);
+            rgr.release();
+
+            let rgr = subscriber.read().unwrap();
+            assert_eq!(rgr.len(), 0);
+            rgr.release();
+        }
+    }
+
+    #[test]
+    fn frame_auto_commit_release() {
+        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+            PubSubChannel::new_static();
+        let mut publisher = pubsub.framed_publisher().unwrap();
+        let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+        for _ in 0..100 {
+            {
+                let mut wgr = publisher.grant(64).unwrap();
+                wgr.to_commit(64);
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
+                }
+                // drop
+            }
+
+            {
+                let mut rgr = subscriber.read().unwrap();
+                rgr.auto_release(true);
+                let rgr = rgr;
+
+                for (i, by) in rgr.iter().enumerate() {
+                    assert_eq!(*by, i as u8);
+                }
+                assert_eq!(rgr.len(), 64);
+                // drop
+            }
+        }
+
+        assert!(subscriber.read().is_none());
+    }
+
+    #[test]
+    fn async_frame_wrong_size() {
+        block_on(async {
+            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+                PubSubChannel::new_static();
+            let mut publisher = pubsub.framed_publisher().unwrap();
+            let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+            // Create largeish grants
+            let mut wgr = publisher.grant_async(127).await.unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = i as u8;
+            }
+            // Note: In debug mode, this hits a debug_assert
+            wgr.commit(256);
+
+            let rgr = subscriber.read_async().await.unwrap();
+            assert_eq!(rgr.len(), 127);
+            for (i, by) in rgr.iter().enumerate() {
+                assert_eq!((i as u8), *by);
+            }
+            rgr.release();
+        });
+    }
+
+    #[test]
+    fn async_full_size() {
+        block_on(async {
+            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+                PubSubChannel::new_static();
+            let mut publisher = pubsub.framed_publisher().unwrap();
+            let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+            let mut ctr = 0;
+
+            for _ in 0..10_000 {
+                // Create largeish grants
+                if let Ok(mut wgr) = publisher.grant_async(127).await {
+                    ctr += 1;
+                    for (i, by) in wgr.iter_mut().enumerate() {
+                        *by = i as u8;
+                    }
+                    wgr.commit(127);
+
+                    let rgr = subscriber.read_async().await.unwrap();
+                    assert_eq!(rgr.len(), 127);
+                    for (i, by) in rgr.iter().enumerate() {
+                        assert_eq!((i as u8), *by);
+                    }
+                    rgr.release();
+                } else {
+                    // Create smallish grants
+                    let mut wgr = publisher.grant_async(1).await.unwrap();
+                    for (i, by) in wgr.iter_mut().enumerate() {
+                        *by = i as u8;
+                    }
+                    wgr.commit(1);
+
+                    let rgr = subscriber.read_async().await.unwrap();
+                    assert_eq!(rgr.len(), 1);
+                    for (i, by) in rgr.iter().enumerate() {
+                        assert_eq!((i as u8), *by);
+                    }
+                    rgr.release();
+                };
+            }
+
+            assert!(ctr > 1);
+        });
+    }
+
+    #[test]
+    fn async_frame_overcommit() {
+        block_on(async {
+            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+                PubSubChannel::new_static();
+            let mut publisher = pubsub.framed_publisher().unwrap();
+            let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+            // Create largeish grants
+            let mut wgr = publisher.grant_async(128).await.unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = i as u8;
+            }
+            wgr.commit(255);
+
+            let mut wgr = publisher.grant_async(64).await.unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = (i as u8) + 128;
+            }
+            wgr.commit(127);
+
+            let rgr = subscriber.read_async().await.unwrap();
+            assert_eq!(rgr.len(), 128);
+            rgr.release();
+
+            let rgr = subscriber.read_async().await.unwrap();
+            assert_eq!(rgr.len(), 64);
+            rgr.release();
+        });
+    }
+
+    #[test]
+    fn async_frame_undercommit() {
+        block_on(async {
+            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<512>, 1> =
+                PubSubChannel::new_static();
+            let mut publisher = pubsub.framed_publisher().unwrap();
+            let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+            for _ in 0..100_000 {
+                // Create largeish grants
+                let mut wgr = publisher.grant_async(128).await.unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
+                }
+                wgr.commit(13);
+
+                let mut wgr = publisher.grant_async(64).await.unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = (i as u8) + 128;
+                }
+                wgr.commit(7);
+
+                let mut wgr = publisher.grant_async(32).await.unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = (i as u8) + 192;
+                }
+                wgr.commit(0);
+
+                let rgr = subscriber.read_async().await.unwrap();
+                assert_eq!(rgr.len(), 13);
+                rgr.release();
+
+                let rgr = subscriber.read_async().await.unwrap();
+                assert_eq!(rgr.len(), 7);
+                rgr.release();
+
+                let rgr = subscriber.read_async().await.unwrap();
+                assert_eq!(rgr.len(), 0);
+                rgr.release();
+            }
+        });
+    }
+
+    #[test]
+    fn async_frame_auto_commit_release() {
+        block_on(async {
+            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
+                PubSubChannel::new_static();
+            let mut publisher = pubsub.framed_publisher().unwrap();
+            let mut subscriber = pubsub.framed_subscriber().unwrap();
+
+            for _ in 0..100 {
+                {
+                    let mut wgr = publisher.grant_async(64).await.unwrap();
+                    wgr.to_commit(64);
+                    for (i, by) in wgr.iter_mut().enumerate() {
+                        *by = i as u8;
+                    }
+                    // drop
+                }
+
+                {
+                    let mut rgr = subscriber.read_async().await.unwrap();
+                    rgr.auto_release(true);
+                    let rgr = rgr;
+
+                    for (i, by) in rgr.iter().enumerate() {
+                        assert_eq!(*by, i as u8);
+                    }
+                    assert_eq!(rgr.len(), 64);
+                    // drop
+                }
+            }
+
+            assert!(subscriber.read().is_none());
+        });
     }
 }

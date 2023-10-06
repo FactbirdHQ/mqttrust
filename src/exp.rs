@@ -2,53 +2,32 @@ use core::{
     cell::RefCell,
     future::poll_fn,
     mem::MaybeUninit,
+    ops::Deref,
     sync::atomic::{AtomicU16, Ordering},
     task::Poll,
 };
 
-use bbqueue::{
-    framed::{FrameConsumer, FrameProducer},
-    BBQueue, SliceBufferProvider,
-};
 use embassy_futures::select::{select3, Either3};
-use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex, waitqueue::WakerRegistration};
+use embassy_sync::{
+    blocking_mutex::raw::{NoopRawMutex, RawMutex},
+    mutex::Mutex,
+    waitqueue::WakerRegistration,
+};
 use serde::Serialize;
 
 use crate::{
-    de::packet_header::PacketHeader,
     message_types::ControlPacket,
     packets::{Pub, Subscribe},
     publication::ToPayload,
-    pubsub::{PubSubChannel, Publisher, Subscriber},
-    ring_buffer::RingBuffer,
+    pubsub::{
+        framed::{FrameGrantR, FramePublisher, FrameSubscriber},
+        GrantR, PubSubChannel, Publisher, SliceBufferProvider, Subscriber,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Todo,
-}
-
-struct MqttBuffer<'a>(RingBuffer<'a>);
-
-impl<'a> MqttBuffer<'a> {
-    pub fn new(buf: &'a mut [u8]) -> Self {
-        Self(RingBuffer::new(buf))
-    }
-
-    pub(crate) fn write_packet<P: serde::Serialize + ControlPacket>(
-        &mut self,
-        packet: &P,
-    ) -> Result<usize, Error> {
-        let buf = self.0.push_buf();
-        let (offset, message) = crate::ser::MqttSerializer::to_buffer_meta(buf, packet).unwrap();
-        let len = offset + message.len();
-        self.0.push(len);
-        Ok(len)
-    }
-
-    pub(crate) fn packet(&self) -> Option<PacketHeader<'_>> {
-        PacketHeader::from_buffer(&self.0.buf()).ok()
-    }
 }
 
 pub struct Pid(AtomicU16);
@@ -59,15 +38,16 @@ impl Pid {
     }
 
     pub fn next(&mut self) -> u16 {
-        self.0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
-                if prev == u16::MAX {
-                    Some(1)
-                } else {
-                    Some(prev + 1)
-                }
-            })
-            .unwrap()
+        0
+        // self.0
+        //     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
+        //         if prev == u16::MAX {
+        //             Some(1)
+        //         } else {
+        //             Some(prev + 1)
+        //         }
+        //     })
+        //     .unwrap()
     }
 }
 
@@ -96,8 +76,8 @@ pub enum ConnectionState {
 }
 
 struct StateInner<'a, M: RawMutex> {
-    tx: BBQueue<SliceBufferProvider<'a>>,
-    subscriptions: PubSubChannel<crate::pubsub::SliceBufferProvider<'a>, SUBS>,
+    tx: PubSubChannel<NoopRawMutex, SliceBufferProvider<'a>, 1>,
+    rx_pubsub: PubSubChannel<NoopRawMutex, SliceBufferProvider<'a>, SUBS>,
     shared: Mutex<M, RefCell<Shared>>,
 }
 
@@ -110,8 +90,8 @@ pub struct Shared {
 
 pub struct MqttStack<'a, M: RawMutex> {
     shared: &'a Mutex<M, RefCell<Shared>>,
-    tx_consumer: RefCell<FrameConsumer<'a, SliceBufferProvider<'a>>>,
-    rx_producer: RefCell<Publisher<'a, crate::pubsub::SliceBufferProvider<'a>, SUBS>>,
+    tx_subscriber: RefCell<FrameSubscriber<'a, NoopRawMutex, SliceBufferProvider<'a>, 1>>,
+    rx_publisher: RefCell<FramePublisher<'a, NoopRawMutex, SliceBufferProvider<'a>, SUBS>>,
     // MqttStack should hold an RX buffer just big enough to hold a single
     // packet header + `MAX_TOPIC_LEN`, in order for it to handle `ACK`,
     // `PING`, and route incoming `PUBLISH` messages to a subscriber.
@@ -124,13 +104,13 @@ pub struct MqttStack<'a, M: RawMutex> {
 impl<'a, M: RawMutex> MqttStack<'a, M> {
     pub async fn run(&self) -> ! {
         loop {
-            let mut tx_consumer = self.tx_consumer.borrow_mut();
+            let mut tx_subscriber = self.tx_subscriber.borrow_mut();
 
             let rx_fut = async {
                 // self.network.read(&mut self.rx).await
             };
 
-            let tx_fut = tx_consumer.read_async();
+            let tx_fut = tx_subscriber.read_async();
 
             let ping_fut = async {};
 
@@ -170,17 +150,17 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 }
 
 pub struct MqttClient<'a, M: RawMutex> {
-    tx_producer: Mutex<M, RefCell<FrameProducer<'a, SliceBufferProvider<'a>>>>,
+    tx_publisher: Mutex<M, RefCell<FramePublisher<'a, NoopRawMutex, SliceBufferProvider<'a>, 1>>>,
     shared: &'a Mutex<M, RefCell<Shared>>,
-    channel: &'a PubSubChannel<crate::pubsub::SliceBufferProvider<'a>, SUBS>,
+    rx_pubsub: &'a PubSubChannel<NoopRawMutex, SliceBufferProvider<'a>, SUBS>,
 }
 
 impl<'a, M: RawMutex> MqttClient<'a, M> {
     async fn send(&self, packet: impl Serialize + ControlPacket) -> Result<u16, Error> {
         let pid = self.shared.lock().await.borrow_mut().next_pid.next();
 
-        // Push the serialized packet into `tx_producer`
-        let tx_prod_ref = self.tx_producer.lock().await;
+        // Push the serialized packet into `tx_publisher`
+        let tx_prod_ref = self.tx_publisher.lock().await;
         let mut tx_prod = tx_prod_ref.borrow_mut();
         // let max_size = packet.len();
         let max_size = 0;
@@ -221,7 +201,10 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
         &self,
         packet: impl Into<Subscribe<'_>>,
     ) -> Result<Subscription<'a>, Error> {
-        let subscriber = self.channel.subscriber().map_err(|_| Error::Todo)?;
+        let subscriber = self
+            .rx_pubsub
+            .framed_subscriber()
+            .map_err(|_| Error::Todo)?;
 
         self.send(packet.into()).await?;
 
@@ -230,7 +213,7 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
 }
 
 pub struct Subscription<'a> {
-    subscriber: Subscriber<'a, crate::pubsub::SliceBufferProvider<'a>, SUBS>,
+    subscriber: FrameSubscriber<'a, NoopRawMutex, SliceBufferProvider<'a>, SUBS>,
 }
 
 impl<'a> futures::Stream for Subscription<'a> {
@@ -241,8 +224,8 @@ impl<'a> futures::Stream for Subscription<'a> {
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         match self.subscriber.read() {
-            Ok(msg) => Poll::Ready(Some(Message(msg))),
-            Err(_) => {
+            Some(msg) => Poll::Ready(Some(Message(msg))),
+            None => {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }
@@ -250,15 +233,15 @@ impl<'a> futures::Stream for Subscription<'a> {
     }
 }
 
-pub struct Message<'a>(crate::pubsub::GrantR<'a, crate::pubsub::SliceBufferProvider<'a>, SUBS>);
+pub struct Message<'a>(FrameGrantR<'a, NoopRawMutex, SliceBufferProvider<'a>, SUBS>);
 
 impl<'a> Message<'a> {
     pub fn topic(&self) -> &str {
-        core::str::from_utf8(&self.0.buf()[..10]).unwrap()
+        core::str::from_utf8(&self.0.deref()[..10]).unwrap()
     }
 
     pub fn payload(&self) -> &[u8] {
-        &self.0.buf()[10..]
+        &self.0.deref()[10..]
     }
 }
 
@@ -272,10 +255,8 @@ pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize>(
         (&mut state.inner as *mut MaybeUninit<StateInner<'static, M>>).cast();
 
     let state = unsafe { &mut *state_uninit }.write(StateInner {
-        tx: BBQueue::new(SliceBufferProvider::new(&mut state.tx[..])),
-        subscriptions: PubSubChannel::new(crate::pubsub::SliceBufferProvider::new(
-            &mut state.rx[..],
-        )),
+        tx: PubSubChannel::new(SliceBufferProvider::new(&mut state.tx[..])),
+        rx_pubsub: PubSubChannel::new(SliceBufferProvider::new(&mut state.rx[..])),
         shared: Mutex::new(RefCell::new(Shared {
             next_pid: Pid::new(),
 
@@ -284,19 +265,17 @@ pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize>(
         })),
     });
 
-    let (tx_producer, tx_consumer) = state.tx.try_split_framed().unwrap();
-
     (
         MqttStack {
-            tx_consumer: RefCell::new(tx_consumer),
-            rx_producer: RefCell::new(state.subscriptions.publisher().unwrap()),
+            tx_subscriber: RefCell::new(state.tx.framed_subscriber().unwrap()),
+            rx_publisher: RefCell::new(state.rx_pubsub.framed_publisher().unwrap()),
             shared: &state.shared,
             rx: [0; 128],
         },
         MqttClient {
-            tx_producer: Mutex::new(RefCell::new(tx_producer)),
+            tx_publisher: Mutex::new(RefCell::new(state.tx.framed_publisher().unwrap())),
             shared: &state.shared,
-            channel: &state.subscriptions,
+            rx_pubsub: &state.rx_pubsub,
         },
     )
 }
@@ -346,11 +325,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_subscribe() {
         // Create the MQTT stack
-        let state = static_cell::make_static!(State::<
-            embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
-            4096,
-            4096,
-        >::new());
+        let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096>::new());
         let (stack, client) = super::new(state);
 
         // Use the MQTT client to subscribe
@@ -406,42 +381,4 @@ mod tests {
 
         embassy_futures::join::join(fut_a, fut_b).await;
     }
-
-    // #[tokio::test]
-    // async fn mqtt_buffer() {
-    //     let mut buf = [0u8; 1024];
-    //     let mut buffer = MqttBuffer::new(&mut buf);
-    //     let subscribe = crate::packets::Subscribe {
-    //         packet_id: 16,
-    //         properties: Properties::Slice(&[]),
-    //         topics: &["ABC".into()],
-    //     };
-
-    //     buffer.write_packet(&subscribe).unwrap();
-    //     // buffer.write_packet(&subscribe).unwrap();
-
-    //     let good_subscribe: [u8; 11] = [
-    //         0x82, // Subscribe request
-    //         0x09, // Remaining length (11)
-    //         0x00, 0x10, // Packet identifier (16)
-    //         0x00, // Property length
-    //         0x00, 0x03, 0x41, 0x42, 0x43, // Topic: ABC
-    //         0x00, // Options byte = 0
-    //     ];
-
-    //     let packet = buffer.iter().next().unwrap();
-
-    //     assert_eq!(packet.message_type(), MessageType::Subscribe);
-    //     // assert_eq!(packet.pid(), Some(16));
-    //     // assert_eq!(packet.len(), 11);
-
-    //     let mut assert_buf = [0u8; 128];
-    //     let len = packet
-    //         .copy_packet(&mut assert_buf, crate::runner::Network)
-    //         .await
-    //         .unwrap();
-
-    //     assert_eq!(packet.len(), len);
-    //     assert_eq!(&assert_buf[..len], good_subscribe);
-    // }
 }

@@ -3,11 +3,14 @@ name = "embedded-mqtt"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = []
+default-members = ["."]
+exclude = ["examples"]
 
 [dependencies]
-embedded-io-async = { version = "0.5" }
-embedded-nal-async = { version = "0.5" }
+embedded-io-async = { version = "0.6" }
+embedded-nal-async = { version = "0.6" }
 serde = { version = "1", features = ["derive"], default-features = false }
 heapless = { version = "0.7", features = ["serde"] }
 varint-rs = {version = "2.2", default-features = false }
@@ -15,11 +18,23 @@ num_enum = { version = "0.7", default-features = false }
 bit_field = { version = "0.10" }
 embassy-sync = { version = "0.3", features = ["nightly"] }
 futures = { version = "0.3.28", default-features = false }
-bbqueue = { git = "https://github.com/xgroleau/bbqueue", rev = "3423b34" }
 embassy-futures = "0.1"
-
 
 [dev-dependencies]
 tokio = { version = "1.32", features = ["rt", "macros"] }
 static_cell = { version = "1.1", features = ["nightly"] }
-embassy-sync = { version = "0.3", features = ["nightly", "std"] }
+critical-section = { version = "1.1", features = ["std"] }
+rand = "0.8.5"
+criterion = "0.5.1"
+crossbeam-utils = "0.8.16"
+crossbeam = "0.8.2"
+log = "0.4"
+env_logger = "0.10"
+embassy-time = { version = "0.1", features = ["std"] }
+native-tls = { version = "^0.2" }
+dns-lookup = "2"
+
+[[bench]]
+name = "benches"
+harness = false
+path = "tests/benches/pubsub.rs"

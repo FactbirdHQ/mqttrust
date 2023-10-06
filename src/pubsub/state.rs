@@ -2,7 +2,7 @@ use core::cell::UnsafeCell;
 
 use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
 
-use super::{BufferProvider, SliceBufferProvider, StaticBufferProvider};
+use super::{BufferProvider, StaticBufferProvider};
 
 pub(crate) struct PubSubState<B, const SUBS: usize>
 where
@@ -44,8 +44,6 @@ where
 
     pub(crate) subscriber_count: usize,
     pub(crate) publisher_taken: bool,
-
-    pub(crate) next_message_id: u64,
 
     /// Write waker for async support
     /// Woken up when a release is done
@@ -112,7 +110,6 @@ where
 
             subscriber_count: 0,
             subscriber_wakers: MultiWakerRegistration::new(),
-            next_message_id: 0,
         }
     }
 
@@ -138,39 +135,6 @@ where
     /// ```
     pub const fn capacity(&self) -> usize {
         self.capacity
-    }
-
-    pub(crate) fn unregister_publisher(&mut self) {
-        self.publisher_taken = false;
-    }
-
-    pub(crate) fn unregister_subscriber(&mut self, subscriber_next_message_id: u64) {
-        self.subscriber_count -= 1;
-
-        // TODO: Is this needed?
-        // All messages that haven't been read yet by this subscriber must have their counter decremented
-        // let start_id = self.next_message_id - self.capacity as u64;
-        // if subscriber_next_message_id >= start_id {
-        //     let current_message_index = (subscriber_next_message_id - start_id) as usize;
-        //     self.buf
-        //         .iter_mut()
-        //         .skip(current_message_index)
-        //         .for_each(|(_, counter)| *counter -= 1);
-
-        //     let mut wake_publishers = false;
-        //     while let Some((_, count)) = self.queue.front() {
-        //         if *count == 0 {
-        //             self.queue.pop_front().unwrap();
-        //             wake_publishers = true;
-        //         } else {
-        //             break;
-        //         }
-        //     }
-
-        //     if wake_publishers {
-        //         self.publisher_waker.wake();
-        //     }
-        // }
     }
 }
 
@@ -227,23 +191,6 @@ impl<const N: usize, const SUBS: usize> PubSubState<StaticBufferProvider<N>, SUB
 
             subscriber_count: 0,
             subscriber_wakers: MultiWakerRegistration::new(),
-            next_message_id: 0,
         }
-    }
-}
-
-impl<'a, const SUBS: usize> PubSubState<SliceBufferProvider<'a>, SUBS> {
-    /// Create a new PubSubState using userspace provided memory in the form of a slice.
-    /// ```rust,no_run
-    /// use PubSubState::{PubSubState, StaticBufferProvider};
-    ///
-    /// fn main() {
-    ///    let mut bb_memory = [0; 6];
-    ///    let mut buf = PubSubState::new_from_slice(&mut bb_memory);
-    ///    let (prod, cons) = buf.try_split().unwrap();
-    /// }
-    /// ```
-    pub fn new_from_slice(buf: &'a mut [u8]) -> Self {
-        Self::new(SliceBufferProvider::new(buf))
     }
 }

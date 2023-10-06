@@ -6,36 +6,33 @@ use core::pin::Pin;
 use core::slice::from_raw_parts_mut;
 use core::task::{Context, Poll};
 
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use futures::Future;
 
 use super::{state::PubSubState, BufferProvider, Error, Result};
 
 /// `Subscriber` is the primary interface for reading data from a `PubSubState`.
-pub struct Subscriber<'a, B, const SUBS: usize>
+pub struct Subscriber<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
-    /// The message id of the next message we are yet to receive
-    next_message_id: u64,
+    channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>,
 }
 
-unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for Subscriber<'a, B, SUBS> {}
+unsafe impl<'a, M: RawMutex, B: BufferProvider, const SUBS: usize> Send
+    for Subscriber<'a, M, B, SUBS>
+{
+}
 
-impl<'a, B, const SUBS: usize> Subscriber<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Subscriber<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(
-        next_message_id: u64,
-        channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
-    ) -> Self {
-        Self {
-            next_message_id,
-            channel,
-        }
+    pub(super) fn new(channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>) -> Self {
+        Self { channel }
     }
 
     /// Obtains a contiguous slice of committed bytes. This slice may not
@@ -68,7 +65,7 @@ where
     /// # bbqtest();
     /// # }
     /// ```
-    pub fn read(&mut self) -> Result<GrantR<'a, B, SUBS>> {
+    pub fn read(&mut self) -> Result<GrantR<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
 
@@ -123,7 +120,7 @@ where
 
     /// Obtains two disjoint slices, which are each contiguous of committed bytes.
     /// Combined these contain all previously commited data.
-    pub fn split_read(&mut self) -> Result<SplitGrantR<'a, B, SUBS>> {
+    pub fn split_read(&mut self) -> Result<SplitGrantR<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
 
@@ -180,42 +177,45 @@ where
 
     /// Async version of [Self::read].
     /// Will wait for the buffer to have data to read. When data is available, the grant is returned.
-    pub fn read_async<'b>(&'b mut self) -> GrantReadFuture<'a, 'b, B, SUBS> {
+    pub fn read_async<'b>(&'b mut self) -> GrantReadFuture<'a, 'b, M, B, SUBS> {
         GrantReadFuture { sub: self }
     }
 
     /// Async version of [Self::split_read].
     /// Will wait just like [Self::read_async], but returns the split grant to obtain all the available data.
-    pub fn split_read_async<'b>(&'b mut self) -> GrantSplitReadFuture<'a, 'b, B, SUBS> {
+    pub fn split_read_async<'b>(&'b mut self) -> GrantSplitReadFuture<'a, 'b, M, B, SUBS> {
         GrantSplitReadFuture { sub: self }
     }
 }
 
-impl<'a, B, const SUBS: usize> Drop for Subscriber<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for Subscriber<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
-            inner.unregister_subscriber(self.next_message_id)
+            inner.subscriber_count -= 1;
         });
     }
 }
 
 /// Future returned [Subscriber::read_async]
-pub struct GrantReadFuture<'a, 'b, B, const SUBS: usize>
+pub struct GrantReadFuture<'a, 'b, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) sub: &'b mut Subscriber<'a, B, SUBS>,
+    pub(crate) sub: &'b mut Subscriber<'a, M, B, SUBS>,
 }
 
-impl<'a, 'b, B, const SUBS: usize> Future for GrantReadFuture<'a, 'b, B, SUBS>
+impl<'a, 'b, M, B, const SUBS: usize> Future for GrantReadFuture<'a, 'b, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<GrantR<'a, B, SUBS>>;
+    type Output = Result<GrantR<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.sub.read() {
@@ -233,21 +233,26 @@ where
     }
 }
 
-impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantReadFuture<'a, 'b, B, SUBS> {}
-
-/// Future returned [Subscriber::split_read_async]
-pub struct GrantSplitReadFuture<'a, 'b, B, const SUBS: usize>
-where
-    B: BufferProvider,
+impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
+    for GrantReadFuture<'a, 'b, M, B, SUBS>
 {
-    pub(crate) sub: &'b mut Subscriber<'a, B, SUBS>,
 }
 
-impl<'a, 'b, B, const SUBS: usize> Future for GrantSplitReadFuture<'a, 'b, B, SUBS>
+/// Future returned [Subscriber::split_read_async]
+pub struct GrantSplitReadFuture<'a, 'b, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<SplitGrantR<'a, B, SUBS>>;
+    pub(crate) sub: &'b mut Subscriber<'a, M, B, SUBS>,
+}
+
+impl<'a, 'b, M, B, const SUBS: usize> Future for GrantSplitReadFuture<'a, 'b, M, B, SUBS>
+where
+    M: RawMutex,
+    B: BufferProvider,
+{
+    type Output = Result<SplitGrantR<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.sub.split_read() {
@@ -265,7 +270,10 @@ where
     }
 }
 
-impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantSplitReadFuture<'a, 'b, B, SUBS> {}
+impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
+    for GrantSplitReadFuture<'a, 'b, M, B, SUBS>
+{
+}
 
 /// A structure representing a contiguous region of memory that
 /// may be read from, and potentially "released" (or cleared)
@@ -279,34 +287,40 @@ impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantSplitReadFutur
 ///
 /// If the `thumbv6` feature is selected, dropping the grant
 /// without releasing it takes a short critical section,
-pub struct GrantR<'a, B, const SUBS: usize>
+pub struct GrantR<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     pub(crate) buf: &'a mut [u8],
-    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
+    pub(crate) channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>,
     pub(crate) to_release: usize,
 }
 
 /// A structure representing up to two contiguous regions of memory that
 /// may be read from, and potentially "released" (or cleared)
 /// from the queue
-pub struct SplitGrantR<'a, B, const SUBS: usize>
+pub struct SplitGrantR<'a, M, B, const SUBS: usize>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     pub(crate) buf1: &'a mut [u8],
     pub(crate) buf2: &'a mut [u8],
-    channel: &'a Mutex<NoopRawMutex, RefCell<PubSubState<B, SUBS>>>,
+    channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>,
     pub(crate) to_release: usize,
 }
 
-unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for GrantR<'a, B, SUBS> {}
+unsafe impl<'a, M: RawMutex, B: BufferProvider, const SUBS: usize> Send for GrantR<'a, M, B, SUBS> {}
 
-unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for SplitGrantR<'a, B, SUBS> {}
+unsafe impl<'a, M: RawMutex, B: BufferProvider, const SUBS: usize> Send
+    for SplitGrantR<'a, M, B, SUBS>
+{
+}
 
-impl<'a, B, const SUBS: usize> GrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> GrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     /// Release a sequence of bytes from the buffer, allowing the space
@@ -417,8 +431,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> SplitGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> SplitGrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     /// Release a sequence of bytes from the buffer, allowing the space
@@ -516,8 +531,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Drop for GrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for GrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
@@ -525,8 +541,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Drop for SplitGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for SplitGrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
@@ -534,8 +551,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Deref for GrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Deref for GrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -545,8 +563,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> DerefMut for GrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> DerefMut for GrantR<'a, M, B, SUBS>
 where
+    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
