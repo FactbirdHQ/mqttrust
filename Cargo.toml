@@ -8,6 +8,11 @@ members = []
 default-members = ["."]
 exclude = ["examples"]
 
+[[bench]]
+name = "benches"
+harness = false
+path = "tests/benches/pubsub.rs"
+
 [dependencies]
 embedded-io-async = { version = "0.6" }
 embedded-nal-async = { version = "0.6" }
@@ -16,9 +21,11 @@ heapless = { version = "0.7", features = ["serde"] }
 varint-rs = {version = "2.2", default-features = false }
 num_enum = { version = "0.7", default-features = false }
 bit_field = { version = "0.10" }
-embassy-sync = { version = "0.3", features = ["nightly"] }
 futures = { version = "0.3.28", default-features = false }
+
+embassy-sync = { version = "0.3", features = ["nightly"] }
 embassy-futures = "0.1"
+embassy-time = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { version = "1.32", features = ["rt", "macros"] }
@@ -34,7 +41,11 @@ embassy-time = { version = "0.1", features = ["std"] }
 native-tls = { version = "^0.2" }
 dns-lookup = "2"
 
-[[bench]]
-name = "benches"
-harness = false
-path = "tests/benches/pubsub.rs"
+[features]
+default = ["mqttv3"]
+
+mqttv3 = []
+mqttv5 = []
+
+qos2 = []
+

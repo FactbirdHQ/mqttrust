@@ -1,7 +1,8 @@
 use crate::reason_codes::ReasonCode;
-use crate::de::Error as DeError;
-use crate::ser::Error as SerError;
+// use crate::de::Error as DeError;
+// use crate::ser::Error as SerError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     EOF,
     StateMismatch,
@@ -28,6 +29,6 @@ pub enum ProtocolError {
     AuthAlreadySpecified,
     WillAlreadySpecified,
     Failed(ReasonCode),
-    Serialization(SerError),
-    Deserialization(DeError),
+    // Serialization(SerError),
+    // Deserialization(DeError),
 }

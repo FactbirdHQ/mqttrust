@@ -1,16 +1,17 @@
 #![feature(type_alias_impl_trait)]
-
+#![feature(async_fn_in_trait)]
 mod common;
+
+use std::net::TcpStream;
 
 use embassy_futures::{join, select};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
-use embedded_mqtt::exp::State;
-use embedded_mqtt::publication::Publication;
-use embedded_mqtt::types::Properties;
-use embedded_mqtt::{packets, QoS};
+use embedded_mqtt::{Config, NamedBroker, State};
 use futures::StreamExt;
 use static_cell::make_static;
+
+use crate::common::network::Network;
 
 const MSG_CNT: u32 = 50;
 
@@ -18,22 +19,23 @@ const MSG_CNT: u32 = 50;
 async fn main() {
     env_logger::init();
 
-    // let mut network = Network::new();
+    let network = Network::new();
 
-    // let client_id = "mqtt_test_client_id";
+    let client_id = "mqtt_test_client_id";
 
     // Create the MQTT stack
-    let state = make_static!(State::<NoopRawMutex, 4096, 4096>::new());
-    let (stack, client) = embedded_mqtt::exp::new(state);
+    let broker = NamedBroker::<&Network<TcpStream>>::new("broker.hivemq.com", &network).unwrap();
+    let config = Config::new(client_id, broker);
 
-    let client = make_static!(client);
+    let state = make_static!(State::<NoopRawMutex, 4096, 4096>::new());
+    let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let subscribe = crate::packets::Subscribe {
         packet_id: 16,
         properties: Properties::Slice(&[]),
         topics: &[
-            "mqttrust/tester/subscriber".into(),
-            "mqttrust/tester/subscriber2".into(),
+            "embedded-mqtt/tester/subscriber".into(),
+            "embedded-mqtt/tester/subscriber2".into(),
         ],
     };
 
@@ -48,7 +50,7 @@ async fn main() {
             client
                 .publish(
                     Publication::new(format!("{{\"count\": {} }}", i).as_bytes())
-                        .topic("mqttrust/tester/subscriber")
+                        .topic("embedded-mqtt/tester/subscriber")
                         .qos(QoS::AtLeastOnce)
                         .finish()
                         .unwrap(),
@@ -62,7 +64,7 @@ async fn main() {
     let subscription_fut = async {
         let mut receive_cnt = 0;
         while let Some(message) = subscription.next().await {
-            if message.topic() == "mqttrust/tester/subscriber" {
+            if message.topic() == "embedded-mqtt/tester/subscriber" {
                 receive_cnt += 1;
             }
             if receive_cnt == MSG_CNT {
