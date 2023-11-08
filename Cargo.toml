@@ -18,10 +18,14 @@ embedded-io-async = { version = "0.6" }
 embedded-nal-async = { version = "0.6" }
 serde = { version = "1", features = ["derive"], default-features = false }
 heapless = { version = "0.7", features = ["serde"] }
-varint-rs = {version = "2.2", default-features = false }
 num_enum = { version = "0.7", default-features = false }
-bit_field = { version = "0.10" }
 futures = { version = "0.3.28", default-features = false }
+itertools = { version = "0.11", default-features = false }
+hash32 = "0.2.1"
+hash32-derive = "0.1.1"
+
+defmt = { version = "0.3.5", optional = true }
+log = { version = "0.4", optional = true }
 
 embassy-sync = { version = "0.3", features = ["nightly"] }
 embassy-futures = "0.1"
@@ -35,14 +39,16 @@ rand = "0.8.5"
 criterion = "0.5.1"
 crossbeam-utils = "0.8.16"
 crossbeam = "0.8.2"
-log = "0.4"
 env_logger = "0.10"
-embassy-time = { version = "0.1", features = ["std"] }
+embassy-time = { version = "0.1", features = ["std", "nightly"] }
 native-tls = { version = "^0.2" }
 dns-lookup = "2"
+async-io = { version = "2", default-features = false }
+embedded-io-async = { version = "0.6", features = ["std"] }
+futures-lite = { version = "1", default-features = false, features = ["std"] }
 
 [features]
-default = ["mqttv3"]
+default = ["mqttv3", "qos2"]
 
 mqttv3 = []
 mqttv5 = []

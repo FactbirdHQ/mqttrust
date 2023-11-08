@@ -1,19 +1,18 @@
 #![feature(type_alias_impl_trait)]
+#![feature(impl_trait_projections)]
 #![feature(async_fn_in_trait)]
 mod common;
-
-use std::net::TcpStream;
 
 use embassy_futures::{join, select};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
-use embedded_mqtt::{State, Config, NamedBroker};
-use futures::StreamExt;
-use native_tls::{TlsConnector, TlsStream};
+use embedded_mqtt::{Config, DomainBroker, State};
 use static_cell::make_static;
 
-use crate::common::credentials;
-use crate::common::network::Network;
+use crate::common::{
+    credentials,
+    network::{StdDns, StdTcpConnect},
+};
 
 #[tokio::test]
 async fn main() {
@@ -21,23 +20,16 @@ async fn main() {
 
     let hostname = credentials::HOSTNAME.unwrap();
 
-    let connector = TlsConnector::builder()
-        .identity(credentials::identity())
-        .add_root_certificate(credentials::root_ca())
-        .build()
-        .unwrap();
-
-    let network = Network::new_tls(connector, String::from(hostname));
+    let network = StdTcpConnect::new();
 
     let thing_name = "embedded-mqtt";
 
-    let broker = NamedBroker::<&Network<TlsStream<TcpStream>>>::new(hostname, &network).unwrap();
+    let broker = DomainBroker::<&StdDns<()>>::new(hostname, &StdDns::new(())).unwrap();
     let config = Config::new(thing_name, broker);
 
-    
     // Create the MQTT stack
-    let state = make_static!(State::<NoopRawMutex, 4096, 4096>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let state = make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
+    let (mut stack, client) = embedded_mqtt::new(state, config, &network);
 
     let subscribe_topic = format!("{}/device/advisor", thing_name);
     let publish_topic = format!("{}/device/advisor/hello", thing_name);

@@ -1,151 +1,193 @@
-use crate::encoding::v4::{
-    decoder::{read_header, read_str, Header},
+use core::fmt::Debug;
+
+use embedded_io_async::{Error, ErrorKind, Read};
+
+use crate::encoding::{
+    decoder::{read_bytes, read_header},
     packet::PacketType,
-    utils::{Error, Pid, QoS},
+    Connack, Pid, QoS, QosPid,
 };
 
-pub struct SerializedPacket<'a>(pub &'a mut [u8]);
+pub(crate) struct PacketBuffer<const N: usize> {
+    // MqttStack holds an RX buffer just big enough to hold a single packet
+    // header + `MAX_TOPIC_LEN`, in order for it to handle `ACK`, `PING`, and
+    // route incoming `PUBLISH` messages to a subscriber.
+    buf: [u8; N],
+    len: usize,
+}
 
-impl<'a> SerializedPacket<'a> {
-    pub fn header(&self) -> Result<Header, Error> {
-        Header::new(self.0[0]).map_err(|_| Error::InvalidHeader)
-    }
-
-    pub fn topic(&self) -> Option<&str> {
-        let mut offset = 0;
-        if let Some((header, _)) = read_header(self.0, &mut offset).ok()? {
-            if matches!(header.typ, PacketType::Publish) {
-                return read_str(self.0, &mut offset).ok();
-            }
+impl<const N: usize> PacketBuffer<N> {
+    pub fn new() -> Self {
+        Self {
+            buf: [0; N],
+            len: 0,
         }
-        None
     }
 
-    pub fn set_pid(&mut self, pid: Pid) -> Result<(), Error> {
+    fn buf(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+
+    pub fn rotate(&mut self, amt: usize) {
+        let amt = core::cmp::min(self.len, amt);
+        self.buf.rotate_left(amt);
+        self.len -= amt;
+    }
+
+    pub(crate) fn has_header(&self) -> bool {
         let mut offset = 0;
-        let (header, _) = read_header(self.0, &mut offset)
-            .map_err(|_| Error::InvalidHeader)?
-            .ok_or(Error::InvalidHeader)?;
-
-        match (header.typ, header.qos) {
-            (PacketType::Publish, QoS::AtLeastOnce) => {
-                // (PacketType::Publish, QoS::AtLeastOnce | QoS::ExactlyOnce) => {
-                if self.0[offset..].len() < 2 {
-                    return Err(Error::InvalidHeader);
-                }
-                let len = ((self.0[offset] as usize) << 8) | self.0[offset + 1] as usize;
-
-                offset += 2;
-                if len > self.0[offset..].len() {
-                    return Err(Error::InvalidHeader);
-                } else {
-                    offset += len;
-                }
-            }
-            (
-                PacketType::Subscribe
-                | PacketType::Unsubscribe
-                | PacketType::Suback
-                | PacketType::Puback
-                | PacketType::Pubrec
-                | PacketType::Pubrel
-                | PacketType::Pubcomp
-                | PacketType::Unsuback,
-                _,
-            ) => {}
-            _ => return Ok(()),
+        if let Ok(Some((header, remaining_len))) = read_header(self.buf(), &mut offset) {
+            true
+        } else {
+            false
         }
-
-        pid.to_buffer(&mut self.0, &mut offset)
-            .map_err(|_| Error::PidMissing)
     }
 
-    pub fn to_inner(self) -> &'a mut [u8] {
-        self.0
+    pub(crate) async fn receive<S: Read>(&mut self, socket: &mut S) -> Result<(), ErrorKind> {
+        match socket.read(&mut self.buf[self.len..]).await {
+            Ok(0) => Err(ErrorKind::NotConnected),
+            Ok(n) => {
+                self.len += n;
+                Ok(())
+            }
+            Err(e) => Err(e.kind()),
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use core::convert::TryFrom;
+pub(crate) enum ReceivedPacket<'a, R: Read> {
+    Pingresp,
+    Connack(Connack),
+    Publish(QosPid, LazyPublish<'a, R, 128>),
+    Puback(Pid),
+    #[cfg(feature = "qos2")]
+    Pubrec(Pid),
+    #[cfg(feature = "qos2")]
+    Pubrel(Pid),
+    #[cfg(feature = "qos2")]
+    Pubcomp(Pid),
+    Suback(Pid), // FIXME: missing result codes
+    Unsuback(Pid),
+}
 
-    use crate::encoding::v4::{
-        decode_slice, encode_slice, Packet, Publish, Subscribe, SubscribeTopic,
-    };
+impl<'a, R: Read> Debug for ReceivedPacket<'a, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Pingresp => write!(f, "Pingresp"),
+            Self::Connack(arg0) => f.debug_tuple("Connack").field(arg0).finish(),
+            Self::Publish(arg0, _) => f.debug_tuple("Publish").field(arg0).finish(),
+            Self::Puback(arg0) => f.debug_tuple("Puback").field(arg0).finish(),
+            Self::Pubrec(arg0) => f.debug_tuple("Pubrec").field(arg0).finish(),
+            Self::Pubrel(arg0) => f.debug_tuple("Pubrel").field(arg0).finish(),
+            Self::Pubcomp(arg0) => f.debug_tuple("Pubcomp").field(arg0).finish(),
+            Self::Suback(arg0) => f.debug_tuple("Suback").field(arg0).finish(),
+            Self::Unsuback(arg0) => f.debug_tuple("Unsuback").field(arg0).finish(),
+        }
+    }
+}
 
-    use super::*;
+impl<'a, R: Read> ReceivedPacket<'a, R> {
+    pub(crate) fn try_new<const N: usize>(
+        buf: &'a mut PacketBuffer<N>,
+        reader: &'a mut R,
+    ) -> Option<Self> {
+        let mut offset = 0;
 
-    #[test]
-    fn set_publish_pid() {
-        let publish = Packet::Publish(Publish {
-            dup: false,
-            qos: QoS::AtLeastOnce,
-            pid: None,
-            retain: false,
-            topic_name: "test",
-            payload: b"Whatup",
+        let (header, remaining_len) = match read_header(buf.buf(), &mut offset) {
+            Ok(Some((header, remaining_len))) => (header, remaining_len),
+            Ok(None) => {
+                // Need more data
+                return None;
+            }
+            Err(_) => {
+                // FIXME: Is this correct?
+                error!(
+                    "Unable to read incoming packet header! Discarding one byte. BUF: {:?}",
+                    buf.buf()
+                );
+                buf.rotate(1);
+                return None;
+            }
+        };
+
+        debug!("Read header {:?}", header.typ);
+
+        let packet_len = offset + remaining_len;
+
+        let packet = Some(match header.typ {
+            PacketType::Pingresp => Self::Pingresp,
+            PacketType::Connack => {
+                Self::Connack(Connack::from_buffer(buf.buf(), &mut offset).ok()?)
+            }
+            PacketType::Publish => {
+                let _topic_name = read_bytes(buf.buf(), &mut offset).ok()?;
+
+                let qos_pid = match header.qos {
+                    QoS::AtMostOnce => QosPid::AtMostOnce,
+                    QoS::AtLeastOnce => {
+                        QosPid::AtLeastOnce(Pid::from_buffer(buf.buf(), &mut offset).ok()?)
+                    }
+                    #[cfg(feature = "qos2")]
+                    QoS::ExactlyOnce => {
+                        QosPid::ExactlyOnce(Pid::from_buffer(buf.buf(), &mut offset).ok()?)
+                    }
+                };
+
+                let buf_len = core::cmp::min(packet_len, buf.buf().len());
+
+                Self::Publish(
+                    qos_pid,
+                    LazyPublish::new(&buf.buf()[..buf_len], packet_len, reader),
+                )
+            }
+            PacketType::Puback => Self::Puback(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
+            #[cfg(feature = "qos2")]
+            PacketType::Pubrec => Self::Pubrec(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
+            #[cfg(feature = "qos2")]
+            PacketType::Pubrel => Self::Pubrel(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
+            #[cfg(feature = "qos2")]
+            PacketType::Pubcomp => Self::Pubcomp(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
+            PacketType::Suback => Self::Suback(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
+            PacketType::Unsuback => Self::Unsuback(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
+            _ => return None,
         });
 
-        let buf = &mut [0u8; 2048];
-        let len = encode_slice(&publish, buf).unwrap();
+        buf.rotate(packet_len);
 
-        let mut ser_packet = SerializedPacket(&mut buf[..len]);
+        packet
+    }
+}
 
-        let header = ser_packet.header().unwrap();
+pub(crate) struct LazyPublish<'a, S: Read, const N: usize> {
+    buf: heapless::Vec<u8, N>,
+    packet_len: usize,
+    reader: &'a mut S,
+}
 
-        assert_eq!(header.typ, PacketType::Publish);
-        assert_eq!(header.qos, QoS::AtLeastOnce);
-
-        ser_packet.set_pid(Pid::try_from(54).unwrap()).unwrap();
-
-        let p = decode_slice(ser_packet.to_inner()).unwrap();
-
-        assert_eq!(
-            p,
-            Some(Packet::Publish(Publish {
-                dup: false,
-                qos: QoS::AtLeastOnce,
-                pid: Some(Pid::try_from(54).unwrap()),
-                retain: false,
-                topic_name: "test",
-                payload: b"Whatup",
-            }))
-        )
+impl<'a, S: Read, const N: usize> LazyPublish<'a, S, N> {
+    pub fn new(buf: &[u8], packet_len: usize, reader: &'a mut S) -> Self {
+        Self {
+            buf: heapless::Vec::from_slice(buf).unwrap(),
+            packet_len,
+            reader,
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.packet_len
     }
 
-    #[test]
-    fn set_subscribe_pid() {
-        let subscribe = Packet::Subscribe(Subscribe::new(&[SubscribeTopic {
-            topic_path: "AWESOME",
-            qos: QoS::AtLeastOnce,
-        }]));
+    pub async fn copy_all(
+        &mut self,
+        buf: &mut [u8],
+    ) -> Result<(), embedded_io_async::ReadExactError<S::Error>> {
+        buf[..self.buf.len()].copy_from_slice(&self.buf);
 
-        let buf = &mut [0u8; 2048];
-        let len = encode_slice(&subscribe, buf).unwrap();
-
-        let mut ser_packet = SerializedPacket(&mut buf[..len]);
-
-        let header = ser_packet.header().unwrap();
-
-        assert_eq!(header.typ, PacketType::Subscribe);
-        assert_eq!(header.qos, QoS::AtLeastOnce);
-
-        ser_packet.set_pid(Pid::try_from(65).unwrap()).unwrap();
-
-        let p = decode_slice(ser_packet.to_inner()).unwrap();
-
-        match p {
-            Some(Packet::Subscribe(p)) => {
-                assert_eq!(p.pid(), Some(Pid::try_from(65).unwrap()));
-                assert_eq!(
-                    p.topics().next(),
-                    Some(SubscribeTopic {
-                        topic_path: "AWESOME",
-                        qos: QoS::AtLeastOnce,
-                    })
-                );
-            }
-            _ => panic!(),
+        if self.buf.len() < self.packet_len {
+            self.reader
+                .read_exact(&mut buf[self.buf.len()..self.packet_len])
+                .await?;
         }
+
+        Ok(())
     }
 }

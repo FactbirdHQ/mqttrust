@@ -3,6 +3,10 @@ use super::*;
 pub fn decode_slice(buf: &[u8]) -> Result<Option<Packet<'_>>, Error> {
     let mut offset = 0;
     if let Some((header, remaining_len)) = read_header(buf, &mut offset)? {
+        if buf.len() < offset + remaining_len {
+            // Won't be able to read full packet
+            return Ok(None);
+        }
         let r = read_packet(header, remaining_len, buf, &mut offset)?;
         Ok(Some(r))
     } else {
@@ -45,10 +49,6 @@ pub fn read_header(buf: &[u8], offset: &mut usize) -> Result<Option<(Header, usi
             len += (byte as usize & 0x7F) << (pos * 7);
             if (byte & 0x80) == 0 {
                 // Continuation bit == 0, length is parsed
-                if buf.len() < *offset + 2 + pos + len {
-                    // Won't be able to read full packet
-                    return Ok(None);
-                }
                 // Parse header byte, skip past the header, and return
                 let header = Header::new(buf[*offset])?;
                 *offset += pos + 2;

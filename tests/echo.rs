@@ -1,17 +1,16 @@
 #![feature(type_alias_impl_trait)]
+#![feature(impl_trait_projections)]
 #![feature(async_fn_in_trait)]
 mod common;
-
-use std::net::TcpStream;
 
 use embassy_futures::{join, select};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
-use embedded_mqtt::{Config, NamedBroker, State};
+use embedded_mqtt::{Config, DomainBroker, Publish, QoS, State, Subscribe, SubscribeTopic};
 use futures::StreamExt;
 use static_cell::make_static;
 
-use crate::common::network::Network;
+use crate::common::network::{StdDns, StdTcpConnect};
 
 const MSG_CNT: u32 = 50;
 
@@ -19,25 +18,28 @@ const MSG_CNT: u32 = 50;
 async fn main() {
     env_logger::init();
 
-    let network = Network::new();
+    let network = StdTcpConnect::new();
+    let dns = StdDns::new(());
 
     let client_id = "mqtt_test_client_id";
 
     // Create the MQTT stack
-    let broker = NamedBroker::<&Network<TcpStream>>::new("broker.hivemq.com", &network).unwrap();
+    let broker = DomainBroker::<&StdDns<()>>::new("broker.hivemq.com", &dns).unwrap();
     let config = Config::new(client_id, broker);
 
-    let state = make_static!(State::<NoopRawMutex, 4096, 4096>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let state = make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
+    let (mut stack, client) = embedded_mqtt::new(state, config, &network);
 
-    let subscribe = crate::packets::Subscribe {
-        packet_id: 16,
-        properties: Properties::Slice(&[]),
-        topics: &[
-            "embedded-mqtt/tester/subscriber".into(),
-            "embedded-mqtt/tester/subscriber2".into(),
-        ],
-    };
+    let subscribe = Subscribe::new(&[
+        SubscribeTopic {
+            topic_path: "embedded-mqtt/tester/subscriber",
+            qos: QoS::AtLeastOnce,
+        },
+        SubscribeTopic {
+            topic_path: "embedded-mqtt/tester/subscriber2",
+            qos: QoS::AtLeastOnce,
+        },
+    ]);
 
     let mut subscription = client
         .subscribe(subscribe)
@@ -46,15 +48,16 @@ async fn main() {
 
     let publish_fut = async {
         for i in 0..MSG_CNT {
-            log::debug!("Sending {}", i);
+            println!("Sending {}", i);
             client
-                .publish(
-                    Publication::new(format!("{{\"count\": {} }}", i).as_bytes())
-                        .topic("embedded-mqtt/tester/subscriber")
-                        .qos(QoS::AtLeastOnce)
-                        .finish()
-                        .unwrap(),
-                )
+                .publish(Publish {
+                    payload: format!("{{\"count\": {} }}", i).as_bytes(),
+                    topic_name: "embedded-mqtt/tester/subscriber",
+                    qos: QoS::AtLeastOnce,
+                    dup: false,
+                    pid: None,
+                    retain: false,
+                })
                 .await
                 .expect("Failed to publish");
             Timer::after(Duration::from_millis(500)).await;

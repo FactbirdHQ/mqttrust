@@ -52,8 +52,11 @@ impl<R: Dns, const T: usize> Broker for DomainBroker<R, T> {
                 .await
             {
                 Ok(ip) => self.addr.set_ip(ip),
-                Err(_other) => {
-                    // warn!("DNS lookup failed: {_other:?}")
+                Err(_e) => {
+                    #[cfg(feature = "log")]
+                    warn!("DNS lookup failed: {:?}", _e);
+                    #[cfg(feature = "defmt")]
+                    warn!("DNS lookup failed: {:?}", Debug2Format(&_e));
                 }
             }
         }

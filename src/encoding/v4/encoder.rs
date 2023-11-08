@@ -166,9 +166,9 @@ pub(crate) fn write_u16(buf: &mut [u8], offset: &mut usize, val: u16) -> Result<
 pub(crate) fn write_bytes(buf: &mut [u8], offset: &mut usize, bytes: &[u8]) -> Result<(), Error> {
     write_u16(buf, offset, bytes.len() as u16)?;
 
-    for &byte in bytes {
-        write_u8(buf, offset, byte)?;
-    }
+    buf[*offset..*offset + bytes.len()].copy_from_slice(bytes);
+    *offset += bytes.len();
+
     Ok(())
 }
 

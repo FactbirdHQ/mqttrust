@@ -32,7 +32,7 @@ impl Protocol {
 
         Protocol::new(protocol_name, protocol_level)
     }
-    
+
     pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {
         match self {
             Protocol::MQTT311 => {
@@ -74,7 +74,7 @@ pub struct LastWill<'a> {
 /// [Connack]: struct.Connack.html
 /// [MQTT 3.2.2.3]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718035
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConnectReturnCode {
     Accepted,
     RefusedProtocolVersion,

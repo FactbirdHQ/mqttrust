@@ -1,10 +1,10 @@
 use core::task::Context;
 
-use embassy_sync::waitqueue::WakerRegistration;
+use embassy_sync::waitqueue::MultiWakerRegistration;
 use embassy_time::Instant;
 use heapless::{FnvIndexMap, IndexMap};
 
-use crate::encoding::v4::Pid;
+use crate::encoding::Pid;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum ConnectionState {
@@ -12,43 +12,61 @@ pub enum ConnectionState {
     Connected,
 }
 
-pub struct Shared {
+const MAX_INFLIGHT: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingAck {
+    Subscribe(u16),
+    Unsubscribe(u16),
+}
+
+impl hash32::Hash for PendingAck {
+    fn hash<H: hash32::Hasher>(&self, h: &mut H) -> () {
+        match self {
+            PendingAck::Subscribe(pid) => {
+                h.write(&pid.to_le_bytes());
+                h.write(&[0]);
+            }
+            PendingAck::Unsubscribe(pid) => {
+                h.write(&pid.to_le_bytes());
+                h.write(&[1]);
+            }
+        }
+        h.finish();
+    }
+}
+
+pub struct Shared<const SUBS: usize> {
     /// Packet id of the last outgoing packet
     last_pid: Pid,
 
     conn_state: ConnectionState,
 
-    tx_waker: WakerRegistration,
-
-    /// Status of last ping
-    await_pingresp: bool,
+    tx_waker: MultiWakerRegistration<MAX_INFLIGHT>,
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<1536>, 2>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<1536>, MAX_INFLIGHT>,
+    pub(crate) pending_ack: heapless::FnvIndexSet<PendingAck, SUBS>,
 
     /// Packet ids of released QoS 2 publishes
     #[cfg(feature = "qos2")]
-    outgoing_rel: heapless::FnvIndexSet<u16, 2>,
+    pub(crate) outgoing_rel: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
 
     /// Packet ids on incoming QoS 2 publishes
     #[cfg(feature = "qos2")]
-    incoming_pub: heapless::FnvIndexSet<u16, 2>,
-
-    last_ping: Option<Instant>,
+    pub(crate) incoming_pub: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
 }
 
-impl Shared {
+impl<const SUBS: usize> Shared<SUBS> {
     pub fn new() -> Self {
         Self {
             last_pid: Pid::new(),
 
             conn_state: ConnectionState::Disconnected,
-            tx_waker: WakerRegistration::new(),
-
-            await_pingresp: false,
-            last_ping: None,
+            tx_waker: MultiWakerRegistration::new(),
 
             outgoing_pub: IndexMap::new(),
+            pending_ack: heapless::IndexSet::new(),
 
             #[cfg(feature = "qos2")]
             outgoing_rel: heapless::IndexSet::new(),
@@ -64,6 +82,10 @@ impl Shared {
 
     pub fn register_tx_waker(&mut self, cx: &Context<'_>) {
         self.tx_waker.register(cx.waker())
+    }
+
+    pub fn wake_tx(&mut self) {
+        self.tx_waker.wake()
     }
 }
 

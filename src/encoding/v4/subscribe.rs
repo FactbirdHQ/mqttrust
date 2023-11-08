@@ -13,6 +13,12 @@ pub struct SubscribeTopic<'a> {
     pub qos: QoS,
 }
 
+impl<'a> Into<&'a str> for SubscribeTopic<'a> {
+    fn into(self) -> &'a str {
+        self.topic_path
+    }
+}
+
 impl<'a> FromBuffer<'a> for SubscribeTopic<'a> {
     type Item = Self;
 
@@ -145,7 +151,7 @@ where
 /// [MQTT 3.8]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718063
 #[derive(Debug, Clone, PartialEq)]
 pub struct Subscribe<'a> {
-    pid: Option<Pid>,
+    pub pid: Option<Pid>,
     topics: List<'a, SubscribeTopic<'a>>,
 }
 

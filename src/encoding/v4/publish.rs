@@ -73,22 +73,20 @@ impl<'a> Publish<'a> {
         // Topic
         write_string(buf, offset, self.topic_name)?;
 
-        // Pid to be overwritten later on
         match self.qos {
             QoS::AtMostOnce => (),
             QoS::AtLeastOnce => {
-                write_u16(buf, offset, 0)?;
+                write_u16(buf, offset, self.pid.ok_or(Error::PidMissing)?.get())?;
             }
             #[cfg(feature = "qos2")]
             QoS::ExactlyOnce => {
-                write_u16(buf, offset, 0)?;
+                write_u16(buf, offset, self.pid.ok_or(Error::PidMissing)?.get())?;
             }
         }
 
         // Payload
-        for &byte in self.payload {
-            write_u8(buf, offset, byte)?;
-        }
+        buf[*offset..*offset + self.payload.len()].copy_from_slice(self.payload);
+        *offset += self.payload.len();
 
         Ok(write_len)
     }
