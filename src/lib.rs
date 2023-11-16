@@ -4,14 +4,16 @@
 
 mod fmt;
 
+#[cfg(all(feature = "mqttv3", feature = "mqttv5"))]
+compile_error!("You must enable at most one of the following features: mqttv3, mqttv5");
+
 mod broker;
 mod client;
 mod config;
-#[cfg_attr(feature = "mqttv3", path = "encoding/v4/mod.rs")]
-#[cfg_attr(feature = "mqttv5", path = "encoding/v5/mod.rs")]
 mod encoding;
 mod error;
 mod packet;
+mod persistence;
 pub mod pubsub;
 mod reason_codes;
 mod stack;

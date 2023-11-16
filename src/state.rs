@@ -20,8 +20,8 @@ pub(crate) enum PendingAck {
     Unsubscribe(u16),
 }
 
-impl hash32::Hash for PendingAck {
-    fn hash<H: hash32::Hasher>(&self, h: &mut H) -> () {
+impl core::hash::Hash for PendingAck {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) -> () {
         match self {
             PendingAck::Subscribe(pid) => {
                 h.write(&pid.to_le_bytes());

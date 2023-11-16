@@ -1,4 +1,4 @@
-use super::{decoder::*, encoder::*, *};
+use crate::encoding::{decoder::*, encoder::*, *};
 
 /// Message that the server should publish when the client disconnects.
 ///

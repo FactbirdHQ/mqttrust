@@ -1,3 +1,5 @@
+use core::str::FromStr;
+
 use crate::error::ProtocolError;
 use embassy_time::Duration;
 use heapless::String;
@@ -14,10 +16,10 @@ pub struct Config<Broker: crate::Broker> {
 
 impl<Broker: crate::Broker> Config<Broker> {
     /// Construct configuration for the MQTT client.
-    pub fn new(client_id: impl Into<String<64>>, broker: Broker) -> Self {
+    pub fn new(client_id: &str, broker: Broker) -> Self {
         Self {
             broker,
-            client_id: client_id.into(),
+            client_id: String::from_str(client_id).unwrap(),
             // auth: None,
             keepalive_interval: Duration::from_secs(59),
             downgrade_qos: false,

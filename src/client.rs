@@ -2,6 +2,7 @@ use core::{
     cell::RefCell,
     future::poll_fn,
     ops::{Deref, DerefMut},
+    str::FromStr,
     task::Poll,
 };
 
@@ -18,7 +19,6 @@ use crate::{
         PubSubChannel, SliceBufferProvider,
     },
     state::{PendingAck, Shared},
-    SubscribeTopic,
 };
 
 pub struct MqttClient<'a, M: RawMutex, const SUBS: usize> {
@@ -130,6 +130,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         Ok(pid)
     }
 
+    /// Publish a message to the broker.
+    ///
+    /// If `QoS` is set to `QoS1` or `QoS2`, this function will wait until the
+    /// corresponding `PubAck` message has been received.
     pub async fn publish(&self, packet: impl Into<Publish<'_>>) -> Result<(), Error> {
         let pid = self.send(Packet::Publish(packet.into())).await?;
 
@@ -155,17 +159,20 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         Ok(())
     }
 
-    pub async fn subscribe<'b>(
+    pub async fn subscribe<'b, const MAX_TOPICS: usize>(
         &'b self,
         packet: impl Into<Subscribe<'_>>,
-    ) -> Result<Subscription<'a, 'b, M, SUBS>, Error> {
+    ) -> Result<Subscription<'a, 'b, M, SUBS, MAX_TOPICS>, Error> {
         let subscriber = self
             .rx_pubsub
             .framed_subscriber()
             .map_err(|_| Error::StateMismatch)?;
 
         let subscribe = packet.into();
-        let topic_filter = TopicFilter::from_iter(subscribe.topics())?;
+        let topic_filters = subscribe
+            .topics()
+            .map(|sub| TopicFilter::new(sub.topic_path))
+            .collect::<Result<_, _>>()?;
 
         let pid = self.send(Packet::Subscribe(subscribe)).await?;
 
@@ -201,8 +208,8 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
 
         Ok(Subscription {
             subscriber,
-            topic_filter,
-            client: self,
+            topic_filters,
+            _client: self,
         })
     }
 }
@@ -220,7 +227,6 @@ const MAX_TOPIC_LEN: usize = 128;
 #[derive(Debug)]
 pub struct TopicFilter {
     filter: heapless::String<MAX_TOPIC_LEN>,
-
     has_wildcards: bool,
 }
 
@@ -228,11 +234,8 @@ impl TopicFilter {
     /// Creates a new topic filter from the string.
     /// This can fail if the filter is not correct, such as having a '#'
     /// wildcard in anyplace other than the last field, or if
-    pub fn new<S>(filter: S) -> Result<Self, Error>
-    where
-        S: Into<heapless::String<MAX_TOPIC_LEN>>,
-    {
-        let filter = filter.into();
+    pub fn new(filter: &str) -> Result<Self, Error> {
+        let filter = heapless::String::<MAX_TOPIC_LEN>::from_str(filter).unwrap();
         let n = filter.len();
 
         if n == 0 {
@@ -240,7 +243,7 @@ impl TopicFilter {
         }
 
         // If the topic contains any wildcards.
-        let wild = match filter.find('#') {
+        let has_wildcards = match filter.find('#') {
             Some(i) if i < n - 1 => return Err(Error::BadTopicFilter),
             Some(_) => true,
             None => filter.contains('+'),
@@ -248,19 +251,8 @@ impl TopicFilter {
 
         Ok(Self {
             filter,
-            has_wildcards: wild,
+            has_wildcards,
         })
-    }
-
-    /// Creates a new topic filter from an iterator over strings.
-    /// This can fail if the filter is not correct, such as having a '#'
-    /// wildcard in anyplace other than the last field, or if
-    pub fn from_iter<'a>(
-        filter_iter: impl Iterator<Item = SubscribeTopic<'a>>,
-    ) -> Result<Self, Error> {
-        // FIXME: Combine into some proper filter, when subscribing to more than
-        // one topic path at once
-        Self::new(filter_iter.map(|s| s.topic_path).next().ok_or(Error::EOF)?)
     }
 
     pub fn filter(&self) -> &str {
@@ -296,10 +288,10 @@ impl core::fmt::Display for TopicFilter {
     }
 }
 
-pub struct Subscription<'a, 'b, M: RawMutex, const SUBS: usize> {
-    topic_filter: TopicFilter,
+pub struct Subscription<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize = 5> {
+    topic_filters: heapless::Vec<TopicFilter, MAX_TOPICS>,
     subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, SUBS>,
-    client: &'b MqttClient<'a, M, SUBS>,
+    _client: &'b MqttClient<'a, M, SUBS>,
 }
 
 impl<'a, 'b, M: RawMutex, const SUBS: usize> futures::Stream for Subscription<'a, 'b, M, SUBS> {
@@ -311,7 +303,11 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize> futures::Stream for Subscription<'a
     ) -> Poll<Option<Self::Item>> {
         if let Some(grant) = self.subscriber.read() {
             if let Some(mut msg) = Message::try_new(grant) {
-                if self.topic_filter.is_match(msg.topic()) {
+                if self
+                    .topic_filters
+                    .iter()
+                    .any(|filter| filter.is_match(msg.topic()))
+                {
                     msg.auto_release();
 
                     return Poll::Ready(Some(msg));
@@ -324,7 +320,9 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize> futures::Stream for Subscription<'a
     }
 }
 
-impl<'a, 'b, M: RawMutex, const SUBS: usize> Drop for Subscription<'a, 'b, M, SUBS> {
+impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
+    for Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
+{
     fn drop(&mut self) {
         // FIXME: UNSUBSCRIBE
     }

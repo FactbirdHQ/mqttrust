@@ -12,7 +12,7 @@ use embedded_nal_async::TcpConnect;
 use crate::{
     config::Config,
     encoding::{
-        decode_slice, encode_slice, utils::StateError, Connect, ConnectReturnCode, Packet, QoS,
+        decode_slice, utils::StateError, Connect, ConnectReturnCode, Packet, QoS,
         QosPid,
     },
     error::ConnectionError,
@@ -25,7 +25,7 @@ use crate::{
     Broker,
 };
 
-struct Network<'a, N: TcpConnect> {
+pub(crate) struct Network<'a, N: TcpConnect> {
     network: &'a N,
     socket: Option<N::Connection<'a>>,
     packet_buf: PacketBuffer<128>,
@@ -51,13 +51,6 @@ impl<'a, N: TcpConnect> Network<'a, N> {
 
     pub fn is_connected(&self) -> bool {
         self.socket.is_some()
-    }
-
-    // TODO: Move this to `Packet.write(&mut Network)` to ease v3 + v5 support
-    pub async fn send_packet(&mut self, packet: &Packet<'_>) -> Result<(), StateError> {
-        let mut buf = [0u8; 128];
-        let len = encode_slice(&packet, &mut buf).map_err(|_| StateError::Deserialization)?;
-        self.write(&buf[..len]).await
     }
 
     pub async fn write(&mut self, buf: &[u8]) -> Result<(), StateError> {
@@ -112,6 +105,8 @@ pub struct MqttStack<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usiz
     last_network_action: Instant,
     await_pingresp: Option<Instant>,
 
+    clean_session: bool,
+
     // Network handle
     network: Network<'a, N>,
 }
@@ -130,6 +125,8 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
             rx_publisher,
 
             config,
+
+            clean_session: true,
 
             last_network_action: Instant::now(),
             await_pingresp: None,
@@ -209,7 +206,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                             QosPid::AtMostOnce => {}
                             QosPid::AtLeastOnce(pid) => {
                                 let puback = Packet::Puback(pid);
-                                self.network.send_packet(&puback).await?;
+                                puback.write(&mut self.network).await?;
                             }
                             #[cfg(feature = "qos2")]
                             QosPid::ExactlyOnce(pid) => {
@@ -222,7 +219,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                                     .unwrap();
 
                                 let pubrec = Packet::Pubrec(pid);
-                                self.network.send_packet(&pubrec).await?;
+                                pubrec.write(&mut self.network).await?;
                             }
                         }
                     }
@@ -243,7 +240,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         match shared.incoming_pub.remove(&pid.get()) {
                             true => {
                                 let pubcomp = Packet::Pubcomp(pid);
-                                self.network.send_packet(&pubcomp).await?;
+                                pubcomp.write(&mut self.network).await?;
                             }
                             false => {
                                 error!("Unsolicited pubrel packet: {:?}", pid);
@@ -260,7 +257,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                                 shared.outgoing_rel.insert(pid.get());
 
                                 let pubrel = Packet::Pubrel(pid);
-                                self.network.send_packet(&pubrel).await?;
+                                pubrel.write(&mut self.network).await?;
                             }
                             None => {
                                 error!("Unsolicited pubrec packet: {:?}", pid);
@@ -383,7 +380,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 );
 
                 let pingreq = Packet::Pingreq;
-                self.network.send_packet(&pingreq).await?;
+                pingreq.write(&mut self.network).await?;
 
                 self.last_network_action = Instant::now();
                 self.await_pingresp = Some(Instant::now());
@@ -394,22 +391,27 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
     }
 
     async fn connect_mqtt(&mut self) -> Result<bool, ConnectionError> {
-        let connect = Packet::Connect(Connect {
+        let connect: Packet = Connect {
             protocol: crate::encoding::Protocol::MQTT311,
             keep_alive: self.config.keepalive_interval.as_secs() as u16,
             client_id: &self.config.client_id,
+            clean_session: self.clean_session,
+            
             // TODO:
-            clean_session: true,
             last_will: None,
             username: None,
             password: None,
-        });
+        }.into();
 
-        debug!("Connecting to MQTT with options: {:?}", connect);
+        if self.clean_session {
+            debug!("Connecting to MQTT with options: {:?}", connect);
+        } else {
+            debug!("Reconnecting to MQTT with options: {:?}", connect);
+        }
 
         // send mqtt connect packet
-        self.network
-            .send_packet(&connect)
+        connect
+            .write(&mut self.network)
             .await
             .map_err(|e| ConnectionError::MqttState(e))?;
 
@@ -426,7 +428,13 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
             Some(ReceivedPacket::Connack(connack))
                 if connack.code == ConnectReturnCode::Accepted =>
             {
-                debug!("Connected!");
+                if self.clean_session {
+                    debug!("Connected! Reusing existing session: {}", connack.session_present);
+                } else {
+                    debug!("Reconnected! Reusing existing session: {}", connack.session_present);
+                }
+                self.clean_session = false;
+
                 Ok(connack.session_present)
             }
             Some(ReceivedPacket::Connack(connack)) => {

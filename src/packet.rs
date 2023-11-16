@@ -36,10 +36,9 @@ impl<const N: usize> PacketBuffer<N> {
 
     pub(crate) fn has_header(&self) -> bool {
         let mut offset = 0;
-        if let Ok(Some((header, remaining_len))) = read_header(self.buf(), &mut offset) {
-            true
-        } else {
-            false
+        match read_header(self.buf(), &mut offset) {
+            Ok(Some(_)) => true,
+            _ => false,
         }
     }
 

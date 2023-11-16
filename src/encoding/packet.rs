@@ -1,3 +1,5 @@
+use crate::stack::Network;
+
 use super::*;
 
 /// https://docs.solace.com/MQTT-311-Prtl-Conformance-Spec/MQTT%20Control%20Packets.htm#_Toc430864901
@@ -6,8 +8,9 @@ const PID_LEN: usize = 2;
 
 /// Base enum for all MQTT packet types.
 ///
-/// This is the main type you'll be interacting with, as an output of [`decode_slice()`] and an input of
-/// [`encode()`]. Most variants can be constructed directly without using methods.
+/// This is the main type you'll be interacting with, as an output of
+/// [`decode_slice()`] and the input to [`encode()`]. Most variants can be
+/// constructed directly without using methods.
 ///
 /// ```
 /// # use mqttrust::encoding::v4::*;
@@ -102,6 +105,17 @@ impl<'a> Packet<'a> {
         };
 
         FIXED_HEADER_LEN + variable_len
+    }
+
+    pub(crate) async fn write<'b>(
+        &self,
+        network: &mut Network<'b, impl embedded_nal_async::TcpConnect>,
+    ) -> Result<(), utils::StateError> {
+
+        //FIXME: 
+        let mut buf = [0u8; 128];
+        let len = encode_slice(self, &mut buf).map_err(|_| utils::StateError::Deserialization)?;
+        network.write(&buf[..len]).await
     }
 }
 
