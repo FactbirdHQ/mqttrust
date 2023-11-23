@@ -16,7 +16,7 @@ use crate::pubsub::vusize::{decode_usize, decoded_len};
 use self::framed::{FrameGrantR, FramePublisher, FrameSubscriber};
 
 pub mod framed;
-mod vusize;
+pub(crate) mod vusize;
 
 /// Result type used by the `BBQueue` interfaces
 pub type Result<T> = core::result::Result<T, Error>;

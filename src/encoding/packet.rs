@@ -37,7 +37,7 @@ pub enum Packet<'a> {
     /// [MQTT 3.1](http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718028)
     Connect(Connect<'a>),
     /// [MQTT 3.2](http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718033)
-    Connack(Connack),
+    Connack(Connack<'a>),
     /// [MQTT 3.3](http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718037)
     Publish(Publish<'a>),
     /// [MQTT 3.4](http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718043)
@@ -130,20 +130,8 @@ macro_rules! packet_from_borrowed {
         )+
     }
 }
-macro_rules! packet_from {
-    ($($t:ident),+) => {
-        $(
-            impl<'a> From<$t> for Packet<'a> {
-                fn from(p: $t) -> Self {
-                    Packet::$t(p)
-                }
-            }
-        )+
-    }
-}
 
-packet_from_borrowed!(Suback, Connect, Publish, Subscribe, Unsubscribe);
-packet_from!(Connack);
+packet_from_borrowed!(Suback, Connect, Publish, Subscribe, Unsubscribe, Connack);
 
 /// Packet type variant, without the associated data.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

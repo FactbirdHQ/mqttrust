@@ -1,18 +1,4 @@
-use super::{decoder::*, encoder::*, *};
-
-/// Message that the server should publish when the client disconnects.
-///
-/// Sent by the client in the [Connect] packet. [MQTT 3.1.3.3].
-///
-/// [Connect]: struct.Connect.html
-/// [MQTT 3.1.3.3]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718031
-#[derive(Debug, Clone, PartialEq)]
-pub struct LastWill<'a> {
-    pub topic: &'a str,
-    pub message: &'a [u8],
-    pub qos: QoS,
-    pub retain: bool,
-}
+use crate::encoding::{decoder::*, encoder::*, *};
 
 /// Sucess value of a [Connack] packet.
 ///
@@ -72,9 +58,10 @@ pub struct Connect<'a> {
 ///
 /// [MQTT 3.2]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718033
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Connack {
+pub struct Connack<'a> {
     pub session_present: bool,
     pub code: ConnectReturnCode,
+    marker: core::marker::PhantomData<&'a ()>
 }
 
 impl<'a> Connect<'a> {
@@ -90,11 +77,11 @@ impl<'a> Connect<'a> {
         let last_will = if connect_flags & 0b100 != 0 {
             let will_topic = read_str(buf, offset)?;
             let will_message = read_bytes(buf, offset)?;
-            let will_qod = QoS::from_u8((connect_flags & 0b11000) >> 3)?;
+            let will_qos = QoS::from_u8((connect_flags & 0b11000) >> 3)?;
             Some(LastWill {
                 topic: will_topic,
                 message: will_message,
-                qos: will_qod,
+                qos: will_qos,
                 retain: (connect_flags & 0b00100000) != 0,
             })
         } else {
@@ -195,7 +182,7 @@ impl<'a> Connect<'a> {
     }
 }
 
-impl Connack {
+impl<'a> Connack<'a> {
     pub(crate) fn from_buffer(buf: &[u8], offset: &mut usize) -> Result<Self, Error> {
         let flags = buf[*offset];
         let return_code = buf[*offset + 1];
@@ -203,6 +190,7 @@ impl Connack {
         Ok(Connack {
             session_present: (flags & 0b1 == 1),
             code: ConnectReturnCode::from_u8(return_code)?,
+            marker: core::marker::PhantomData,
         })
     }
     pub(crate) fn to_buffer(&self, buf: &mut [u8], offset: &mut usize) -> Result<usize, Error> {

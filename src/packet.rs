@@ -56,7 +56,7 @@ impl<const N: usize> PacketBuffer<N> {
 
 pub(crate) enum ReceivedPacket<'a, R: Read> {
     Pingresp,
-    Connack(Connack),
+    Connack(Connack<'a>),
     Publish(QosPid, LazyPublish<'a, R, 128>),
     Puback(Pid),
     #[cfg(feature = "qos2")]

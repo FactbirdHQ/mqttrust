@@ -1,5 +1,7 @@
 use crate::encoding::{decoder::*, encoder::*, *};
 
+use super::will::SerializedWill;
+
 /// Message that the server should publish when the client disconnects.
 ///
 /// Sent by the client in the [Connect] packet. [MQTT 3.1.3.3].
@@ -12,6 +14,12 @@ pub struct LastWill<'a> {
     pub message: &'a [u8],
     pub qos: QoS,
     pub retain: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Auth<'a> {
+    pub user_name: &'a str,
+    pub password: &'a str,
 }
 
 /// Sucess value of a [Connack] packet.
@@ -60,21 +68,40 @@ impl ConnectReturnCode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Connect<'a> {
     pub protocol: crate::encoding::Protocol,
+    
+    /// Any properties associated with the CONNECT request.
+    pub properties: Properties<'a>,
+
+    /// Specifies the keep-alive interval of the connection in seconds.
     pub keep_alive: u16,
+
+    /// The ID of the client that is connecting. May be an empty string to automatically allocate
+    /// an ID from the broker.
     pub client_id: &'a str,
-    pub clean_session: bool,
-    pub last_will: Option<LastWill<'a>>,
-    pub username: Option<&'a str>,
-    pub password: Option<&'a [u8]>,
+
+    /// An optional authentication message used by the server.
+    pub auth: Option<Auth<'a>>,
+
+    /// An optional will message to be transmitted whenever the connection is lost.
+    pub(crate) will: Option<SerializedWill<'a>>,
+
+    /// Specified true there is no session state being taken in to the MQTT connection.
+    pub clean_start: bool,
 }
 
 /// Connack packet ([MQTT 3.2]).
 ///
 /// [MQTT 3.2]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718033
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Connack {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Connack<'a> {
+    /// Indicates true if session state is being maintained by the broker.
     pub session_present: bool,
-    pub code: ConnectReturnCode,
+
+    /// A status code indicating the success status of the connection.
+    pub reason_code: ReasonCode,
+
+    /// A list of properties associated with the connection.
+    pub properties: Properties<'a>,
 }
 
 impl<'a> Connect<'a> {
@@ -90,29 +117,18 @@ impl<'a> Connect<'a> {
         let last_will = if connect_flags & 0b100 != 0 {
             let will_topic = read_str(buf, offset)?;
             let will_message = read_bytes(buf, offset)?;
-            let will_qod = QoS::from_u8((connect_flags & 0b11000) >> 3)?;
+            let will_qos = QoS::from_u8((connect_flags & 0b11000) >> 3)?;
             Some(LastWill {
                 topic: will_topic,
                 message: will_message,
-                qos: will_qod,
+                qos: will_qos,
                 retain: (connect_flags & 0b00100000) != 0,
             })
         } else {
             None
         };
 
-        let username = if connect_flags & 0b10000000 != 0 {
-            Some(read_str(buf, offset)?)
-        } else {
-            None
-        };
-
-        let password = if connect_flags & 0b01000000 != 0 {
-            Some(read_bytes(buf, offset)?)
-        } else {
-            None
-        };
-
+      
         let clean_session = (connect_flags & 0b10) != 0;
 
         Ok(Connect {

@@ -48,7 +48,7 @@ embedded-io-async = { version = "0.6", features = ["std"] }
 futures-lite = { version = "1", default-features = false, features = ["std"] }
 
 [features]
-default = ["mqttv5", "qos2"]
+default = ["mqttv3", "qos2"]
 
 mqttv3 = []
 mqttv5 = []

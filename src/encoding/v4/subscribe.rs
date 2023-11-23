@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use super::{decoder::*, encoder::*, *};
+use crate::encoding::{decoder::*, encoder::*, *};
 
 /// Subscribe topic.
 ///

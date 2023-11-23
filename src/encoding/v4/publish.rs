@@ -1,4 +1,4 @@
-use super::{decoder::*, encoder::*, *};
+use crate::encoding::{decoder::*, encoder::*, *};
 
 /// Publish packet ([MQTT 3.3]).
 ///
