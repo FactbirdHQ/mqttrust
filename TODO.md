@@ -1,0 +1,17 @@
+TODO:
+- [x] Ping handling
+- [x] Connect/Disconnect/Reconnect
+- [x] Sending ACK
+- [x] Network write
+- [x] Topic filter
+- [x] Publish before connect handling
+- [ ] MQTTv5 handling
+- [ ] Reconnect backoff
+- [ ] Change config from client?
+- [ ] Error handling
+- [ ] Framed inflight buffer
+- [ ] Republish
+- [ ] Persistence
+- [ ] Logging
+- [ ] Docs
+- [ ] TEST & Evaluate!
