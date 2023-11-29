@@ -13,7 +13,7 @@ mod config;
 mod encoding;
 mod error;
 mod packet;
-mod persistence;
+// mod persistence;
 pub mod pubsub;
 mod reason_codes;
 mod stack;

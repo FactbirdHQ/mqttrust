@@ -23,7 +23,7 @@ async fn main() {
     // Create the MQTT stack
     let broker = IpBroker::new(Ipv4Addr::new(127, 0, 0, 1), 1883);
     let config =
-        Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(500));
+        Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
     let state = make_static!(State::<NoopRawMutex, 1024, 1024, 2>::new(), #[export_name = "mqtt_state"]);
     let (mut stack, client) = embedded_mqtt::new(state, config, &*network);

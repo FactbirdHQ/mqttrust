@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_nal_async::{AddrType, Dns, IpAddr, Ipv4Addr, Ipv6Addr, TcpConnect};
-use heapless::String;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Network;
@@ -23,10 +22,7 @@ impl TcpConnect for Network {
     async fn connect<'a>(
         &'a self,
         remote: embedded_nal_async::SocketAddr,
-    ) -> Result<Self::Connection<'a>, Self::Error>
-    where
-        Self: 'a,
-    {
+    ) -> Result<Self::Connection<'a>, Self::Error> {
         let stream = tokio::net::TcpStream::connect(format!("{}", remote)).await?;
         Ok(FromTokio::new(stream))
     }
@@ -57,7 +53,11 @@ impl Dns for Network {
         ))
     }
 
-    async fn get_host_by_address(&self, _addr: IpAddr) -> Result<String<256>, Self::Error> {
+    async fn get_host_by_address(
+        &self,
+        _addr: IpAddr,
+        _result: &mut [u8],
+    ) -> Result<usize, Self::Error> {
         unimplemented!()
     }
 }

@@ -15,12 +15,12 @@ path = "tests/benches/pubsub.rs"
 
 [dependencies]
 embedded-io-async = { version = "0.6" }
-embedded-nal-async = { version = "0.6" }
+embedded-nal-async = { version = "0.7" }
 serde = { version = "1", features = ["derive"], default-features = false }
 heapless = { version = "0.8", features = ["serde"] }
 num_enum = { version = "0.7", default-features = false }
 futures = { version = "0.3.28", default-features = false }
-itertools = { version = "0.11", default-features = false }
+itertools = { version = "0.12", default-features = false }
 hash32 = "0.3.1"
 hash32-derive = "0.1.1"
 
