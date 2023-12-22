@@ -2,24 +2,23 @@ use core::str::FromStr;
 
 use crate::error::ProtocolError;
 use embassy_time::Duration;
-use heapless::String;
 
 #[derive(Debug)]
-pub struct Config<Broker: crate::Broker> {
+pub struct Config<Broker> {
     pub(crate) broker: Broker,
     // pub(crate) will: Option<SerializedWill<'a>>,
-    pub(crate) client_id: String<64>,
+    pub(crate) client_id: heapless::String<64>,
     pub(crate) keepalive_interval: Duration,
     pub(crate) downgrade_qos: bool,
     // pub(crate) auth: Option<Auth<'a>>,
 }
 
-impl<Broker: crate::Broker> Config<Broker> {
+impl<Broker> Config<Broker> {
     /// Construct configuration for the MQTT client.
     pub fn new(client_id: &str, broker: Broker) -> Self {
         Self {
             broker,
-            client_id: String::from_str(client_id).unwrap(),
+            client_id: heapless::String::from_str(client_id).unwrap(),
             // auth: None,
             keepalive_interval: Duration::from_secs(59),
             downgrade_qos: false,
@@ -58,7 +57,7 @@ impl<Broker: crate::Broker> Config<Broker> {
     /// Specify a known client ID to use. If not assigned, the broker will auto assign an ID.
     pub fn client_id(mut self, id: &str) -> Result<Self, ProtocolError> {
         self.client_id =
-            String::try_from(id).map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
+            heapless::String::try_from(id).map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
         Ok(self)
     }
 
@@ -98,16 +97,4 @@ impl<Broker: crate::Broker> Config<Broker> {
 
     //     Ok(self)
     // }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::broker::IpBroker;
-
-    #[test]
-    pub fn basic_config() {
-        let localhost: embedded_nal_async::IpAddr = "127.0.0.1".parse().unwrap();
-        let config: Config<IpBroker> = Config::new("client_id", (localhost, 1883).into());
-    }
 }

@@ -5,7 +5,7 @@ TODO:
 - [x] Network write
 - [x] Topic filter
 - [x] Publish before connect handling
-- [ ] MQTTv5 handling
+- [x] MQTTv5 handling
 - [ ] Reconnect backoff
 - [ ] Change config from client?
 - [ ] Error handling
@@ -15,3 +15,4 @@ TODO:
 - [ ] Logging
 - [ ] Docs
 - [ ] TEST & Evaluate!
+- [ ] Packet builders?

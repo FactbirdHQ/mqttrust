@@ -71,43 +71,15 @@ where
     pub fn new(mut buf: B) -> Self {
         Self {
             capacity: buf.buf().len(),
-
-            // This will not be initialized until we split the buffer
             buf: UnsafeCell::new(buf),
-
-            /// Owned by the writer
             write: 0,
-
-            /// Owned by the reader
             read: 0,
-
-            /// Cooperatively owned
-            ///
-            /// NOTE: This should generally be initialized as size_of::<self.buf>(), however
-            /// this would prevent the structure from being entirely zero-initialized,
-            /// and can cause the .data section to be much larger than necessary. By
-            /// forcing the `last` pointer to be zero initially, we place the structure
-            /// in an "inverted" condition, which will be resolved on the first commited
-            /// bytes that are written to the structure.
-            ///
-            /// When read == last == write, no bytes will be allowed to be read (good), but
-            /// write grants can be given out (also good).
             last: 0,
-
-            /// Owned by the Writer, "private"
             reserve: 0,
-
-            /// Owned by the Reader, "private"
             read_in_progress: false,
-
-            /// Owned by the Writer, "private"
             write_in_progress: false,
-
             publisher_taken: false,
-
-            /// Shared between reader and writer
             publisher_waker: WakerRegistration::new(),
-
             subscriber_count: 0,
             subscriber_wakers: MultiWakerRegistration::new(),
         }
@@ -152,43 +124,15 @@ impl<const N: usize, const SUBS: usize> PubSubState<StaticBufferProvider<N>, SUB
     pub const fn new_static() -> Self {
         Self {
             capacity: N,
-
-            // This will not be initialized until we split the buffer
             buf: UnsafeCell::new(StaticBufferProvider::new()),
-
-            /// Owned by the writer
             write: 0,
-
-            /// Owned by the reader
             read: 0,
-
-            /// Cooperatively owned
-            ///
-            /// NOTE: This should generally be initialized as size_of::<self.buf>(), however
-            /// this would prevent the structure from being entirely zero-initialized,
-            /// and can cause the .data section to be much larger than necessary. By
-            /// forcing the `last` pointer to be zero initially, we place the structure
-            /// in an "inverted" condition, which will be resolved on the first commited
-            /// bytes that are written to the structure.
-            ///
-            /// When read == last == write, no bytes will be allowed to be read (good), but
-            /// write grants can be given out (also good).
             last: 0,
-
-            /// Owned by the Writer, "private"
             reserve: 0,
-
-            /// Owned by the Reader, "private"
             read_in_progress: false,
-
-            /// Owned by the Writer, "private"
             write_in_progress: false,
-
             publisher_taken: false,
-
-            /// Shared between reader and writer
             publisher_waker: WakerRegistration::new(),
-
             subscriber_count: 0,
             subscriber_wakers: MultiWakerRegistration::new(),
         }

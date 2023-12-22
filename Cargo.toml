@@ -8,11 +8,6 @@ members = []
 default-members = ["."]
 exclude = ["examples"]
 
-[[bench]]
-name = "benches"
-harness = false
-path = "tests/benches/pubsub.rs"
-
 [dependencies]
 embedded-io-async = { version = "0.6" }
 embedded-nal-async = { version = "0.7" }
@@ -27,9 +22,9 @@ hash32-derive = "0.1.1"
 defmt = { version = "0.3.5", optional = true }
 log = { version = "0.4", optional = true }
 
-embassy-sync = { version = "0.4", features = ["nightly"] }
+embassy-sync = { version = "0.5" }
 embassy-futures = "0.1"
-embassy-time = { version = "0.1" }
+embassy-time = { version = "0.2" }
 
 [dev-dependencies]
 tokio = { version = "1.32", features = ["rt", "macros"] }
@@ -40,18 +35,21 @@ criterion = "0.5.1"
 crossbeam-utils = "0.8.16"
 crossbeam = "0.8.2"
 env_logger = "0.10"
-embassy-time = { version = "0.1", features = ["std", "nightly"] }
+embassy-time = { version = "0.2", features = ["log", "std", "generic-queue"] }
 native-tls = { version = "^0.2" }
 dns-lookup = "2"
 async-io = { version = "2", default-features = false }
 embedded-io-async = { version = "0.6", features = ["std"] }
-futures-lite = { version = "1", default-features = false, features = ["std"] }
+futures-lite = { version = "2.1", default-features = false, features = ["std"] }
 
 [features]
-default = ["mqttv3", "qos2"]
+default = ["mqttv5", "max_topic_len_64"]
 
 mqttv3 = []
 mqttv5 = []
 
 qos2 = []
 
+max_topic_len_64 = []
+max_topic_len_128 = []
+max_topic_len_256 = []

@@ -1,11 +1,9 @@
-use crate::{
-    encoding::{self, utils::StateError, ConnectReturnCode},
-    reason_codes::ReasonCode,
-};
+use crate::encoding::{self, StateError};
 // use crate::de::Error as DeError;
 // use crate::ser::Error as SerError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     EOF,
     StateMismatch,
@@ -28,6 +26,7 @@ impl From<crate::encoding::Error> for Error {
 /// Errors that are specific to the MQTT protocol implementation.
 #[non_exhaustive]
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ProtocolError {
     ProvidedClientIdTooLong,
     UnexpectedPacket,
@@ -41,19 +40,21 @@ pub enum ProtocolError {
     NoTopic,
     AuthAlreadySpecified,
     WillAlreadySpecified,
-    Failed(ReasonCode),
+    Failed,
     // Serialization(SerError),
     // Deserialization(DeError),
 }
 
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+
 pub enum ConnectionError {
     MqttState(StateError),
     NetworkTimeout,
     FlushTimeout,
     Io(embedded_io_async::ErrorKind),
-    ConnectionRefused(ConnectReturnCode),
+    ConnectionRefused,
     NotConnAck,
     RequestsDone,
 }

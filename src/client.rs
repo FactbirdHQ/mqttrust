@@ -1,7 +1,7 @@
 use core::{
     cell::RefCell,
     future::poll_fn,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Range},
     str::FromStr,
     task::Poll,
 };
@@ -12,13 +12,18 @@ use itertools::EitherOrBoth;
 use itertools::Itertools;
 
 use crate::{
-    encoding::{decode_slice, encode_slice, Packet, PacketType, Pid, Publish, QoS, Subscribe},
+    encoding::{
+        decoder::{FixedHeader, MqttDecoder},
+        encoder::{MqttEncode, MqttEncoder},
+        PacketType, Pid, Publish, QoS, QosPid, Subscribe,
+    },
     error::Error,
     pubsub::{
         framed::{FrameGrantR, FramePublisher, FrameSubscriber},
         PubSubChannel, SliceBufferProvider,
     },
     state::{PendingAck, Shared},
+    Properties, TxHeader, MAX_TOPIC_LEN,
 };
 
 pub struct MqttClient<'a, M: RawMutex, const SUBS: usize> {
@@ -40,17 +45,15 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         }
     }
 
-    async fn send(&self, mut packet: Packet<'_>) -> Result<Pid, Error> {
-        let (pid, typ) = {
+    async fn send<P: MqttEncode>(&self, mut packet: P) -> Result<Pid, Error> {
+        let pid = {
             let state_ref = self.shared.lock().await;
             let mut shared = state_ref.borrow_mut();
 
             // Check if we can send, based on `MAX_INFLIGHT` & packet.qos()
-            match packet {
-                Packet::Publish(ref publish) if publish.qos == QoS::AtMostOnce => {}
-                Packet::Publish(_)
-                    if shared.outgoing_pub.len() == shared.outgoing_pub.capacity() =>
-                {
+            match packet.get_qos() {
+                Some(qos) if qos == QoS::AtMostOnce => {}
+                Some(_) if shared.outgoing_pub.len() == shared.outgoing_pub.capacity() => {
                     return Err(Error::MaxInflight)
                 }
                 _ => {}
@@ -60,36 +63,37 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             let tx_prod_ref = self.tx_publisher.lock().await;
             let mut tx_prod = tx_prod_ref.borrow_mut();
 
-            match packet {
-                Packet::Publish(ref mut publish) => {
-                    publish.pid = Some(pid);
-                }
-                Packet::Subscribe(ref mut sub) => {
-                    sub.pid = Some(pid);
-                }
-                Packet::Unsubscribe(ref mut unsub) => {
-                    unsub.pid = Some(pid);
-                }
-                _ => {}
-            }
+            packet.set_pid(pid);
+
+            let tx_header = TxHeader {
+                typ: P::PACKET_TYPE,
+                qos: packet.get_qos(),
+                pid,
+            };
 
             debug!("Sending packet {:?}", packet);
 
-            let max_size = packet.len();
-            let mut grant = tx_prod.grant(max_size).map_err(|_| Error::StateMismatch)?;
+            let mut grant = tx_prod
+                .grant(packet.packet_len())
+                .map_err(|_| Error::StateMismatch)?;
 
-            let actual_len =
-                encode_slice(&packet, grant.deref_mut()).map_err(|_| Error::MalformedPacket)?;
-            grant.commit(actual_len);
+            let mut buf = grant.deref_mut();
 
-            (pid, packet.get_type())
+            let header_len = tx_header.to_bytes(&mut buf);
+            let mut encoder = MqttEncoder::new(&mut buf[header_len..]);
+            packet.to_buffer(&mut encoder)?;
+
+            let used = header_len + encoder.bytes().len();
+            grant.commit(used);
+
+            pid
         };
 
         poll_fn(|cx| {
             if let Ok(shared) = self.shared.try_lock() {
                 let mut state = shared.borrow_mut();
 
-                match typ {
+                match P::PACKET_TYPE {
                     PacketType::Publish => {
                         // Check if `pid` has been acked by the broker
                         if !state.outgoing_pub.contains_key(&pid.get()) {
@@ -135,7 +139,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
     /// If `QoS` is set to `QoS1` or `QoS2`, this function will wait until the
     /// corresponding `PubAck` message has been received.
     pub async fn publish(&self, packet: impl Into<Publish<'_>>) -> Result<(), Error> {
-        let pid = self.send(Packet::Publish(packet.into())).await?;
+        let pid = self.send(packet.into()).await?;
 
         // Wait until `pid` has been ack'd (known by it being removed from the state)
         poll_fn(|cx| {
@@ -168,13 +172,14 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             .framed_subscriber()
             .map_err(|_| Error::StateMismatch)?;
 
-        let subscribe = packet.into();
+        let subscribe: Subscribe = packet.into();
         let topic_filters = subscribe
-            .topics()
+            .topics
+            .iter()
             .map(|sub| TopicFilter::new(sub.topic_path))
             .collect::<Result<_, _>>()?;
 
-        let pid = self.send(Packet::Subscribe(subscribe)).await?;
+        let pid = self.send(subscribe).await?;
 
         // Wait until `pid` has been ack'd (known by it being removed from the state)
         let ack_fut = poll_fn(|cx| {
@@ -213,8 +218,6 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         })
     }
 }
-
-const MAX_TOPIC_LEN: usize = 128;
 
 /// A topic filter.
 ///
@@ -306,7 +309,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize> futures::Stream for Subscription<'a
                 if self
                     .topic_filters
                     .iter()
-                    .any(|filter| filter.is_match(msg.topic()))
+                    .any(|filter| filter.is_match(msg.topic_name()))
                 {
                     msg.auto_release();
 
@@ -328,38 +331,88 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
     }
 }
 
-pub struct Message<'a, M: RawMutex, const SUBS: usize>(
-    FrameGrantR<'a, M, SliceBufferProvider<'a>, SUBS>,
-);
+pub struct Message<'a, M: RawMutex, const SUBS: usize> {
+    grant: FrameGrantR<'a, M, SliceBufferProvider<'a>, SUBS>,
+    header: FixedHeader,
+    qos_pid: QosPid,
+    topic_name: Range<usize>,
+    payload: Range<usize>,
+    properties: Range<usize>,
+}
 
 impl<'a, M: RawMutex, const SUBS: usize> Message<'a, M, SUBS> {
     fn try_new(grant: FrameGrantR<'a, M, SliceBufferProvider<'a>, SUBS>) -> Option<Self> {
-        if Self::decode(grant.deref()).is_some() {
-            return Some(Self(grant));
-        }
-        None
+        let mut decoder = MqttDecoder::new(grant.deref());
+        // FIXME: would returning result here be more intuitive?
+        let header = decoder.read_fixed_header().ok()?;
+        decoder.check_remaining(header.remaining_len).ok()?;
+
+        let topic_name = {
+            let topic_name_start = decoder.offset();
+            decoder.read_str().ok()?;
+            topic_name_start..decoder.offset()
+        };
+
+        let qos_pid = match header.qos {
+            QoS::AtMostOnce => QosPid::AtMostOnce,
+            QoS::AtLeastOnce => QosPid::AtLeastOnce(Pid::try_from(decoder.read_u16().ok()?).ok()?),
+            #[cfg(feature = "qos2")]
+            QoS::ExactlyOnce => QosPid::ExactlyOnce(Pid::try_from(decoder.read_u16().ok()?).ok()?),
+        };
+
+        #[cfg(feature = "mqttv5")]
+        let properties = {
+            let properties_start = decoder.offset();
+            decoder.read_properties().ok()?;
+            properties_start..decoder.offset()
+        };
+
+        let payload = {
+            let payload_start = decoder.offset();
+            decoder.read_payload().ok()?;
+            payload_start..decoder.offset()
+        };
+
+        Some(Self {
+            grant,
+            header,
+            qos_pid,
+            topic_name,
+            #[cfg(feature = "mqttv5")]
+            properties,
+            payload,
+        })
     }
 
     fn auto_release(&mut self) {
-        self.0.auto_release(true)
+        self.grant.auto_release(true)
     }
 
-    fn decode(buf: &[u8]) -> Option<Publish<'_>> {
-        let Ok(Some(Packet::Publish(publish))) = decode_slice(buf) else {
-            return None;
-        };
-
-        Some(publish)
+    pub fn dup(&self) -> bool {
+        self.header.dup
     }
 
-    pub fn topic(&self) -> &str {
+    pub fn retain(&self) -> bool {
+        self.header.retain
+    }
+
+    pub fn qos_pid(&self) -> QosPid {
+        self.qos_pid
+    }
+
+    pub fn topic_name(&self) -> &str {
         // # Safety: Checked at instantiation in `try_new`
-        Self::decode(&self.0).unwrap().topic_name
+        core::str::from_utf8(&self.grant.deref()[self.topic_name.clone()]).unwrap()
+    }
+
+    #[cfg(feature = "mqttv5")]
+    pub fn properties(&self) -> Properties<'_> {
+        Properties::DataBlock(&self.grant.deref()[self.properties.clone()])
     }
 
     pub fn payload(&self) -> &[u8] {
         // # Safety: Checked at instantiation in `try_new`
-        Self::decode(&self.0).unwrap().payload
+        &self.grant.deref()[self.payload.clone()]
     }
 }
 

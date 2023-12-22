@@ -1,192 +1,110 @@
-use core::fmt::Debug;
-
 use embedded_io_async::{Error, ErrorKind, Read};
 
-use crate::encoding::{
-    decoder::{read_bytes, read_header},
-    packet::PacketType,
-    Connack, Pid, QoS, QosPid,
-};
+use crate::encoding::received_packet::ReceivedPacket;
 
 pub(crate) struct PacketBuffer<const N: usize> {
     // MqttStack holds an RX buffer just big enough to hold a single packet
     // header + `MAX_TOPIC_LEN`, in order for it to handle `ACK`, `PING`, and
     // route incoming `PUBLISH` messages to a subscriber.
     buf: [u8; N],
-    len: usize,
+    read_bytes: usize,
+    packet_len: Option<usize>,
 }
 
 impl<const N: usize> PacketBuffer<N> {
     pub fn new() -> Self {
         Self {
             buf: [0; N],
-            len: 0,
+            read_bytes: 0,
+            packet_len: None,
         }
     }
 
-    fn buf(&self) -> &[u8] {
-        &self.buf[..self.len]
-    }
-
-    pub fn rotate(&mut self, amt: usize) {
-        let amt = core::cmp::min(self.len, amt);
-        self.buf.rotate_left(amt);
-        self.len -= amt;
-    }
-
-    pub(crate) fn has_header(&self) -> bool {
-        let mut offset = 0;
-        match read_header(self.buf(), &mut offset) {
-            Ok(Some(_)) => true,
-            _ => false,
+    pub fn receive_buffer(&mut self) -> Result<&mut [u8], ErrorKind> {
+        if self.packet_len.is_none() {
+            self.probe_fixed_header()?;
         }
+
+        let end = if let Some(packet_len) = &self.packet_len {
+            *packet_len
+        } else {
+            self.read_bytes + 1
+        };
+
+        Ok(&mut self.buf[self.read_bytes..end])
+    }
+
+    pub fn commit(&mut self, count: usize) {
+        self.read_bytes += count;
+    }
+
+    fn probe_fixed_header(&mut self) -> Result<(), ErrorKind> {
+        if self.read_bytes <= 1 {
+            return Ok(());
+        }
+
+        self.packet_len = None;
+
+        let mut packet_len = 0;
+        for (index, value) in self.buf[1..self.read_bytes].iter().take(4).enumerate() {
+            packet_len += ((value & 0x7F) as usize) << (index * 7);
+            if (value & 0x80) == 0 {
+                let length_size_bytes = 1 + index;
+
+                // MQTT headers encode the packet type in the first byte followed by the packet
+                // length as a varint
+                let header_size_bytes = 1 + length_size_bytes;
+                self.packet_len = Some(header_size_bytes + packet_len);
+                break;
+            }
+        }
+
+        // We should have found the packet length by now.
+        if self.read_bytes >= 5 && self.packet_len.is_none() {
+            return Err(ErrorKind::InvalidData);
+        }
+
+        Ok(())
+    }
+
+    pub fn packet_available(&self) -> bool {
+        match self.packet_len {
+            Some(len) => self.read_bytes >= len,
+            None => false,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.read_bytes = 0;
+        self.packet_len = None;
+    }
+
+    pub fn received_packet<'a, R: Read>(
+        &'a mut self,
+        reader: &'a mut R,
+    ) -> Result<ReceivedPacket<'a, R, 128>, crate::encoding::Error> {
+        let packet_len = *self
+            .packet_len
+            .as_ref()
+            .ok_or(crate::encoding::Error::InvalidLength)?;
+
+        // Reset the buffer now. Once the user drops the `ReceivedPacket`, this reader will then be
+        // immediately ready to begin receiving a new packet.
+        self.reset();
+
+        ReceivedPacket::from_buffer(&self.buf[..packet_len], reader)
     }
 
     pub(crate) async fn receive<S: Read>(&mut self, socket: &mut S) -> Result<(), ErrorKind> {
-        match socket.read(&mut self.buf[self.len..]).await {
+        let buffer = self.receive_buffer()?;
+
+        match socket.read(buffer).await {
             Ok(0) => Err(ErrorKind::NotConnected),
             Ok(n) => {
-                self.len += n;
+                self.commit(n);
                 Ok(())
             }
             Err(e) => Err(e.kind()),
         }
-    }
-}
-
-pub(crate) enum ReceivedPacket<'a, R: Read> {
-    Pingresp,
-    Connack(Connack<'a>),
-    Publish(QosPid, LazyPublish<'a, R, 128>),
-    Puback(Pid),
-    #[cfg(feature = "qos2")]
-    Pubrec(Pid),
-    #[cfg(feature = "qos2")]
-    Pubrel(Pid),
-    #[cfg(feature = "qos2")]
-    Pubcomp(Pid),
-    Suback(Pid), // FIXME: missing result codes
-    Unsuback(Pid),
-}
-
-impl<'a, R: Read> Debug for ReceivedPacket<'a, R> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Pingresp => write!(f, "Pingresp"),
-            Self::Connack(arg0) => f.debug_tuple("Connack").field(arg0).finish(),
-            Self::Publish(arg0, _) => f.debug_tuple("Publish").field(arg0).finish(),
-            Self::Puback(arg0) => f.debug_tuple("Puback").field(arg0).finish(),
-            Self::Pubrec(arg0) => f.debug_tuple("Pubrec").field(arg0).finish(),
-            Self::Pubrel(arg0) => f.debug_tuple("Pubrel").field(arg0).finish(),
-            Self::Pubcomp(arg0) => f.debug_tuple("Pubcomp").field(arg0).finish(),
-            Self::Suback(arg0) => f.debug_tuple("Suback").field(arg0).finish(),
-            Self::Unsuback(arg0) => f.debug_tuple("Unsuback").field(arg0).finish(),
-        }
-    }
-}
-
-impl<'a, R: Read> ReceivedPacket<'a, R> {
-    pub(crate) fn try_new<const N: usize>(
-        buf: &'a mut PacketBuffer<N>,
-        reader: &'a mut R,
-    ) -> Option<Self> {
-        let mut offset = 0;
-
-        let (header, remaining_len) = match read_header(buf.buf(), &mut offset) {
-            Ok(Some((header, remaining_len))) => (header, remaining_len),
-            Ok(None) => {
-                // Need more data
-                return None;
-            }
-            Err(_) => {
-                // FIXME: Is this correct?
-                error!(
-                    "Unable to read incoming packet header! Discarding one byte. BUF: {:?}",
-                    buf.buf()
-                );
-                buf.rotate(1);
-                return None;
-            }
-        };
-
-        debug!("Read header {:?}", header.typ);
-
-        let packet_len = offset + remaining_len;
-
-        let packet = Some(match header.typ {
-            PacketType::Pingresp => Self::Pingresp,
-            PacketType::Connack => {
-                Self::Connack(Connack::from_buffer(buf.buf(), &mut offset).ok()?)
-            }
-            PacketType::Publish => {
-                let _topic_name = read_bytes(buf.buf(), &mut offset).ok()?;
-
-                let qos_pid = match header.qos {
-                    QoS::AtMostOnce => QosPid::AtMostOnce,
-                    QoS::AtLeastOnce => {
-                        QosPid::AtLeastOnce(Pid::from_buffer(buf.buf(), &mut offset).ok()?)
-                    }
-                    #[cfg(feature = "qos2")]
-                    QoS::ExactlyOnce => {
-                        QosPid::ExactlyOnce(Pid::from_buffer(buf.buf(), &mut offset).ok()?)
-                    }
-                };
-
-                let buf_len = core::cmp::min(packet_len, buf.buf().len());
-
-                Self::Publish(
-                    qos_pid,
-                    LazyPublish::new(&buf.buf()[..buf_len], packet_len, reader),
-                )
-            }
-            PacketType::Puback => Self::Puback(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
-            #[cfg(feature = "qos2")]
-            PacketType::Pubrec => Self::Pubrec(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
-            #[cfg(feature = "qos2")]
-            PacketType::Pubrel => Self::Pubrel(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
-            #[cfg(feature = "qos2")]
-            PacketType::Pubcomp => Self::Pubcomp(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
-            PacketType::Suback => Self::Suback(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
-            PacketType::Unsuback => Self::Unsuback(Pid::from_buffer(buf.buf(), &mut offset).ok()?),
-            _ => return None,
-        });
-
-        buf.rotate(packet_len);
-
-        packet
-    }
-}
-
-pub(crate) struct LazyPublish<'a, S: Read, const N: usize> {
-    buf: heapless::Vec<u8, N>,
-    packet_len: usize,
-    reader: &'a mut S,
-}
-
-impl<'a, S: Read, const N: usize> LazyPublish<'a, S, N> {
-    pub fn new(buf: &[u8], packet_len: usize, reader: &'a mut S) -> Self {
-        Self {
-            buf: heapless::Vec::from_slice(buf).unwrap(),
-            packet_len,
-            reader,
-        }
-    }
-    pub fn len(&self) -> usize {
-        self.packet_len
-    }
-
-    pub async fn copy_all(
-        &mut self,
-        buf: &mut [u8],
-    ) -> Result<(), embedded_io_async::ReadExactError<S::Error>> {
-        buf[..self.buf.len()].copy_from_slice(&self.buf);
-
-        if self.buf.len() < self.packet_len {
-            self.reader
-                .read_exact(&mut buf[self.buf.len()..self.packet_len])
-                .await?;
-        }
-
-        Ok(())
     }
 }

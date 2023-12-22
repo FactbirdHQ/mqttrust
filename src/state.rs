@@ -6,12 +6,6 @@ use heapless::{FnvIndexMap, IndexMap};
 
 use crate::encoding::Pid;
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub enum ConnectionState {
-    Disconnected,
-    Connected,
-}
-
 const MAX_INFLIGHT: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,8 +34,6 @@ pub struct Shared<const SUBS: usize> {
     /// Packet id of the last outgoing packet
     last_pid: Pid,
 
-    conn_state: ConnectionState,
-
     tx_waker: MultiWakerRegistration<MAX_INFLIGHT>,
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
@@ -62,7 +54,6 @@ impl<const SUBS: usize> Shared<SUBS> {
         Self {
             last_pid: Pid::new(),
 
-            conn_state: ConnectionState::Disconnected,
             tx_waker: MultiWakerRegistration::new(),
 
             outgoing_pub: IndexMap::new(),
