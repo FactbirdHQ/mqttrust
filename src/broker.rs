@@ -12,13 +12,13 @@ pub trait Broker {
 /// A broker that is specified using a qualified domain-name. The name will be resolved at some
 /// point in the future.
 #[derive(Debug)]
-pub struct DomainBroker<R: Dns, const T: usize = 253> {
+pub struct DomainBroker<'a, R: Dns, const T: usize = 253> {
     raw: heapless::String<T>,
-    resolver: R,
+    resolver: &'a R,
     addr: SocketAddr,
 }
 
-impl<R: Dns, const T: usize> DomainBroker<R, T> {
+impl<'a, R: Dns, const T: usize> DomainBroker<'a, R, T> {
     /// Construct a new domain broker.
     ///
     /// # Args
@@ -26,23 +26,27 @@ impl<R: Dns, const T: usize> DomainBroker<R, T> {
     ///   or `broker.example.com:8883`
     /// * `resolver` - A [embedded_nal::Dns] resolver to resolve the broker
     /// domain name to an IP address.
-    pub fn new(broker: &str, resolver: R) -> Result<Self, &str> {
+    pub fn new(broker: &str, resolver: &'a R) -> Result<Self, ()> {
         let addr: SocketAddr = broker.parse().unwrap_or_else(|_| {
+            let (_, port) = broker
+                .split_once(':')
+                .map(|(b, port)| (b, port.parse().unwrap()))
+                .unwrap_or((broker, MQTT_DEFAULT_PORT));
             SocketAddr::new(
                 IpAddr::V4(broker.parse().unwrap_or(Ipv4Addr::UNSPECIFIED)),
-                MQTT_DEFAULT_PORT,
+                port,
             )
         });
 
         Ok(Self {
-            raw: heapless::String::try_from(broker).map_err(|_| "Broker domain name too long")?,
+            raw: heapless::String::try_from(broker).map_err(drop)?,
             resolver,
             addr,
         })
     }
 }
 
-impl<R: Dns, const T: usize> Broker for DomainBroker<R, T> {
+impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
     async fn get_address(&mut self) -> Option<SocketAddr> {
         // Attempt to resolve the address.
         if self.addr.ip().is_unspecified() {
@@ -56,7 +60,7 @@ impl<R: Dns, const T: usize> Broker for DomainBroker<R, T> {
                     #[cfg(feature = "log")]
                     warn!("DNS lookup failed: {:?}", _e);
                     #[cfg(feature = "defmt")]
-                    warn!("DNS lookup failed: {:?}", Debug2Format(&_e));
+                    warn!("DNS lookup failed: {:?}", defmt::Debug2Format(&_e));
                 }
             }
         }

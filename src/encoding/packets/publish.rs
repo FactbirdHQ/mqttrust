@@ -1,10 +1,14 @@
-use crate::encoding::{
-    decoder::MqttDecoder,
-    encoder::{MqttEncode, MqttEncoder},
-    error::Error,
-    properties::Properties,
-    utils::{Pid, QoS},
-    FixedHeader,
+use core::fmt::Debug;
+
+use crate::{
+    encoding::{
+        encoder::{MqttEncode, MqttEncoder},
+        error::Error,
+        properties::Properties,
+        utils::{Pid, QoS},
+        FixedHeader,
+    },
+    varint_len,
 };
 use embedded_io_async::Read;
 
@@ -24,46 +28,11 @@ pub struct Publish<'a> {
     pub properties: Properties<'a>,
 }
 
-impl<'a> Publish<'a> {
-    pub fn from_buffer(decoder: &'a mut MqttDecoder) -> Result<Self, Error> {
-        let header = decoder.read_fixed_header()?;
-
-        if !matches!(header.typ, Self::PACKET_TYPE) {
-            return Err(Error::InvalidHeader);
-        }
-
-        // Topic
-        let topic_name = decoder.read_str()?;
-
-        let pid = match header.qos {
-            QoS::AtMostOnce => None,
-            QoS::AtLeastOnce => {
-                Some(Pid::try_from(decoder.read_u16()?).map_err(|_| Error::PidMissing)?)
-            }
-            #[cfg(feature = "qos2")]
-            QoS::ExactlyOnce => {
-                Some(Pid::try_from(decoder.read_u16()?).map_err(|_| Error::PidMissing)?)
-            }
-        };
-
-        Ok(Self {
-            dup: header.dup,
-            qos: header.qos,
-            retain: header.retain,
-            pid,
-            topic_name,
-            #[cfg(feature = "mqttv5")]
-            properties: decoder.read_properties()?,
-            payload: decoder.read_payload()?,
-        })
-    }
-}
-
 impl<'a> FixedHeader for Publish<'a> {
     const PACKET_TYPE: PacketType = PacketType::Publish;
 
     fn flags(&self) -> u8 {
-        let mut flags: u8 = self.qos.into();
+        let mut flags = u8::from(self.qos) << 1;
         if self.dup {
             flags |= 0b1000;
         };
@@ -74,15 +43,17 @@ impl<'a> FixedHeader for Publish<'a> {
         flags
     }
 
-    fn remaining_len(&self) -> usize {
+    fn variable_header_len(&self) -> usize {
         2 + self.topic_name.len()
             + match self.qos {
                 QoS::AtMostOnce => 0,
                 _ => 2,
-            }
-            // FIXME:
-            // + self.properties.len()
-            + self.payload.len()
+            } // pid
+            +  varint_len(self.properties.size())
+    }
+
+    fn payload_len(&self) -> usize {
+        self.payload.len()
     }
 }
 
@@ -127,6 +98,15 @@ pub(crate) struct PartialPublish<'a, S: Read> {
     buf: &'a [u8],
     packet_len: usize,
     reader: &'a mut S,
+}
+
+impl<'a, S: Read> Debug for PartialPublish<'a, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PartialPublish")
+            .field("buf", &self.buf)
+            .field("packet_len", &self.packet_len)
+            .finish()
+    }
 }
 
 impl<'a, S: Read> PartialPublish<'a, S> {

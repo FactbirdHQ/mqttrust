@@ -5,16 +5,23 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
+    ProvidedClientIdTooLong,
+    UnexpectedPacket,
+    InvalidProperty,
+    MalformedPacket,
     /// Not enough space in the write buffer.
     ///
     /// It is the caller's responsiblity to pass a big enough buffer to `encode()`.
-    WriteZero,
-    /// Tried to encode or decode a ProcessIdentifier==0.
-    InvalidPid(u16),
+    BufferSize,
+    BadIdentifier(u16),
+    Unacknowledged,
     /// Tried to decode a QoS > 2.
-    InvalidQos(u8),
-    /// Tried to decode a ConnectReturnCode > 5.
-    InvalidConnectReturnCode(u8),
+    WrongQos(u8),
+    UnsupportedPacket,
+    NoTopic,
+    AuthAlreadySpecified,
+    WillAlreadySpecified,
+    // Failed(ReasonCode),
     /// Tried to decode an unknown protocol.
     InvalidProtocol(heapless::String<10>, u8),
     /// Tried to decode an invalid fixed header (packet type, flags, or remaining_length).
@@ -69,7 +76,7 @@ impl core::fmt::Display for StateError {
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for StateError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn format(&self, f: defmt::Formatter) {
         match self {
             Self::Io(kind) => defmt::write!(f, "IO error: {:?}", kind),
             Self::InvalidState => defmt::write!(f, "Invalid state for a given operation"),

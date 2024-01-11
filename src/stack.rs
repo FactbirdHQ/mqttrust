@@ -83,7 +83,7 @@ impl<'a, N: TcpConnect> Network<'a, N> {
 
     async fn get_received_packet(
         &mut self,
-    ) -> Result<ReceivedPacket<'_, N::Connection<'a>, 128>, StateError> {
+    ) -> Result<ReceivedPacket<'_, N::Connection<'a>>, StateError> {
         if !self.is_connected() {
             return Err(StateError::Io(ErrorKind::NotConnected));
         };
@@ -93,6 +93,7 @@ impl<'a, N: TcpConnect> Network<'a, N> {
                 .receive(self.socket.as_mut().unwrap())
                 .await
                 .map_err(|kind| {
+                    error!("DISCONNECTING {:?}", kind);
                     self.socket.take();
                     StateError::Io(kind)
                 })?;
@@ -178,10 +179,12 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 //
                 // Handle to all incoming packet types by sending ack & waking
                 // `tx_wakers`.
-                debug!("Incoming packet: {:?}", packet);
                 self.last_network_action = Instant::now();
 
                 match packet {
+                    ReceivedPacket::Disconnect { reason_code, .. } => {
+                        warn!("Received disconnect packet {}", reason_code);
+                    }
                     ReceivedPacket::PingResp => {
                         // If there was no timeout to begin with, log the spurious ping response.
                         if self.await_pingresp.take().is_none() {
@@ -199,7 +202,6 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         // Handle incoming `Publish` type packets by copying the full
                         // packet to any `shared.rx_publisher` buffers where topic
                         // matches their topic_filter.
-
                         match self.rx_publisher.grant_async(publish.len()).await {
                             Ok(mut grant) => {
                                 publish.copy_all(grant.deref_mut()).await.unwrap();
@@ -218,6 +220,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         match qos_pid {
                             QosPid::AtMostOnce => {}
                             QosPid::AtLeastOnce(pid) => {
+                                warn!("sending puback {:?}", pid);
                                 let puback = PubAck { pid };
                                 self.network.write_packet(puback).await?;
                             }
@@ -298,6 +301,8 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         let shared_ref = self.shared.lock().await;
                         let mut shared = shared_ref.borrow_mut();
                         // Pop pid from pending_ack
+                        debug!("Received suback: {:?}", pid);
+
                         if !shared.pending_ack.remove(&PendingAck::Subscribe(pid.get())) {
                             error!("Unsolicited suback packet: {:?}", pid);
                             return Err(StateError::Unsolicited(pid.get()));
@@ -331,7 +336,10 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 match tx_header.typ {
                     PacketType::Publish => {
                         if tx_header.qos != Some(QoS::AtMostOnce) {
-                            debug!("Inserting {:?} into outgoing_pub", tx_header.pid.get());
+                            debug!(
+                                "[Publish] Inserting {:?} into outgoing_pub",
+                                tx_header.pid.get()
+                            );
                             shared
                                 .outgoing_pub
                                 .insert(tx_header.pid.get(), Inflight::new(packet_bytes))
@@ -339,14 +347,20 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         }
                     }
                     PacketType::Subscribe => {
-                        debug!("Inserting {:?} into pending_ack", tx_header.pid.get());
+                        debug!(
+                            "[Subscribe] Inserting {:?} into pending_ack",
+                            tx_header.pid.get()
+                        );
                         shared
                             .pending_ack
                             .insert(PendingAck::Subscribe(tx_header.pid.get()))
                             .unwrap();
                     }
                     PacketType::Unsubscribe => {
-                        debug!("Inserting {:?} into pending_ack", tx_header.pid.get());
+                        debug!(
+                            "[Unsubscribe] Inserting {:?} into pending_ack",
+                            tx_header.pid.get()
+                        );
                         shared
                             .pending_ack
                             .insert(PendingAck::Unsubscribe(tx_header.pid.get()))
@@ -371,6 +385,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
             }
             Either3::Third(_) => {
                 // ### PING future:
+
                 // raise error if last ping didn't receive ack
                 if self.await_pingresp.is_some() {
                     return Err(StateError::AwaitPingResp);
@@ -446,6 +461,9 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                     debug!("Reconnected! Reusing existing session: {}", session_present);
                 }
 
+                // TODO: If the Server returns a Server Keep Alive on the
+                // CONNACK packet, the Client MUST use that value instead of the
+                // value it sent as the Keep Alive
                 self.clean_start = false;
 
                 Ok(session_present)
@@ -508,146 +526,160 @@ mod tests {
         }
     }
 
-    // #[tokio::test]
-    // async fn subscribe_publish() {
-    //     let network = MockNetwork;
+    #[cfg(feature = "mqttv5")]
+    #[tokio::test]
+    #[ignore = "Skipped for now"]
+    async fn subscribe_publish() {
+        let network = MockNetwork;
 
-    //     // Create the MQTT stack
-    //     let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
-    //     let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
-    //     let (mut stack, client) = crate::new(state, config, &network);
+        // Create the MQTT stack
+        let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
+        let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
+        let (mut stack, client) = crate::new(state, config, &network);
 
-    //     let fut = async {
-    //         // Use the MQTT client to subscribe
+        let fut = async {
+            // Use the MQTT client to subscribe
 
-    //         let subscribe = Subscribe::new(&[SubscribeTopic {
-    //             topic_path: "ABC",
-    //             qos: QoS::AtLeastOnce,
-    //         }]);
+            let subscribe = Subscribe::new(&[SubscribeTopic {
+                topic_path: "ABC",
+                maximum_qos: QoS::AtLeastOnce,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: crate::RetainHandling::SendAtSubscribeTimeIfNonexistent,
+            }]);
 
-    //         let mut subscription = client.subscribe(subscribe).await.unwrap();
+            let mut subscription = client.subscribe::<1>(subscribe).await.unwrap();
 
-    //         client
-    //             .publish(Publish {
-    //                 dup: false,
-    //                 qos: QoS::AtLeastOnce,
-    //                 pid: None,
-    //                 retain: false,
-    //                 topic_name: "ABC",
-    //                 payload: b"",
-    //                 properties: crate::encoding::Properties::Slice(&[]),
-    //             })
-    //             .await
-    //             .unwrap();
+            client
+                .publish(Publish {
+                    dup: false,
+                    qos: QoS::AtLeastOnce,
+                    pid: None,
+                    retain: false,
+                    topic_name: "ABC",
+                    payload: b"",
+                    properties: crate::encoding::Properties::Slice(&[]),
+                })
+                .await
+                .unwrap();
 
-    //         while let Some(message) = subscription.next().await {
-    //             match message.topic() {
-    //                 "ABC" => {
-    //                     client
-    //                         .publish(Publish {
-    //                             dup: false,
-    //                             qos: QoS::AtLeastOnce,
-    //                             pid: None,
-    //                             retain: false,
-    //                             topic_name: "ABC",
-    //                             payload: b"",
-    //                             properties: crate::encoding::Properties::Slice(&[]),
-    //                         })
-    //                         .await
-    //                         .unwrap();
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     };
+            while let Some(message) = subscription.next().await {
+                match message.topic_name() {
+                    "ABC" => {
+                        client
+                            .publish(Publish {
+                                dup: false,
+                                qos: QoS::AtLeastOnce,
+                                pid: None,
+                                retain: false,
+                                topic_name: "ABC",
+                                payload: b"",
+                                properties: crate::encoding::Properties::Slice(&[]),
+                            })
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        };
 
-    //     embassy_futures::select::select(stack.run(), fut).await;
-    // }
+        embassy_futures::select::select(stack.run(), fut).await;
+    }
 
-    // #[tokio::test]
-    // async fn multiple_subscribe() {
-    //     let network = MockNetwork;
+    #[cfg(feature = "mqttv5")]
+    #[tokio::test]
+    #[ignore = "Skipped for now"]
+    async fn multiple_subscribe() {
+        let network = MockNetwork;
 
-    //     // Create the MQTT stack
-    //     let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
-    //     let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
-    //     let (mut stack, client) = crate::new(state, config, &network);
+        // Create the MQTT stack
+        let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
+        let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
+        let (mut stack, client) = crate::new(state, config, &network);
 
-    //     // Use the MQTT client to subscribe
+        // Use the MQTT client to subscribe
 
-    //     client
-    //         .publish(Publish {
-    //             dup: false,
-    //             qos: QoS::AtLeastOnce,
-    //             pid: None,
-    //             retain: false,
-    //             topic_name: "ABC",
-    //             payload: b"",
-    //             properties: crate::encoding::Properties::Slice(&[]),
-    //         })
-    //         .await
-    //         .unwrap();
+        client
+            .publish(Publish {
+                dup: false,
+                qos: QoS::AtLeastOnce,
+                pid: None,
+                retain: false,
+                topic_name: "ABC",
+                payload: b"",
+                properties: crate::encoding::Properties::Slice(&[]),
+            })
+            .await
+            .unwrap();
 
-    //     let fut_a = async {
-    //         let subscribe_a = Subscribe::new(&[SubscribeTopic {
-    //             topic_path: "ABC",
-    //             qos: QoS::AtLeastOnce,
-    //         }]);
+        let fut_a = async {
+            let subscribe_a = Subscribe::new(&[SubscribeTopic {
+                topic_path: "ABC",
+                maximum_qos: QoS::AtLeastOnce,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: crate::RetainHandling::SendAtSubscribeTimeIfNonexistent,
+            }]);
 
-    //         let mut subscription_a = client.subscribe(subscribe_a).await.unwrap();
-    //         while let Some(message) = subscription_a.next().await {
-    //             match message.topic() {
-    //                 "ABC" => {
-    //                     client
-    //                         .publish(Publish {
-    //                             dup: false,
-    //                             qos: QoS::AtLeastOnce,
-    //                             pid: None,
-    //                             retain: false,
-    //                             topic_name: "CDE",
-    //                             payload: b"",
-    //                             properties: crate::encoding::Properties::Slice(&[]),
-    //                         })
-    //                         .await
-    //                         .unwrap();
-    //                     break;
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     };
+            let mut subscription_a = client.subscribe::<1>(subscribe_a).await.unwrap();
+            while let Some(message) = subscription_a.next().await {
+                match message.topic_name() {
+                    "ABC" => {
+                        client
+                            .publish(Publish {
+                                dup: false,
+                                qos: QoS::AtLeastOnce,
+                                pid: None,
+                                retain: false,
+                                topic_name: "CDE",
+                                payload: b"",
+                                properties: crate::encoding::Properties::Slice(&[]),
+                            })
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        };
 
-    //     let fut_b = async {
-    //         let subscribe_b = Subscribe::new(&[SubscribeTopic {
-    //             topic_path: "CDE",
-    //             qos: QoS::AtLeastOnce,
-    //         }]);
+        let fut_b = async {
+            let subscribe_b = Subscribe::new(&[SubscribeTopic {
+                topic_path: "CDE",
+                maximum_qos: QoS::AtLeastOnce,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: crate::RetainHandling::SendAtSubscribeTimeIfNonexistent,
+            }]);
 
-    //         let mut subscription_b = client.subscribe(subscribe_b).await.unwrap();
+            let mut subscription_b = client.subscribe::<1>(subscribe_b).await.unwrap();
 
-    //         while let Some(message) = subscription_b.next().await {
-    //             match message.topic() {
-    //                 "CDE" => {
-    //                     client
-    //                         .publish(Publish {
-    //                             dup: false,
-    //                             qos: QoS::AtLeastOnce,
-    //                             pid: None,
-    //                             retain: false,
-    //                             topic_name: "ABC",
-    //                             payload: b"",
-    //                             properties: crate::encoding::Properties::Slice(&[]),
-    //                         })
-    //                         .await
-    //                         .unwrap();
-    //                     break;
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     };
+            while let Some(message) = subscription_b.next().await {
+                match message.topic_name() {
+                    "CDE" => {
+                        client
+                            .publish(Publish {
+                                dup: false,
+                                qos: QoS::AtLeastOnce,
+                                pid: None,
+                                retain: false,
+                                topic_name: "ABC",
+                                payload: b"",
+                                properties: crate::encoding::Properties::Slice(&[]),
+                            })
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        };
 
-    //     embassy_futures::select::select(stack.run(), embassy_futures::join::join(fut_a, fut_b))
-    //         .await;
-    // }
+        embassy_futures::select::select(stack.run(), embassy_futures::join::join(fut_a, fut_b))
+            .await;
+    }
 }

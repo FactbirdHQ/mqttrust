@@ -1,6 +1,4 @@
 use crate::encoding::{self, StateError};
-// use crate::de::Error as DeError;
-// use crate::ser::Error as SerError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -14,11 +12,11 @@ pub enum Error {
     BadTopicFilter,
     MaxInflight,
     Timeout,
-    Encoding(encoding::Error),
+    Encoding(encoding::EncodingError),
 }
 
-impl From<crate::encoding::Error> for Error {
-    fn from(value: encoding::Error) -> Self {
+impl From<crate::encoding::EncodingError> for Error {
+    fn from(value: encoding::EncodingError) -> Self {
         Self::Encoding(value)
     }
 }

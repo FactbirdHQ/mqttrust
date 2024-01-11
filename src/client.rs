@@ -23,13 +23,14 @@ use crate::{
         PubSubChannel, SliceBufferProvider,
     },
     state::{PendingAck, Shared},
-    Properties, TxHeader, MAX_TOPIC_LEN,
+    FixedHeader as _, Properties, TxHeader, Unsubscribe, MAX_TOPIC_LEN,
 };
 
 pub struct MqttClient<'a, M: RawMutex, const SUBS: usize> {
     tx_publisher: Mutex<M, RefCell<FramePublisher<'a, M, SliceBufferProvider<'a>, 1>>>,
     shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
     rx_pubsub: &'a PubSubChannel<M, SliceBufferProvider<'a>, SUBS>,
+    client_id: heapless::String<64>,
 }
 
 impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
@@ -37,15 +38,21 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         tx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, 1>,
         shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
         rx_pubsub: &'a PubSubChannel<M, SliceBufferProvider<'a>, SUBS>,
+        client_id: heapless::String<64>,
     ) -> Self {
         Self {
             tx_publisher: Mutex::new(RefCell::new(tx_publisher)),
             shared,
             rx_pubsub,
+            client_id,
         }
     }
 
-    async fn send<P: MqttEncode>(&self, mut packet: P) -> Result<Pid, Error> {
+    pub fn client_id(&self) -> &str {
+        self.client_id.as_str()
+    }
+
+    async fn send<P: MqttEncode>(&self, mut packet: P, should_await: bool) -> Result<Pid, Error> {
         let pid = {
             let state_ref = self.shared.lock().await;
             let mut shared = state_ref.borrow_mut();
@@ -71,10 +78,9 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 pid,
             };
 
-            debug!("Sending packet {:?}", packet);
-
             let mut grant = tx_prod
-                .grant(packet.packet_len())
+                .grant_async(packet.packet_len() + 4)
+                .await
                 .map_err(|_| Error::StateMismatch)?;
 
             let mut buf = grant.deref_mut();
@@ -89,47 +95,49 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             pid
         };
 
-        poll_fn(|cx| {
-            if let Ok(shared) = self.shared.try_lock() {
-                let mut state = shared.borrow_mut();
+        if should_await {
+            poll_fn(|cx| {
+                if let Ok(shared) = self.shared.try_lock() {
+                    let mut state = shared.borrow_mut();
 
-                match P::PACKET_TYPE {
-                    PacketType::Publish => {
-                        // Check if `pid` has been acked by the broker
-                        if !state.outgoing_pub.contains_key(&pid.get()) {
-                            state.register_tx_waker(cx);
-                            return Poll::Pending;
+                    match P::PACKET_TYPE {
+                        PacketType::Publish => {
+                            // Check if `pid` has been flushed to the network
+                            if !state.outgoing_pub.contains_key(&pid.get()) {
+                                state.register_tx_waker(cx);
+                                return Poll::Pending;
+                            }
                         }
-                    }
-                    PacketType::Subscribe => {
-                        // Check if `pid` has been acked by the broker
-                        if !state
-                            .pending_ack
-                            .contains(&PendingAck::Subscribe(pid.get()))
-                        {
-                            state.register_tx_waker(cx);
-                            return Poll::Pending;
+                        PacketType::Subscribe => {
+                            // Check if `pid` has been flushed to the network
+                            if !state
+                                .pending_ack
+                                .contains(&PendingAck::Subscribe(pid.get()))
+                            {
+                                state.register_tx_waker(cx);
+                                return Poll::Pending;
+                            }
                         }
-                    }
-                    PacketType::Unsubscribe => {
-                        // Check if `pid` has been acked by the broker
-                        if !state
-                            .pending_ack
-                            .contains(&PendingAck::Unsubscribe(pid.get()))
-                        {
-                            state.register_tx_waker(cx);
-                            return Poll::Pending;
+                        PacketType::Unsubscribe => {
+                            // Check if `pid` has been flushed to the network
+                            if !state
+                                .pending_ack
+                                .contains(&PendingAck::Unsubscribe(pid.get()))
+                            {
+                                state.register_tx_waker(cx);
+                                return Poll::Pending;
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
+
+                    return Poll::Ready(());
                 }
-
-                return Poll::Ready(());
-            }
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        })
-        .await;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            })
+            .await;
+        }
 
         Ok(pid)
     }
@@ -139,26 +147,38 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
     /// If `QoS` is set to `QoS1` or `QoS2`, this function will wait until the
     /// corresponding `PubAck` message has been received.
     pub async fn publish(&self, packet: impl Into<Publish<'_>>) -> Result<(), Error> {
-        let pid = self.send(packet.into()).await?;
+        debug!("Sending publish");
 
-        // Wait until `pid` has been ack'd (known by it being removed from the state)
-        poll_fn(|cx| {
-            if let Ok(shared) = self.shared.try_lock() {
-                let mut state = shared.borrow_mut();
+        let pub_pkg: Publish<'_> = packet.into();
+        let should_wait_ack = !matches!(pub_pkg.qos, QoS::AtMostOnce);
+        let pid = self.send(pub_pkg, should_wait_ack).await?;
 
-                // Check if `pid` has been acked by the broker
-                if !state.outgoing_pub.contains_key(&pid.get()) {
-                    debug!("publish ack {:?}", pid.get());
-                    return Poll::Ready(());
+        debug!("Sent pid {:?}", pid);
+
+        if should_wait_ack {
+            // Wait until `pid` has been ack'd (known by it being removed from the state)
+            let ack_fut = poll_fn(|cx| {
+                if let Ok(shared) = self.shared.try_lock() {
+                    let mut state = shared.borrow_mut();
+
+                    // Check if `pid` has been acked by the broker
+                    if !state.outgoing_pub.contains_key(&pid.get()) {
+                        debug!("publish ack {:?}", pid.get());
+                        return Poll::Ready(());
+                    }
+
+                    state.register_tx_waker(cx);
+                    return Poll::Pending;
                 }
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            });
 
-                state.register_tx_waker(cx);
-                return Poll::Pending;
-            }
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        })
-        .await;
+            // TODO: Proper timeout duration?
+            with_timeout(Duration::from_secs(5), ack_fut)
+                .await
+                .map_err(|_| Error::Timeout)?;
+        }
 
         Ok(())
     }
@@ -179,7 +199,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             .map(|sub| TopicFilter::new(sub.topic_path))
             .collect::<Result<_, _>>()?;
 
-        let pid = self.send(subscribe).await?;
+        let pid = self.send(subscribe, true).await?;
 
         // Wait until `pid` has been ack'd (known by it being removed from the state)
         let ack_fut = poll_fn(|cx| {
@@ -291,20 +311,44 @@ impl core::fmt::Display for TopicFilter {
     }
 }
 
-pub struct Subscription<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize = 5> {
+pub struct Subscription<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> {
     topic_filters: heapless::Vec<TopicFilter, MAX_TOPICS>,
     subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, SUBS>,
     _client: &'b MqttClient<'a, M, SUBS>,
 }
 
-impl<'a, 'b, M: RawMutex, const SUBS: usize> futures::Stream for Subscription<'a, 'b, M, SUBS> {
+impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
+    Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
+{
+    pub async fn next_message(&mut self) -> Option<Message<'a, M, SUBS>> {
+        let grant = self.subscriber.read_async().await.ok()?;
+        if let Some(mut msg) = Message::try_new(grant) {
+            if self
+                .topic_filters
+                .iter()
+                .any(|filter| filter.is_match(msg.topic_name()))
+            {
+                msg.auto_release();
+
+                return Some(msg);
+            }
+        }
+        None
+    }
+}
+
+impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures::Stream
+    for Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
+{
     type Item = Message<'a, M, SUBS>;
 
     fn poll_next(
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        if let Some(grant) = self.subscriber.read() {
+        // FIXME:
+        // - Handle unsubscribed from broker by returning `Poll::Ready(None)`
+        if let Some(grant) = self.subscriber.read_with_context(Some(cx)) {
             if let Some(mut msg) = Message::try_new(grant) {
                 if self
                     .topic_filters
@@ -314,11 +358,12 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize> futures::Stream for Subscription<'a
                     msg.auto_release();
 
                     return Poll::Ready(Some(msg));
+                } else {
+                    msg.auto_release();
+                    debug!("NO MATCH MSG! {}", msg.topic_name());
                 }
             }
         }
-
-        cx.waker().wake_by_ref();
         Poll::Pending
     }
 }
@@ -327,7 +372,42 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
     for Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
 {
     fn drop(&mut self) {
-        // FIXME: UNSUBSCRIBE
+        warn!("Dropping subscription! {:?}", self.topic_filters);
+
+        let pid = if let Ok(state_ref) = self._client.shared.try_lock() {
+            state_ref.borrow_mut().next_pid()
+        } else {
+            Pid::new()
+        };
+
+        // FIXME: Error handling and unsubscribe guarantee & unsuback? basically async drop?
+        if let Ok(tx_prod_ref) = self._client.tx_publisher.try_lock() {
+            let mut tx_prod = tx_prod_ref.borrow_mut();
+
+            let packet = Unsubscribe {
+                pid: Some(pid),
+                properties: Properties::Slice(&[]),
+                // FIXME:
+                topics: &[self.topic_filters[0].filter()],
+            };
+
+            let tx_header = TxHeader {
+                typ: PacketType::Unsubscribe,
+                qos: packet.get_qos(),
+                pid,
+            };
+
+            if let Ok(mut grant) = tx_prod.grant(packet.packet_len() + 4) {
+                let mut buf = grant.deref_mut();
+
+                let header_len = tx_header.to_bytes(&mut buf);
+                let mut encoder = MqttEncoder::new(&mut buf[header_len..]);
+                packet.to_buffer(&mut encoder).ok();
+
+                let used = header_len + encoder.bytes().len();
+                grant.commit(used);
+            }
+        }
     }
 }
 
@@ -342,13 +422,14 @@ pub struct Message<'a, M: RawMutex, const SUBS: usize> {
 
 impl<'a, M: RawMutex, const SUBS: usize> Message<'a, M, SUBS> {
     fn try_new(grant: FrameGrantR<'a, M, SliceBufferProvider<'a>, SUBS>) -> Option<Self> {
-        let mut decoder = MqttDecoder::new(grant.deref());
+        let mut decoder = MqttDecoder::try_new(grant.deref()).ok()?;
         // FIXME: would returning result here be more intuitive?
-        let header = decoder.read_fixed_header().ok()?;
+
+        let header = decoder.fixed_header();
         decoder.check_remaining(header.remaining_len).ok()?;
 
         let topic_name = {
-            let topic_name_start = decoder.offset();
+            let topic_name_start = decoder.offset() + 2;
             decoder.read_str().ok()?;
             topic_name_start..decoder.offset()
         };
@@ -413,6 +494,25 @@ impl<'a, M: RawMutex, const SUBS: usize> Message<'a, M, SUBS> {
     pub fn payload(&self) -> &[u8] {
         // # Safety: Checked at instantiation in `try_new`
         &self.grant.deref()[self.payload.clone()]
+    }
+
+    pub fn payload_mut(&mut self) -> &mut [u8] {
+        // # Safety: Checked at instantiation in `try_new`
+        &mut self.grant.deref_mut()[self.payload.clone()]
+    }
+}
+
+impl<'a, M: RawMutex, const SUBS: usize> Deref for Message<'a, M, SUBS> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.payload()
+    }
+}
+
+impl<'a, M: RawMutex, const SUBS: usize> DerefMut for Message<'a, M, SUBS> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.payload_mut()
     }
 }
 

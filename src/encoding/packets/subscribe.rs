@@ -1,9 +1,12 @@
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use crate::encoding::{
-    encoder::{MqttEncode, MqttEncoder},
-    error::Error,
-    FixedHeader, PacketType, Pid, QoS,
+use crate::{
+    encoding::{
+        encoder::{MqttEncode, MqttEncoder},
+        error::Error,
+        FixedHeader, PacketType, Pid, QoS,
+    },
+    varint_len,
 };
 
 #[cfg(feature = "mqttv5")]
@@ -57,12 +60,20 @@ pub struct Subscribe<'a> {
 impl<'a> FixedHeader for Subscribe<'a> {
     const PACKET_TYPE: PacketType = PacketType::Subscribe;
 
-    fn remaining_len(&self) -> usize {
-        2 + self
-            .topics
+    fn variable_header_len(&self) -> usize {
+        2 + varint_len(self.properties.size())
+    }
+
+    fn payload_len(&self) -> usize {
+        self.topics
             .iter()
-            .map(|t| t.topic_path.len() + 3)
+            .map(|t| 2 + t.topic_path.len() + 1)
             .sum::<usize>()
+    }
+
+    fn flags(&self) -> u8 {
+        // Bits 3,2,1 and 0 of the fixed header of the SUBSCRIBE Control Packet are reserved and MUST be set to 0,0,1 and 0 respectively
+        0b0010
     }
 }
 
@@ -74,10 +85,6 @@ impl<'a> Subscribe<'a> {
             properties: Properties::Slice(&[]),
             topics,
         }
-    }
-
-    pub fn pid(&self) -> Option<Pid> {
-        self.pid
     }
 }
 
@@ -99,20 +106,12 @@ impl<'a> MqttEncode for Subscribe<'a> {
 
             #[cfg(feature = "mqttv5")]
             {
-                options_byte |= (u8::from(topic.retain_handling) & 0b0000_0011) << 4;
-
-                if topic.retain_as_published {
-                    options_byte |= 0b0000_1000;
-                }
+                options_byte |= u8::from(topic.retain_handling) << 4;
+                options_byte |= u8::from(topic.retain_as_published) << 3;
+                options_byte |= u8::from(topic.no_local) << 2;
             }
 
-            #[cfg(feature = "mqttv5")]
-            if topic.no_local {
-                options_byte |= 0b0000_0100;
-            }
-
-            let qos_byte = topic.maximum_qos as u8;
-            options_byte |= qos_byte & 0b0000_0011;
+            options_byte |= u8::from(topic.maximum_qos) & 0b0000_0011;
 
             encoder.write_u8(options_byte)?;
         }
@@ -122,5 +121,37 @@ impl<'a> MqttEncode for Subscribe<'a> {
 
     fn set_pid(&mut self, pid: Pid) {
         self.pid.replace(pid);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "mqttv5")]
+    #[test]
+    fn encode_subscribe_v5() {
+        let expected_bytes = [
+            0x82, 0x0e, 0x00, 0x01, 0x00, 0x00, 0x08, 0x74, 0x65, 0x73, 0x74, 0x2f, 0x31, 0x32,
+            0x33, 0x00,
+        ];
+
+        let sub = Subscribe {
+            pid: Some(Pid::new()),
+            properties: Properties::Slice(&[]),
+            topics: &[SubscribeTopic {
+                topic_path: "test/123",
+                maximum_qos: QoS::AtMostOnce,
+                no_local: false,
+                retain_as_published: false,
+                retain_handling: RetainHandling::SendAtSubscribeTime,
+            }],
+        };
+
+        let mut buf = [0u8; 128];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        sub.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.bytes(), expected_bytes);
     }
 }

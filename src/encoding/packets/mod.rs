@@ -26,6 +26,7 @@ pub use subscribe::*;
 pub use unsubscribe::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum PacketType {
     Connect = 0x10,

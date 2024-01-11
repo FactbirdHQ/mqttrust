@@ -1,5 +1,7 @@
 #![cfg_attr(all(not(test), not(feature = "std")), no_std)]
 #![allow(async_fn_in_trait)]
+#![feature(type_alias_impl_trait)]
+#![feature(result_option_inspect)]
 
 mod fmt;
 
@@ -19,16 +21,18 @@ mod state;
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
-pub use client::MqttClient;
+pub use client::{Message, MqttClient, Subscription};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 
 pub use broker::{Broker, DomainBroker, IpBroker};
 pub use config::Config;
 use embedded_nal_async::TcpConnect;
-use encoding::{PacketType, Pid, QoS};
 use pubsub::{PubSubChannel, SliceBufferProvider};
 pub use stack::MqttStack;
 use state::Shared;
+
+pub use encoding::*;
+pub use error::Error;
 
 #[cfg(feature = "mqttv5")]
 pub use encoding::{Properties, Property, RetainHandling};
@@ -96,6 +100,8 @@ pub fn new<
         shared: Mutex::new(RefCell::new(Shared::new())),
     });
 
+    let client_id = config.client_id.clone();
+
     (
         MqttStack::new(
             network,
@@ -108,6 +114,7 @@ pub fn new<
             state.tx.framed_publisher().unwrap(),
             &state.shared,
             &state.rx_pubsub,
+            client_id,
         ),
     )
 }
@@ -125,7 +132,7 @@ impl TxHeader {
             Self {
                 typ: PacketType::try_from(bytes[0]).unwrap(),
                 qos: QoS::try_from(bytes[1]).ok(),
-                pid: Pid::try_from(u16::from_le_bytes(bytes[2..3].try_into().unwrap())).unwrap(),
+                pid: Pid::try_from(u16::from_le_bytes(bytes[2..4].try_into().unwrap())).unwrap(),
             },
             &bytes[4..],
         )
@@ -137,7 +144,7 @@ impl TxHeader {
             Some(qos) => u8::from(qos),
             None => 0xFF,
         };
-        buf[2..3].copy_from_slice(&self.pid.get().to_le_bytes()[..]);
+        buf[2..4].copy_from_slice(&self.pid.get().to_le_bytes()[..]);
 
         4
     }

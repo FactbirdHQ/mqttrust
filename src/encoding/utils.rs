@@ -93,7 +93,7 @@ impl TryFrom<u16> for Pid {
     fn try_from(u: u16) -> Result<Self, Error> {
         match NonZeroU16::new(u) {
             Some(nz) => Ok(Pid(nz)),
-            None => Err(Error::InvalidPid(u)),
+            None => Err(Error::BadIdentifier(u)),
         }
     }
 }
@@ -106,12 +106,12 @@ impl TryFrom<u16> for Pid {
 #[repr(u8)]
 pub enum QoS {
     /// `QoS 0`. No ack needed.
-    AtMostOnce = 0x00,
+    AtMostOnce = 0,
     /// `QoS 1`. One ack needed.
-    AtLeastOnce = 0x02,
+    AtLeastOnce = 1,
     /// `QoS 2`. Two acks needed.
     #[cfg(feature = "qos2")]
-    ExactlyOnce = 0x04,
+    ExactlyOnce = 2,
 }
 
 /// Combined [`QoS`]/[`Pid`].

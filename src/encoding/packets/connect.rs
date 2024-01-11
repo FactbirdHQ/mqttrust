@@ -1,10 +1,13 @@
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use crate::encoding::{
-    encoder::{MqttEncode, MqttEncoder},
-    error::Error,
-    utils::QoS,
-    FixedHeader,
+use crate::{
+    encoding::{
+        encoder::{MqttEncode, MqttEncoder},
+        error::Error,
+        utils::QoS,
+        FixedHeader,
+    },
+    varint_len,
 };
 
 #[cfg(feature = "mqttv5")]
@@ -48,6 +51,7 @@ impl Protocol {
 /// [Connect]: struct.Connect.html
 /// [MQTT 3.1.3.2]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901060
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct LastWill<'a> {
     pub topic: &'a str,
     pub data: &'a [u8],
@@ -61,6 +65,7 @@ pub struct LastWill<'a> {
 ///
 /// [MQTT 3.1]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901033
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Connect<'a> {
     pub protocol: Protocol,
 
@@ -89,26 +94,33 @@ pub struct Connect<'a> {
 impl<'a> FixedHeader for Connect<'a> {
     const PACKET_TYPE: PacketType = PacketType::Connect;
 
-    fn remaining_len(&self) -> usize {
-        let mut length: usize = 6 + 1 + 1; // NOTE: protocol_name(6) + protocol_level(1) + flags(1);
-        length += 2 + self.client_id.len();
+    fn variable_header_len(&self) -> usize {
+        let mut length: usize = 2 + self.protocol.name().len() + 1 + 1; // NOTE: protocol_name(6) + protocol_level(1) + flags(1);
         length += 2; // keep alive
+
+        #[cfg(feature = "mqttv5")]
+        {
+            length += varint_len(self.properties.size());
+        }
+
+        length
+    }
+
+    fn payload_len(&self) -> usize {
+        let mut length = 2 + self.client_id.len();
+        if let Some(last_will) = &self.last_will {
+            #[cfg(feature = "mqttv5")]
+            {
+                length += varint_len(last_will.properties.size());
+            }
+            length += 2 + last_will.topic.len();
+            length += 2 + last_will.data.len();
+        };
         if let Some(username) = self.username {
-            length += username.len();
-            length += 2;
+            length += 2 + username.len();
         };
         if let Some(password) = self.password {
-            length += password.len();
-            length += 2;
-        };
-
-        // TODO: Properties
-
-        if let Some(last_will) = &self.last_will {
-            // TODO: Properties
-            length += last_will.topic.len();
-            length += last_will.data.len();
-            length += 4;
+            length += 2 + password.len();
         };
 
         length
@@ -123,23 +135,14 @@ impl MqttEncode for Connect<'_> {
         encoder.write_u8(self.protocol.into())?;
 
         // TOOD: Change `connect_flags` to bitflags
-        let mut connect_flags: u8 = 0b00000000;
-        if self.clean_start {
-            connect_flags |= 0b10;
-        };
-        if self.username.is_some() {
-            connect_flags |= 0b10000000;
-        };
-        if self.password.is_some() {
-            connect_flags |= 0b01000000;
-        };
-
+        let mut connect_flags = 0;
+        connect_flags |= u8::from(self.clean_start) << 1;
+        connect_flags |= u8::from(self.username.is_some()) << 7;
+        connect_flags |= u8::from(self.password.is_some()) << 6;
         if let Some(last_will) = &self.last_will {
             connect_flags |= 0b00000100;
             connect_flags |= u8::from(last_will.qos) << 3;
-            if last_will.retained {
-                connect_flags |= 0b00100000;
-            };
+            connect_flags |= u8::from(last_will.retained) << 5;
         };
 
         encoder.write_u8(connect_flags)?;
@@ -173,11 +176,15 @@ impl MqttEncode for Connect<'_> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "mqttv5")]
     #[test]
-    fn roundtrip_connect_v5() {
+    fn encode_connect_v5() {
+        let expected_bytes = &[
+            16, 17, 0, 4, 77, 81, 84, 84, 5, 2, 0, 60, 0, 0, 4, 84, 69, 83, 84,
+        ];
+
         let connect = Connect {
             protocol: Protocol::MQTT5,
-            #[cfg(feature = "mqttv5")]
             properties: Properties::Slice(&[]),
             keep_alive: 60,
             client_id: "TEST",
@@ -191,16 +198,6 @@ mod tests {
         let mut encoder = MqttEncoder::new(&mut buf);
         connect.to_buffer(&mut encoder).unwrap();
 
-        let serialized = encoder.bytes();
-
-        assert_eq!(
-            &serialized,
-            &[16, 17, 0, 4, 77, 81, 84, 84, 5, 2, 0, 60, 0, 0, 4, 84, 69, 83, 84]
-        );
-
-        // assert_eq!(
-        //     Connect::from_buffer(&buf[..], &mut offset).unwrap(),
-        //     connect
-        // );
+        assert_eq!(encoder.bytes(), expected_bytes);
     }
 }

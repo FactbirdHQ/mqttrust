@@ -11,7 +11,7 @@ pub struct PingReq;
 impl FixedHeader for PingReq {
     const PACKET_TYPE: PacketType = PacketType::PingReq;
 
-    fn remaining_len(&self) -> usize {
+    fn variable_header_len(&self) -> usize {
         0
     }
 }

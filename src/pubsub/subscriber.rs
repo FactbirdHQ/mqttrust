@@ -66,10 +66,20 @@ where
     /// # }
     /// ```
     pub fn read(&mut self) -> Result<GrantR<'a, M, B, SUBS>> {
+        self.read_with_context(None)
+    }
+
+    pub fn read_with_context(
+        &mut self,
+        cx: Option<&mut Context<'_>>,
+    ) -> Result<GrantR<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
 
             if inner.read_in_progress {
+                if let Some(cx) = cx {
+                    inner.subscriber_wakers.register(cx.waker());
+                }
                 return Err(Error::GrantInProgress);
             }
             inner.read_in_progress = true;
@@ -100,6 +110,9 @@ where
 
             if sz == 0 {
                 inner.read_in_progress = false;
+                if let Some(cx) = cx {
+                    inner.subscriber_wakers.register(cx.waker());
+                }
                 return Err(Error::InsufficientSize);
             }
 
@@ -121,10 +134,20 @@ where
     /// Obtains two disjoint slices, which are each contiguous of committed bytes.
     /// Combined these contain all previously commited data.
     pub fn split_read(&mut self) -> Result<SplitGrantR<'a, M, B, SUBS>> {
+        self.split_read_with_context(None)
+    }
+
+    pub fn split_read_with_context(
+        &mut self,
+        cx: Option<&mut Context<'_>>,
+    ) -> Result<SplitGrantR<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
 
             if inner.read_in_progress {
+                if let Some(cx) = cx {
+                    inner.subscriber_wakers.register(cx.waker());
+                }
                 return Err(Error::GrantInProgress);
             }
             inner.read_in_progress = true;
@@ -155,6 +178,9 @@ where
 
             if sz1 == 0 {
                 inner.read_in_progress = false;
+                if let Some(cx) = cx {
+                    inner.subscriber_wakers.register(cx.waker());
+                }
                 return Err(Error::InsufficientSize);
             }
 
@@ -218,17 +244,9 @@ where
     type Output = Result<GrantR<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.sub.read() {
+        match self.sub.read_with_context(Some(cx)) {
             Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(e) => match e {
-                Error::InsufficientSize | Error::GrantInProgress => {
-                    self.sub.channel.lock(|channel| {
-                        channel.borrow_mut().subscriber_wakers.register(cx.waker());
-                    });
-                    Poll::Pending
-                }
-                _ => Poll::Ready(Err(e)),
-            },
+            Err(_) => Poll::Pending,
         }
     }
 }
@@ -255,17 +273,9 @@ where
     type Output = Result<SplitGrantR<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.sub.split_read() {
+        match self.sub.split_read_with_context(Some(cx)) {
             Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(e) => match e {
-                Error::InsufficientSize | Error::GrantInProgress => {
-                    self.sub.channel.lock(|channel| {
-                        channel.borrow_mut().subscriber_wakers.register(cx.waker());
-                    });
-                    Poll::Pending
-                }
-                _ => Poll::Ready(Err(e)),
-            },
+            Err(_) => Poll::Pending,
         }
     }
 }

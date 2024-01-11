@@ -1,19 +1,21 @@
+#![cfg(feature = "mqttv5")]
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 
-#[path = "../network.rs"]
-mod network;
+mod common;
 
+use common::network::Network;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{Config, IpBroker, Publish, State, Subscribe, SubscribeTopic};
 use embedded_nal_async::Ipv4Addr;
 use futures::StreamExt;
-use network::Network;
 use static_cell::make_static;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+const ROUND_TRIP_COUNT: usize = 15;
+
+#[tokio::test(flavor = "current_thread")]
+async fn mqttv5() {
     env_logger::init();
 
     let network = make_static!(Network::new(), #[export_name = "network"]);
@@ -25,14 +27,13 @@ async fn main() {
     let config =
         Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state = make_static!(State::<NoopRawMutex, 1024, 1024, 2>::new(), #[export_name = "mqtt_state"]);
-    let (mut stack, client) = embedded_mqtt::new(state, config, &*network);
-
-    // let client = make_static!(client);
+    let state =
+        make_static!(State::<NoopRawMutex, 1024, 1024, 2>::new(), #[export_name = "mqtt_state"]);
+    let (mut stack, client) = embedded_mqtt::new(state, config, network);
 
     let idle = async {
         log::debug!("Starting publish!");
-        for i in 0.. {
+        for i in 0..ROUND_TRIP_COUNT {
             client
                 .publish(Publish {
                     dup: false,
@@ -41,24 +42,42 @@ async fn main() {
                     retain: false,
                     topic_name: "embedded_mqtt/embassy_async/hello",
                     payload: format!("This is my super secret payload {i}").as_bytes(),
+                    properties: embedded_mqtt::Properties::Slice(&[]),
                 })
                 .await
                 .unwrap();
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     };
 
     let sub = async {
         let subscribe = Subscribe::new(&[SubscribeTopic {
             topic_path: "embedded_mqtt/embassy_async/hello",
-            qos: embedded_mqtt::QoS::AtLeastOnce,
+            maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
+            no_local: false,
+            retain_as_published: false,
+            retain_handling: embedded_mqtt::RetainHandling::SendAtSubscribeTime,
         }]);
 
-        let mut subscription = client.subscribe(subscribe).await.unwrap();
+        let mut msg_cnt = 0;
+        let mut subscription = client.subscribe::<1>(subscribe).await.unwrap();
         while let Some(message) = subscription.next().await {
-            log::info!("Received message {:?} - {:?}", message.topic(), core::str::from_utf8(message.payload()));
+            log::info!(
+                "Received message {:?} - {:?}",
+                message.topic_name(),
+                core::str::from_utf8(message.payload())
+            );
+            msg_cnt += 1;
+            if msg_cnt >= ROUND_TRIP_COUNT {
+                std::process::exit(0);
+            }
         }
     };
 
-    select::select3(stack.run(), idle, sub).await;
+    embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(5),
+        select::select3(stack.run(), idle, sub),
+    )
+    .await
+    .unwrap();
 }

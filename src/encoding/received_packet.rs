@@ -20,7 +20,8 @@ use crate::encoding::reason_code::{ConnAckReasonCode, SubAckReturnCode};
 
 use embedded_io_async::Read;
 
-pub(crate) enum ReceivedPacket<'a, R: Read, const N: usize> {
+#[derive(Debug)]
+pub(crate) enum ReceivedPacket<'a, R: Read> {
     PingResp,
     ConnAck {
         /// Indicates true if session state is being maintained by the broker.
@@ -108,25 +109,67 @@ pub(crate) enum ReceivedPacket<'a, R: Read, const N: usize> {
         #[cfg(feature = "mqttv5")]
         _properties: Properties<'a>,
     },
+    Disconnect {
+        /// A status code indicating the success status of the connection.
+        reason_code: u8,
+
+        /// A list of properties associated with the connection.
+        #[cfg(feature = "mqttv5")]
+        _properties: Properties<'a>,
+    },
 }
 
-impl<'a, R: Read, const N: usize> ReceivedPacket<'a, R, N> {
+impl<'a, R: Read> ReceivedPacket<'a, R> {
     pub(crate) fn from_buffer(buf: &'a [u8], reader: &'a mut R) -> Result<Self, Error> {
-        let mut decoder = MqttDecoder::new(buf);
-        let header = decoder.read_fixed_header()?;
+        let mut decoder = MqttDecoder::try_new(buf)?;
+        let header = decoder.fixed_header();
 
-        debug!("Read header {:?}", header.typ);
-
-        let packet_len = decoder.packet_len().ok_or(Error::InvalidLength)?;
+        debug!("Read header {:?}", header);
+        if header.remaining_len > 500 {
+            error!("FUUCK {:?}", buf);
+        }
 
         let packet = match header.typ {
-            PacketType::PingResp => Self::PingResp,
-            PacketType::ConnAck => Self::ConnAck {
-                session_present: (decoder.read_u8()? & 0b1 == 1),
-                reason_code: ConnAckReasonCode::from(decoder.read_u8()?),
+            PacketType::Unsubscribe => {
+                Pid::try_from(decoder.read_u16()?)?;
                 #[cfg(feature = "mqttv5")]
-                _properties: decoder.read_properties()?,
-            },
+                decoder.read_properties()?;
+                let topic = decoder.read_str()?;
+
+                debug!("WTF {:?}", topic);
+
+                return Err(Error::InvalidHeader);
+            }
+            PacketType::Disconnect => {
+                if header.remaining_len < 2 {
+                    Self::Disconnect {
+                        reason_code: 0,
+                        #[cfg(feature = "mqttv5")]
+                        _properties: Properties::DataBlock(&[]),
+                    }
+                } else {
+                    Self::Disconnect {
+                        reason_code: decoder.read_u8()?,
+                        #[cfg(feature = "mqttv5")]
+                        _properties: decoder.read_properties()?,
+                    }
+                }
+            }
+            PacketType::PingResp => Self::PingResp,
+            PacketType::ConnAck => {
+                let conn_ack_flags = decoder.read_u8()?;
+
+                if conn_ack_flags & 0b11111110 != 0 {
+                    return Err(Error::MalformedPacket);
+                }
+
+                Self::ConnAck {
+                    session_present: (conn_ack_flags & 0b1 == 1),
+                    reason_code: ConnAckReasonCode::from(decoder.read_u8()?),
+                    #[cfg(feature = "mqttv5")]
+                    _properties: decoder.read_properties()?,
+                }
+            }
             PacketType::Publish => {
                 let _topic_name = decoder.read_str()?;
 
@@ -137,20 +180,34 @@ impl<'a, R: Read, const N: usize> ReceivedPacket<'a, R, N> {
                     QoS::ExactlyOnce => QosPid::ExactlyOnce(Pid::try_from(decoder.read_u16()?)?),
                 };
 
-                let buf_len = core::cmp::min(packet_len, buf.len());
+                debug!("{:?}: {:?}", qos_pid, _topic_name);
+
+                let buf_len = core::cmp::min(decoder.packet_len(), buf.len());
 
                 Self::Publish {
                     qos_pid,
-                    publish: PartialPublish::new(&buf[..buf_len], packet_len, reader),
+                    publish: PartialPublish::new(&buf[..buf_len], decoder.packet_len(), reader),
                 }
             }
-            PacketType::PubAck => Self::PubAck {
-                pid: Pid::try_from(decoder.read_u16()?)?,
-                #[cfg(feature = "mqttv5")]
-                _reason_code: PubAckReasonCode::from(decoder.read_u8().unwrap_or(0x00)),
-                #[cfg(feature = "mqttv5")]
-                _properties: decoder.read_properties()?,
-            },
+            PacketType::PubAck => {
+                if header.remaining_len == 2 || header.remaining_len == 3 {
+                    Self::PubAck {
+                        pid: Pid::try_from(decoder.read_u16()?)?,
+                        #[cfg(feature = "mqttv5")]
+                        _reason_code: PubAckReasonCode::Success,
+                        #[cfg(feature = "mqttv5")]
+                        _properties: Properties::DataBlock(&[]),
+                    }
+                } else {
+                    Self::PubAck {
+                        pid: Pid::try_from(decoder.read_u16()?)?,
+                        #[cfg(feature = "mqttv5")]
+                        _reason_code: PubAckReasonCode::from(decoder.read_u8()?),
+                        #[cfg(feature = "mqttv5")]
+                        _properties: decoder.read_properties()?,
+                    }
+                }
+            }
             #[cfg(feature = "qos2")]
             PacketType::PubRec => Self::PubRec {
                 pid: Pid::try_from(decoder.read_u16()?)?,

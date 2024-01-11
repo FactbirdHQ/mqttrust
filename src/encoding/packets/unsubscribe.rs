@@ -1,7 +1,10 @@
-use crate::encoding::{
-    encoder::{MqttEncode, MqttEncoder},
-    error::Error,
-    FixedHeader, PacketType, Pid,
+use crate::{
+    encoding::{
+        encoder::{MqttEncode, MqttEncoder},
+        error::Error,
+        FixedHeader, PacketType, Pid,
+    },
+    varint_len, Properties,
 };
 
 /// Unsubscribe packet ([MQTT 3.10]).
@@ -10,20 +13,37 @@ use crate::encoding::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct Unsubscribe<'a> {
     pub pid: Option<Pid>,
+
+    #[cfg(feature = "mqttv5")]
+    pub properties: Properties<'a>,
+
     pub topics: &'a [&'a str],
 }
 
 impl<'a> FixedHeader for Unsubscribe<'a> {
     const PACKET_TYPE: PacketType = PacketType::Unsubscribe;
 
-    fn remaining_len(&self) -> usize {
-        2 + self.topics.iter().map(|t| t.len() + 2).sum::<usize>()
+    fn variable_header_len(&self) -> usize {
+        2 + varint_len(self.properties.size())
+    }
+
+    fn payload_len(&self) -> usize {
+        self.topics.iter().map(|t| t.len() + 2).sum::<usize>()
+    }
+
+    fn flags(&self) -> u8 {
+        // Bits 3,2,1 and 0 of the fixed header of the SUBSCRIBE Control Packet are reserved and MUST be set to 0,0,1 and 0 respectively
+        0b0010
     }
 }
 
 impl<'a> Unsubscribe<'a> {
     pub fn new(topics: &'a [&'a str]) -> Self {
-        Self { pid: None, topics }
+        Self {
+            pid: None,
+            topics,
+            properties: Properties::Slice(&[]),
+        }
     }
 
     pub fn pid(&self) -> Option<Pid> {
@@ -37,9 +57,13 @@ impl<'a> MqttEncode for Unsubscribe<'a> {
 
         encoder.write_u16(self.pid.unwrap_or_default().get())?;
 
+        #[cfg(feature = "mqttv5")]
+        encoder.write_properties(&self.properties)?;
+
         for topic in self.topics {
             encoder.write_str(topic)?;
         }
+
         Ok(())
     }
 

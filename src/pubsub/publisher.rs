@@ -90,9 +90,20 @@ where
     /// # }
     /// ```
     pub fn grant_exact(&mut self, sz: usize) -> Result<GrantW<'a, M, B, SUBS>> {
+        self.grant_exact_with_context(sz, None)
+    }
+
+    pub fn grant_exact_with_context(
+        &mut self,
+        sz: usize,
+        cx: Option<&mut Context<'_>>,
+    ) -> Result<GrantW<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
             if inner.write_in_progress {
+                if let Some(cx) = cx {
+                    inner.publisher_waker.register(cx.waker());
+                }
                 return Err(Error::GrantInProgress);
             }
             inner.write_in_progress = true;
@@ -109,6 +120,9 @@ where
                 } else {
                     // Inverted, no room is available
                     inner.write_in_progress = false;
+                    if let Some(cx) = cx {
+                        inner.publisher_waker.register(cx.waker());
+                    }
                     return Err(Error::InsufficientSize);
                 }
             } else {
@@ -127,6 +141,9 @@ where
                     } else {
                         // Not invertible, no space
                         inner.write_in_progress = false;
+                        if let Some(cx) = cx {
+                            inner.publisher_waker.register(cx.waker());
+                        }
                         return Err(Error::InsufficientSize);
                     }
                 }
@@ -188,11 +205,22 @@ where
     /// # channeltest();
     /// # }
     /// ```
-    pub fn grant_max_remaining(&mut self, mut sz: usize) -> Result<GrantW<'a, M, B, SUBS>> {
+    pub fn grant_max_remaining(&mut self, sz: usize) -> Result<GrantW<'a, M, B, SUBS>> {
+        self.grant_max_remaining_with_context(sz, None)
+    }
+
+    pub fn grant_max_remaining_with_context(
+        &mut self,
+        mut sz: usize,
+        cx: Option<&mut Context<'_>>,
+    ) -> Result<GrantW<'a, M, B, SUBS>> {
         self.channel.lock(|channel| {
             let mut inner = channel.borrow_mut();
 
             if inner.write_in_progress {
+                if let Some(cx) = cx {
+                    inner.publisher_waker.register(cx.waker());
+                }
                 return Err(Error::GrantInProgress);
             }
             inner.write_in_progress = true;
@@ -213,6 +241,9 @@ where
                 } else {
                     // Inverted, no room is available
                     inner.write_in_progress = false;
+                    if let Some(cx) = cx {
+                        inner.publisher_waker.register(cx.waker());
+                    }
                     return Err(Error::InsufficientSize);
                 }
             } else {
@@ -232,6 +263,9 @@ where
                     } else {
                         // Not invertible, no space
                         inner.write_in_progress = false;
+                        if let Some(cx) = cx {
+                            inner.publisher_waker.register(cx.waker());
+                        }
                         return Err(Error::InsufficientSize);
                     }
                 }
@@ -511,18 +545,9 @@ where
 
         let sz = self.sz;
 
-        match self.publisher.grant_exact(sz) {
+        match self.publisher.grant_exact_with_context(sz, Some(cx)) {
             Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(e) => match e {
-                Error::GrantInProgress | Error::InsufficientSize => {
-                    self.publisher.channel.lock(|channel| {
-                        let mut inner = channel.borrow_mut();
-                        inner.publisher_waker.register(cx.waker());
-                    });
-                    Poll::Pending
-                }
-                _ => Poll::Ready(Err(e)),
-            },
+            Err(_) => Poll::Pending,
         }
     }
 }
@@ -552,18 +577,12 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let sz = self.sz;
 
-        match self.publisher.grant_max_remaining(sz) {
+        match self
+            .publisher
+            .grant_max_remaining_with_context(sz, Some(cx))
+        {
             Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(e) => match e {
-                Error::GrantInProgress | Error::InsufficientSize => {
-                    self.publisher.channel.lock(|channel| {
-                        let mut inner = channel.borrow_mut();
-                        inner.publisher_waker.register(cx.waker());
-                    });
-                    Poll::Pending
-                }
-                _ => Poll::Ready(Err(e)),
-            },
+            Err(_) => Poll::Pending,
         }
     }
 }

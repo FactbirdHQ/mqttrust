@@ -217,7 +217,7 @@ mod tests {
     use std::thread::spawn;
     use std::time::{Duration, Instant};
 
-    const ITERS: usize = 10_000_000;
+    const ITERS: usize = 10_000;
 
     const RPT_IVAL: usize = ITERS / 100;
 

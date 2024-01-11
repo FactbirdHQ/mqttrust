@@ -83,6 +83,7 @@ use super::{
 };
 
 use core::cell::RefCell;
+use core::task::Context;
 use core::{
     cmp::min,
     ops::{Deref, DerefMut},
@@ -113,9 +114,19 @@ where
     /// This size does not include the size of the frame header. The exact size
     /// of the frame can be set on `commit`.
     pub fn grant(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, M, B, SUBS>> {
+        self.grant_with_context(max_sz, None)
+    }
+
+    pub fn grant_with_context(
+        &mut self,
+        max_sz: usize,
+        cx: Option<&mut Context<'_>>,
+    ) -> Result<FrameGrantW<'a, M, B, SUBS>> {
         let hdr_len = encoded_len(max_sz);
         Ok(FrameGrantW {
-            grant_w: self.publisher.grant_exact(max_sz + hdr_len)?,
+            grant_w: self
+                .publisher
+                .grant_exact_with_context(max_sz + hdr_len, cx)?,
             hdr_len: hdr_len as u8,
         })
     }
@@ -152,9 +163,16 @@ where
 
     /// Obtain the next available frame, if any
     pub fn read(&mut self) -> Option<FrameGrantR<'a, M, B, SUBS>> {
+        self.read_with_context(None)
+    }
+
+    pub fn read_with_context(
+        &mut self,
+        cx: Option<&mut Context<'_>>,
+    ) -> Option<FrameGrantR<'a, M, B, SUBS>> {
         // Get all available bytes. We never wrap a frame around,
         // so if a header is available, the whole frame will be.
-        let mut grant_r = self.subscriber.read().ok()?;
+        let mut grant_r = self.subscriber.read_with_context(cx).ok()?;
 
         // Additionally, we never commit less than a full frame with
         // a header, so if we have ANY data, we'll have a full header

@@ -1,18 +1,20 @@
+#![cfg(feature = "mqttv3")]
 #![allow(async_fn_in_trait)]
 #![feature(type_alias_impl_trait)]
 
-#[path = "../network.rs"]
-mod network;
+mod common;
 
+use common::network::Network;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{Config, IpBroker, Publish, State, Subscribe, SubscribeTopic};
 use embedded_nal_async::Ipv4Addr;
 use futures::StreamExt;
-use network::Network;
 use static_cell::make_static;
 
-#[tokio::main(flavor = "current_thread")]
+const ROUND_TRIP_COUNT: usize = 15;
+
+#[tokio::test(flavor = "current_thread")]
 async fn main() {
     env_logger::init();
 
@@ -25,7 +27,8 @@ async fn main() {
     let config =
         Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state = make_static!(State::<NoopRawMutex, 1024, 1024, 2>::new(), #[export_name = "mqtt_state"]);
+    let state =
+        make_static!(State::<NoopRawMutex, 1024, 1024, 2>::new(), #[export_name = "mqtt_state"]);
     let (mut stack, client) = embedded_mqtt::new(state, config, &*network);
 
     // let client = make_static!(client);
@@ -41,11 +44,10 @@ async fn main() {
                     retain: false,
                     topic_name: "embedded_mqtt/embassy_async/hello",
                     payload: format!("This is my super secret payload {i}").as_bytes(),
-                    properties: embedded_mqtt::Properties::Slice(&[])
                 })
                 .await
                 .unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     };
 
@@ -53,16 +55,22 @@ async fn main() {
         let subscribe = Subscribe::new(&[SubscribeTopic {
             topic_path: "embedded_mqtt/embassy_async/hello",
             maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
-            no_local: false,
-            retain_as_published: false,
-            retain_handling: embedded_mqtt::RetainHandling::SendAtSubscribeTime,
-        }], embedded_mqtt::Properties::Slice(&[]));
+        }]);
 
         let mut subscription = client.subscribe(subscribe).await.unwrap();
         while let Some(message) = subscription.next().await {
-            log::info!("Received message {:?} - {:?}", message.topic(), core::str::from_utf8(message.payload()));
+            log::info!(
+                "Received message {:?} - {:?}",
+                message.topic_name(),
+                core::str::from_utf8(message.payload())
+            );
         }
     };
 
-    select::select3(stack.run(), idle, sub).await;
+    embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(5),
+        select::select3(stack.run(), idle, sub),
+    )
+    .await
+    .unwrap();
 }
