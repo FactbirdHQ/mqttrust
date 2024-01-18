@@ -22,7 +22,7 @@ log = { version = "0.4", optional = true }
 
 embassy-sync = { version = "0.5" }
 embassy-futures = "0.1"
-embassy-time = { version = "0.2" }
+embassy-time = { version = "0.3" }
 
 [dev-dependencies]
 rand = "0.8.5"
@@ -36,7 +36,7 @@ futures-lite = { version = "2.1", default-features = false, features = ["std"] }
 
 embassy-futures = { version = "0.1.0" }
 embassy-sync = { version = "0.5.0", features = ["log"] }
-embassy-time = { version = "0.2", features = ["log", "std", "generic-queue"] }
+embassy-time = { version = "0.3", features = ["log", "std", "generic-queue"] }
 embedded-io-async = { version = "0.6.0", features = ["std"] }
 embedded-io-adapters = { version = "0.6.0", features = ["tokio-1"] }
 critical-section = { version = "1.1", features = ["std"] }

@@ -50,9 +50,15 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
     async fn get_address(&mut self) -> Option<SocketAddr> {
         // Attempt to resolve the address.
         if self.addr.ip().is_unspecified() {
+            let hostname = self
+                .raw
+                .split_once(':')
+                .map(|f| f.0)
+                .unwrap_or(self.raw.as_str());
+
             match self
                 .resolver
-                .get_host_by_name(&self.raw, AddrType::IPv4)
+                .get_host_by_name(hostname, AddrType::IPv4)
                 .await
             {
                 Ok(ip) => self.addr.set_ip(ip),

@@ -46,7 +46,7 @@ impl<'a, N: TcpConnect> Network<'a, N> {
 
     pub async fn connect<B: Broker>(&mut self, broker: &mut B) -> Result<(), ()> {
         let addr = broker.get_address().await.ok_or(())?;
-        info!("Connecting network to {:?}", addr);
+        // info!("Connecting network to {:?}", addr);
         let socket = self.network.connect(addr).await.map_err(drop)?;
         self.socket.replace(socket);
 

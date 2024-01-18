@@ -248,6 +248,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
 ///
 /// It can be used to match against topics.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TopicFilter {
     filter: heapless::String<MAX_TOPIC_LEN>,
     has_wildcards: bool,
