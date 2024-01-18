@@ -1,5 +1,5 @@
 #![cfg_attr(all(not(test), not(feature = "std")), no_std)]
-
+#![allow(async_fn_in_trait)]
 mod fmt;
 
 #[cfg(all(feature = "mqttv3", feature = "mqttv5"))]

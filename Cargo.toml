@@ -59,3 +59,5 @@ qos2 = []
 max_topic_len_64 = []
 max_topic_len_128 = []
 max_topic_len_256 = []
+
+defmt = ["dep:defmt", "embedded-io-async/defmt-03", "heapless/defmt-03"]
