@@ -33,9 +33,7 @@ impl<'a> MqttDecoder<'a> {
         let fixed_header = FixedHeader {
             typ,
             dup: hd & 0b1000 != 0,
-            qos: QoS::try_from((hd & 0b0110) >> 1)
-                .map_err(|_| Error::WrongQos(hd & 0b0110))
-                .inspect_err(|_| error!("{:?}", buf))?,
+            qos: QoS::try_from((hd & 0b0110) >> 1).map_err(|_| Error::WrongQos(hd & 0b0110))?,
             retain: hd & 0b0001 == 1,
             remaining_len,
         };

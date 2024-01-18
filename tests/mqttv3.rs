@@ -1,6 +1,4 @@
 #![cfg(feature = "mqttv3")]
-#![allow(async_fn_in_trait)]
-#![feature(type_alias_impl_trait)]
 
 mod common;
 
@@ -10,7 +8,7 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{Config, IpBroker, Publish, State, Subscribe, SubscribeTopic};
 use embedded_nal_async::Ipv4Addr;
 use futures::StreamExt;
-use static_cell::make_static;
+use static_cell::StaticCell;
 
 const ROUND_TRIP_COUNT: usize = 15;
 
@@ -18,7 +16,8 @@ const ROUND_TRIP_COUNT: usize = 15;
 async fn main() {
     env_logger::init();
 
-    let network = make_static!(Network::new(), #[export_name = "network"]);
+    static NETWORK: StaticCell<Network> = StaticCell::new();
+    let network = NETWORK.init(Network::new());
 
     let client_id = "mqtt_test_client_id";
 
@@ -27,8 +26,8 @@ async fn main() {
     let config =
         Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
-    let state =
-        make_static!(State::<NoopRawMutex, 1024, 1024, 2>::new(), #[export_name = "mqtt_state"]);
+    static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 2>> = StaticCell::new();
+    let state = STATE.init(State::<NoopRawMutex, 1024, 1024, 2>::new());
     let (mut stack, client) = embedded_mqtt::new(state, config, &*network);
 
     // let client = make_static!(client);

@@ -1,7 +1,4 @@
 #![cfg_attr(all(not(test), not(feature = "std")), no_std)]
-#![allow(async_fn_in_trait)]
-#![feature(type_alias_impl_trait)]
-#![feature(result_option_inspect)]
 
 mod fmt;
 

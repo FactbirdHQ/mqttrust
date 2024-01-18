@@ -484,6 +484,7 @@ mod tests {
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use embedded_nal_async::{Ipv4Addr, TcpConnect};
     use futures::StreamExt;
+    use static_cell::StaticCell;
 
     use crate::{
         broker::IpBroker,
@@ -533,7 +534,8 @@ mod tests {
         let network = MockNetwork;
 
         // Create the MQTT stack
-        let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
+        static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
+        let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
         let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
         let (mut stack, client) = crate::new(state, config, &network);
 
@@ -595,7 +597,8 @@ mod tests {
         let network = MockNetwork;
 
         // Create the MQTT stack
-        let state = static_cell::make_static!(State::<NoopRawMutex, 4096, 4096, 4>::new());
+        static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
+        let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
         let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
         let (mut stack, client) = crate::new(state, config, &network);
 
