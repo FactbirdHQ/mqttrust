@@ -115,34 +115,3 @@ pub fn new<
         ),
     )
 }
-
-// FIXME: don't hand-roll these serializations?
-struct TxHeader {
-    typ: PacketType,
-    qos: Option<QoS>,
-    pid: Pid,
-}
-
-impl TxHeader {
-    fn from_bytes(bytes: &[u8]) -> (Self, &[u8]) {
-        (
-            Self {
-                typ: PacketType::try_from(bytes[0]).unwrap(),
-                qos: QoS::try_from(bytes[1]).ok(),
-                pid: Pid::try_from(u16::from_le_bytes(bytes[2..4].try_into().unwrap())).unwrap(),
-            },
-            &bytes[4..],
-        )
-    }
-
-    fn to_bytes(&self, buf: &mut [u8]) -> usize {
-        buf[0] = u8::from(self.typ);
-        buf[1] = match self.qos {
-            Some(qos) => u8::from(qos),
-            None => 0xFF,
-        };
-        buf[2..4].copy_from_slice(&self.pid.get().to_le_bytes()[..]);
-
-        4
-    }
-}

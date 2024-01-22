@@ -11,6 +11,7 @@ use embedded_nal_async::TcpConnect;
 
 use crate::{
     config::Config,
+    encoder::TxHeader,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         received_packet::ReceivedPacket,
@@ -23,7 +24,7 @@ use crate::{
         SliceBufferProvider,
     },
     state::{Inflight, PendingAck, Shared},
-    Broker, TxHeader,
+    Broker,
 };
 
 #[cfg(feature = "qos2")]
@@ -64,7 +65,7 @@ impl<'a, N: TcpConnect> Network<'a, N> {
         packet
             .to_buffer(&mut encoder)
             .map_err(|_| StateError::Deserialization)?;
-        self.write(encoder.bytes()).await?;
+        self.write(encoder.packet_bytes()).await?;
         Ok(())
     }
 
@@ -336,34 +337,28 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 match tx_header.typ {
                     PacketType::Publish => {
                         if tx_header.qos != Some(QoS::AtMostOnce) {
-                            debug!(
-                                "[Publish] Inserting {:?} into outgoing_pub",
-                                tx_header.pid.get()
-                            );
+                            debug!("[Publish] Inserting {:?} into outgoing_pub", tx_header.pid);
                             shared
                                 .outgoing_pub
-                                .insert(tx_header.pid.get(), Inflight::new(packet_bytes))
+                                .insert(tx_header.pid.unwrap().get(), Inflight::new(packet_bytes))
                                 .unwrap();
                         }
                     }
                     PacketType::Subscribe => {
-                        debug!(
-                            "[Subscribe] Inserting {:?} into pending_ack",
-                            tx_header.pid.get()
-                        );
+                        debug!("[Subscribe] Inserting {:?} into pending_ack", tx_header.pid);
                         shared
                             .pending_ack
-                            .insert(PendingAck::Subscribe(tx_header.pid.get()))
+                            .insert(PendingAck::Subscribe(tx_header.pid.unwrap().get()))
                             .unwrap();
                     }
                     PacketType::Unsubscribe => {
                         debug!(
                             "[Unsubscribe] Inserting {:?} into pending_ack",
-                            tx_header.pid.get()
+                            tx_header.pid
                         );
                         shared
                             .pending_ack
-                            .insert(PendingAck::Unsubscribe(tx_header.pid.get()))
+                            .insert(PendingAck::Unsubscribe(tx_header.pid.unwrap().get()))
                             .unwrap();
                     }
                     e => {

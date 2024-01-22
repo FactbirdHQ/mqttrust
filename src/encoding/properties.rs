@@ -79,7 +79,7 @@ pub enum Property<'a> {
 impl<'a> Property<'a> {
     fn size(&self) -> usize {
         let identifier: PropertyIdentifier = self.into();
-        let identifier_length = varint_len(identifier as usize);
+        let identifier_length = varint_len(identifier as usize) + identifier as usize;
 
         match self {
             Property::ContentType(data)
@@ -98,7 +98,9 @@ impl<'a> Property<'a> {
                 data.len() + 2 + identifier_length
             }
 
-            Property::SubscriptionIdentifier(id) => varint_len(*id as usize) + identifier_length,
+            Property::SubscriptionIdentifier(id) => {
+                varint_len(*id as usize) + *id as usize + identifier_length
+            }
 
             Property::MessageExpiryInterval(_)
             | Property::SessionExpiryInterval(_)

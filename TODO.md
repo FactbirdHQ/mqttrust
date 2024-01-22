@@ -18,3 +18,4 @@ TODO:
 - [ ] Packet builders?
 - [ ] Automatically drop packet if all subscribers touched it in `PubSub`
 - [ ] Setup integration tests & CI
+- [ ] Deferred publish payload

@@ -1,6 +1,7 @@
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
+    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -93,44 +94,10 @@ pub struct Connect<'a> {
 
 impl<'a> FixedHeader for Connect<'a> {
     const PACKET_TYPE: PacketType = PacketType::Connect;
-
-    fn variable_header_len(&self) -> usize {
-        let mut length: usize = 2 + self.protocol.name().len() + 1 + 1; // NOTE: protocol_name(6) + protocol_level(1) + flags(1);
-        length += 2; // keep alive
-
-        #[cfg(feature = "mqttv5")]
-        {
-            length += varint_len(self.properties.size());
-        }
-
-        length
-    }
-
-    fn payload_len(&self) -> usize {
-        let mut length = 2 + self.client_id.len();
-        if let Some(last_will) = &self.last_will {
-            #[cfg(feature = "mqttv5")]
-            {
-                length += varint_len(last_will.properties.size());
-            }
-            length += 2 + last_will.topic.len();
-            length += 2 + last_will.data.len();
-        };
-        if let Some(username) = self.username {
-            length += 2 + username.len();
-        };
-        if let Some(password) = self.password {
-            length += 2 + password.len();
-        };
-
-        length
-    }
 }
 
 impl MqttEncode for Connect<'_> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
-        encoder.write_fixed_header(self)?;
-
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
         encoder.write_str(self.protocol.name())?;
         encoder.write_u8(self.protocol.into())?;
 
@@ -168,7 +135,39 @@ impl MqttEncode for Connect<'_> {
             encoder.write_slice(password)?;
         };
 
-        Ok(())
+        encoder.finalize_fixed_header(self)?;
+
+        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)?)
+    }
+
+    fn max_packet_size(&self) -> usize {
+        let mut length: usize = 2 + self.protocol.name().len() + 1 + 1; // NOTE: protocol_name(6) + protocol_level(1) + flags(1);
+        length += 2; // keep alive
+
+        #[cfg(feature = "mqttv5")]
+        {
+            length += varint_len(self.properties.size());
+            length += self.properties.size();
+        }
+
+        length += 2 + self.client_id.len();
+        if let Some(last_will) = &self.last_will {
+            #[cfg(feature = "mqttv5")]
+            {
+                length += varint_len(last_will.properties.size());
+                length += last_will.properties.size();
+            }
+            length += 2 + last_will.topic.len();
+            length += 2 + last_will.data.len();
+        };
+        if let Some(username) = self.username {
+            length += 2 + username.len();
+        };
+        if let Some(password) = self.password {
+            length += 2 + password.len();
+        };
+
+        length + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN
     }
 }
 
@@ -198,6 +197,6 @@ mod tests {
         let mut encoder = MqttEncoder::new(&mut buf);
         connect.to_buffer(&mut encoder).unwrap();
 
-        assert_eq!(encoder.bytes(), expected_bytes);
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
     }
 }
