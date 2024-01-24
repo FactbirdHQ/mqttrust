@@ -146,6 +146,15 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         }
     }
 
+    // FIXME: This is currently not able to change between `Broker` types at
+    // runtime, meaning if `Stack` is insatantiated with a `DomainBroker` it is
+    // only possible to update the config to a new `DomainBroker` implementation
+    // with the same `Dns` resolver.
+    pub fn update_config(&mut self, new_config: Config<B>) {
+        self.network.socket.take();
+        self.config = new_config;
+    }
+
     pub async fn run(&mut self) -> ! {
         info!("Running stack!");
         loop {
