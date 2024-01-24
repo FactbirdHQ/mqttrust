@@ -325,7 +325,8 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                     }
                 }
             }
-            Either3::Second(Ok(tx_grant)) => {
+            Either3::Second(Ok(mut tx_grant)) => {
+                tx_grant.auto_release(true);
                 // ### TX future:
                 // Based on packet QoS, add PID to state & full packet to
                 // retry buffer, before writing the packet to network
@@ -366,7 +367,6 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         // Just log an error, drop the full request packet, and continue handling next packet
 
                         error!("TX Packet has invalid header?! Dropping packet {:?}", e);
-                        tx_grant.release();
                         return Ok(());
                     }
                 }
@@ -375,8 +375,6 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
 
                 shared.wake_tx();
                 self.last_network_action = Instant::now();
-
-                tx_grant.release();
             }
             Either3::Third(_) => {
                 // ### PING future:
