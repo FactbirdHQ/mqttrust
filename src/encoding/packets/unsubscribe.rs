@@ -1,4 +1,5 @@
 use crate::{
+    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -23,14 +24,6 @@ pub struct Unsubscribe<'a> {
 impl<'a> FixedHeader for Unsubscribe<'a> {
     const PACKET_TYPE: PacketType = PacketType::Unsubscribe;
 
-    fn variable_header_len(&self) -> usize {
-        2 + varint_len(self.properties.size())
-    }
-
-    fn payload_len(&self) -> usize {
-        self.topics.iter().map(|t| t.len() + 2).sum::<usize>()
-    }
-
     fn flags(&self) -> u8 {
         // Bits 3,2,1 and 0 of the fixed header of the SUBSCRIBE Control Packet are reserved and MUST be set to 0,0,1 and 0 respectively
         0b0010
@@ -52,9 +45,7 @@ impl<'a> Unsubscribe<'a> {
 }
 
 impl<'a> MqttEncode for Unsubscribe<'a> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
-        encoder.write_fixed_header(self)?;
-
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
         encoder.write_u16(self.pid.unwrap_or_default().get())?;
 
         #[cfg(feature = "mqttv5")]
@@ -64,10 +55,23 @@ impl<'a> MqttEncode for Unsubscribe<'a> {
             encoder.write_str(topic)?;
         }
 
-        Ok(())
+        encoder.finalize_fixed_header(self)?;
+
+        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)?)
     }
 
     fn set_pid(&mut self, pid: Pid) {
         self.pid.replace(pid);
+    }
+
+    fn max_packet_size(&self) -> usize {
+        let mut length = 2 + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN;
+
+        #[cfg(feature = "mqttv5")]
+        {
+            length += varint_len(self.properties.size());
+        }
+
+        length + self.topics.iter().map(|t| t.len() + 2).sum::<usize>()
     }
 }

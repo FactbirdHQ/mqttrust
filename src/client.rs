@@ -23,7 +23,7 @@ use crate::{
         PubSubChannel, SliceBufferProvider,
     },
     state::{PendingAck, Shared},
-    FixedHeader as _, Properties, TxHeader, Unsubscribe, MAX_TOPIC_LEN,
+    Properties, ToPayload, Unsubscribe, MAX_TOPIC_LEN,
 };
 
 pub struct MqttClient<'a, M: RawMutex, const SUBS: usize> {
@@ -72,24 +72,14 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
 
             packet.set_pid(pid);
 
-            let tx_header = TxHeader {
-                typ: P::PACKET_TYPE,
-                qos: packet.get_qos(),
-                pid,
-            };
-
             let mut grant = tx_prod
-                .grant_async(packet.packet_len() + 4)
+                .grant_async(packet.max_packet_size())
                 .await
                 .map_err(|_| Error::StateMismatch)?;
 
-            let mut buf = grant.deref_mut();
-
-            let header_len = tx_header.to_bytes(&mut buf);
-            let mut encoder = MqttEncoder::new(&mut buf[header_len..]);
-            packet.to_buffer(&mut encoder)?;
-
-            let used = header_len + encoder.bytes().len();
+            let mut encoder = MqttEncoder::new(grant.deref_mut());
+            packet.to_buffer(&mut encoder).ok();
+            let used = encoder.used_size();
             grant.commit(used);
 
             pid
@@ -146,10 +136,13 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
     ///
     /// If `QoS` is set to `QoS1` or `QoS2`, this function will wait until the
     /// corresponding `PubAck` message has been received.
-    pub async fn publish(&self, packet: impl Into<Publish<'_>>) -> Result<(), Error> {
+    pub async fn publish<P: ToPayload>(
+        &self,
+        packet: impl Into<Publish<'_, P>>,
+    ) -> Result<(), Error> {
         debug!("Sending publish");
 
-        let pub_pkg: Publish<'_> = packet.into();
+        let pub_pkg: Publish<'_, P> = packet.into();
         let should_wait_ack = !matches!(pub_pkg.qos, QoS::AtMostOnce);
         let pid = self.send(pub_pkg, should_wait_ack).await?;
 
@@ -392,20 +385,10 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
                 topics: &[self.topic_filters[0].filter()],
             };
 
-            let tx_header = TxHeader {
-                typ: PacketType::Unsubscribe,
-                qos: packet.get_qos(),
-                pid,
-            };
-
-            if let Ok(mut grant) = tx_prod.grant(packet.packet_len() + 4) {
-                let mut buf = grant.deref_mut();
-
-                let header_len = tx_header.to_bytes(&mut buf);
-                let mut encoder = MqttEncoder::new(&mut buf[header_len..]);
+            if let Ok(mut grant) = tx_prod.grant(packet.max_packet_size()) {
+                let mut encoder = MqttEncoder::new(grant.deref_mut());
                 packet.to_buffer(&mut encoder).ok();
-
-                let used = header_len + encoder.bytes().len();
+                let used = encoder.used_size();
                 grant.commit(used);
             }
         }

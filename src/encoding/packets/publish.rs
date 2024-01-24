@@ -1,6 +1,7 @@
 use core::fmt::Debug;
 
 use crate::{
+    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -14,21 +15,84 @@ use embedded_io_async::Read;
 
 use super::PacketType;
 
+pub trait ToPayload {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Error>;
+    fn max_size(&self) -> usize;
+}
+
+impl<'a> ToPayload for &'a [u8] {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Error> {
+        if buffer.len() < self.len() {
+            return Err(Error::BufferSize);
+        }
+        buffer[..self.len()].copy_from_slice(self);
+        Ok(self.len())
+    }
+
+    fn max_size(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<const N: usize> ToPayload for [u8; N] {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Error> {
+        (&self[..]).serialize(buffer)
+    }
+
+    fn max_size(&self) -> usize {
+        self.len()
+    }
+}
+
+impl<const N: usize> ToPayload for &[u8; N] {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Error> {
+        (&self[..]).serialize(buffer)
+    }
+
+    fn max_size(&self) -> usize {
+        self.len()
+    }
+}
+
+pub struct DeferredPayload<F: Fn(&mut [u8]) -> Result<usize, Error>> {
+    func: F,
+    max_len: usize,
+}
+
+impl<F: Fn(&mut [u8]) -> Result<usize, Error>> DeferredPayload<F> {
+    pub fn new(func: F, max_len: usize) -> Self {
+        Self { func, max_len }
+    }
+}
+
+impl<F: Fn(&mut [u8]) -> Result<usize, Error>> ToPayload for DeferredPayload<F> {
+    fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Error> {
+        if buffer.len() < self.max_len {
+            return Err(Error::BufferSize);
+        }
+        (self.func)(buffer)
+    }
+
+    fn max_size(&self) -> usize {
+        self.max_len
+    }
+}
+
 /// Publish packet ([MQTT 3.3]).
 ///
 /// [MQTT 3.3]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901100
 #[derive(Debug, Clone, PartialEq)]
-pub struct Publish<'a> {
+pub struct Publish<'a, P: ToPayload> {
     pub dup: bool,
     pub qos: QoS,
     pub retain: bool,
     pub pid: Option<Pid>,
     pub topic_name: &'a str,
-    pub payload: &'a [u8],
+    pub payload: P,
     pub properties: Properties<'a>,
 }
 
-impl<'a> FixedHeader for Publish<'a> {
+impl<'a, P: ToPayload> FixedHeader for Publish<'a, P> {
     const PACKET_TYPE: PacketType = PacketType::Publish;
 
     fn flags(&self) -> u8 {
@@ -42,25 +106,10 @@ impl<'a> FixedHeader for Publish<'a> {
 
         flags
     }
-
-    fn variable_header_len(&self) -> usize {
-        2 + self.topic_name.len()
-            + match self.qos {
-                QoS::AtMostOnce => 0,
-                _ => 2,
-            } // pid
-            +  varint_len(self.properties.size())
-    }
-
-    fn payload_len(&self) -> usize {
-        self.payload.len()
-    }
 }
 
-impl<'a> MqttEncode for Publish<'a> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
-        encoder.write_fixed_header(self)?;
-
+impl<'a, P: ToPayload> MqttEncode for Publish<'a, P> {
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
         // Topic
         encoder.write_str(self.topic_name)?;
 
@@ -80,9 +129,11 @@ impl<'a> MqttEncode for Publish<'a> {
         encoder.write_properties(&self.properties)?;
 
         // Payload
-        encoder.write_payload(self.payload)?;
+        encoder.write_payload(&self.payload)?;
 
-        Ok(())
+        encoder.finalize_fixed_header(self)?;
+
+        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)?)
     }
 
     fn set_pid(&mut self, pid: Pid) {
@@ -91,6 +142,24 @@ impl<'a> MqttEncode for Publish<'a> {
 
     fn get_qos(&self) -> Option<QoS> {
         Some(self.qos)
+    }
+
+    fn max_packet_size(&self) -> usize {
+        let mut length = 2 + self.topic_name.len()
+            + match self.qos {
+                QoS::AtMostOnce => 0,
+                _ => 2,
+            } // pid
+            + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN;
+
+        #[cfg(feature = "mqttv5")]
+        {
+            length += varint_len(self.properties.size());
+        }
+
+        length += self.payload.max_size();
+
+        length
     }
 }
 
@@ -135,5 +204,73 @@ impl<'a, S: Read> PartialPublish<'a, S> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "mqttv5")]
+    #[test]
+    fn encode_publish_bytes_v5() {
+        let expected_bytes = &[
+            50, 57, 0, 21, 109, 121, 47, 112, 101, 114, 115, 111, 110, 97, 108, 105, 122, 101, 100,
+            47, 116, 111, 112, 105, 99, 0, 1, 0, 84, 104, 105, 115, 32, 105, 115, 32, 109, 121, 32,
+            97, 119, 101, 115, 111, 109, 101, 32, 98, 121, 116, 101, 32, 112, 97, 121, 108, 111,
+            97, 100,
+        ];
+
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            pid: Some(Pid::new()),
+            topic_name: "my/personalized/topic",
+            payload: b"This is my awesome byte payload",
+            properties: Properties::Slice(&[]),
+        };
+
+        let mut buf = [0u8; 128];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        publish.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(publish.max_packet_size(), 67);
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv5")]
+    #[test]
+    fn encode_publish_closure_v5() {
+        let expected_bytes = &[
+            50, 57, 0, 21, 109, 121, 47, 112, 101, 114, 115, 111, 110, 97, 108, 105, 122, 101, 100,
+            47, 116, 111, 112, 105, 99, 0, 1, 0, 84, 104, 105, 115, 32, 105, 115, 32, 109, 121, 32,
+            97, 119, 101, 115, 111, 109, 101, 32, 98, 121, 116, 101, 32, 112, 97, 121, 108, 111,
+            97, 100,
+        ];
+
+        let payload_bytes = b"This is my awesome byte payload";
+
+        let payload_closure = |buf: &mut [u8]| {
+            buf[..payload_bytes.len()].copy_from_slice(payload_bytes);
+            Ok(payload_bytes.len())
+        };
+
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            pid: Some(Pid::new()),
+            topic_name: "my/personalized/topic",
+            payload: DeferredPayload::new(payload_closure, payload_bytes.len()),
+            properties: Properties::Slice(&[]),
+        };
+
+        let mut buf = [0u8; 128];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        publish.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(publish.max_packet_size(), 67);
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
     }
 }

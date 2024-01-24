@@ -1,6 +1,7 @@
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
+    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -60,17 +61,6 @@ pub struct Subscribe<'a> {
 impl<'a> FixedHeader for Subscribe<'a> {
     const PACKET_TYPE: PacketType = PacketType::Subscribe;
 
-    fn variable_header_len(&self) -> usize {
-        2 + varint_len(self.properties.size())
-    }
-
-    fn payload_len(&self) -> usize {
-        self.topics
-            .iter()
-            .map(|t| 2 + t.topic_path.len() + 1)
-            .sum::<usize>()
-    }
-
     fn flags(&self) -> u8 {
         // Bits 3,2,1 and 0 of the fixed header of the SUBSCRIBE Control Packet are reserved and MUST be set to 0,0,1 and 0 respectively
         0b0010
@@ -89,9 +79,7 @@ impl<'a> Subscribe<'a> {
 }
 
 impl<'a> MqttEncode for Subscribe<'a> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
-        encoder.write_fixed_header(self)?;
-
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
         // Pid
         encoder.write_u16(self.pid.unwrap_or_default().get())?;
 
@@ -116,11 +104,29 @@ impl<'a> MqttEncode for Subscribe<'a> {
             encoder.write_u8(options_byte)?;
         }
 
-        Ok(())
+        encoder.finalize_fixed_header(self)?;
+
+        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)?)
     }
 
     fn set_pid(&mut self, pid: Pid) {
         self.pid.replace(pid);
+    }
+
+    fn max_packet_size(&self) -> usize {
+        let mut length = 2 + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN;
+
+        #[cfg(feature = "mqttv5")]
+        {
+            length += varint_len(self.properties.size());
+        }
+
+        length
+            + self
+                .topics
+                .iter()
+                .map(|t| 2 + t.topic_path.len() + 1)
+                .sum::<usize>()
     }
 }
 
@@ -152,6 +158,7 @@ mod tests {
         let mut encoder = MqttEncoder::new(&mut buf);
         sub.to_buffer(&mut encoder).unwrap();
 
-        assert_eq!(encoder.bytes(), expected_bytes);
+        assert_eq!(sub.max_packet_size(), 24);
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
     }
 }
