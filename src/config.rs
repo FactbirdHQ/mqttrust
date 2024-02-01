@@ -3,6 +3,8 @@ use core::str::FromStr;
 use crate::error::ProtocolError;
 use embassy_time::Duration;
 
+pub type BackoffAlgo = fn(u8) -> Duration;
+
 #[derive(Debug)]
 pub struct Config<Broker> {
     pub(crate) broker: Broker,
@@ -10,6 +12,7 @@ pub struct Config<Broker> {
     pub(crate) client_id: heapless::String<64>,
     pub(crate) keepalive_interval: Duration,
     pub(crate) downgrade_qos: bool,
+    pub(crate) backoff_algo: BackoffAlgo,
     // pub(crate) auth: Option<Auth<'a>>,
 }
 
@@ -22,7 +25,14 @@ impl<Broker> Config<Broker> {
             // auth: None,
             keepalive_interval: Duration::from_secs(59),
             downgrade_qos: false,
-            // will: None,
+            backoff_algo: |attempt| {
+                let base_time_ms = 500;
+                let backoff = base_time_ms * u32::pow(2, attempt as u32);
+                core::cmp::min(
+                    Duration::from_secs(3 * 60),
+                    Duration::from_millis(backoff.into()),
+                )
+            }, // will: None,
         }
     }
 
