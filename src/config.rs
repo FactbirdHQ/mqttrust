@@ -27,7 +27,7 @@ impl<Broker> Config<Broker> {
             downgrade_qos: false,
             backoff_algo: |attempt| {
                 let base_time_ms = 500;
-                let backoff = u32::pow(base_time_ms * 2, attempt as u32);
+                let backoff = base_time_ms * u32::pow(2, attempt as u32);
                 core::cmp::min(
                     Duration::from_secs(3 * 60),
                     Duration::from_millis(backoff.into()),
