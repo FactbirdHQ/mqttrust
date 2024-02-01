@@ -51,6 +51,7 @@ pub enum ConnectionError {
     MqttState(StateError),
     NetworkTimeout,
     FlushTimeout,
+    InvalidAddress,
     Io(embedded_io_async::ErrorKind),
     ConnectionRefused,
     NotConnAck,

@@ -6,7 +6,7 @@ TODO:
 - [x] Topic filter
 - [x] Publish before connect handling
 - [x] MQTTv5 handling
-- [ ] Reconnect backoff
+- [x] Reconnect backoff
 - [ ] Change config from client?
 - [ ] Error handling
 - [ ] Framed inflight buffer

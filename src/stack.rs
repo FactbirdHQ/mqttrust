@@ -45,10 +45,17 @@ impl<'a, N: TcpConnect> Network<'a, N> {
         }
     }
 
-    pub async fn connect<B: Broker>(&mut self, broker: &mut B) -> Result<(), ()> {
-        let addr = broker.get_address().await.ok_or(())?;
+    pub async fn connect<B: Broker>(&mut self, broker: &mut B) -> Result<(), ConnectionError> {
+        let addr = broker
+            .get_address()
+            .await
+            .ok_or(ConnectionError::InvalidAddress)?;
         // info!("Connecting network to {:?}", addr);
-        let socket = self.network.connect(addr).await.map_err(drop)?;
+        let socket = self
+            .network
+            .connect(addr)
+            .await
+            .map_err(|e| ConnectionError::Io(e.kind()))?;
         self.socket.replace(socket);
 
         Ok(())
@@ -117,6 +124,7 @@ pub struct MqttStack<'a, M: RawMutex, B, N: TcpConnect, const SUBS: usize> {
     await_pingresp: Option<Instant>,
 
     clean_start: bool,
+    connect_attempts: u8,
 
     // Network handle
     network: Network<'a, N>,
@@ -138,6 +146,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
             config,
 
             clean_start: true,
+            connect_attempts: 0,
 
             last_network_action: Instant::now(),
             await_pingresp: None,
@@ -159,8 +168,23 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         info!("Running stack!");
         loop {
             if !self.network.is_connected() {
-                self.network.connect(&mut self.config.broker).await;
-                self.connect_mqtt().await;
+                match embassy_time::with_timeout(
+                    (self.config.backoff_algo)(self.connect_attempts),
+                    async {
+                        self.network.connect(&mut self.config.broker).await?;
+                        self.connect_mqtt().await?;
+                        Ok::<_, ConnectionError>(())
+                    },
+                )
+                .await
+                {
+                    Ok(_) => {}
+                    Err(_) => {
+                        self.network.socket.take();
+                        self.connect_attempts += 1;
+                        continue;
+                    }
+                }
             }
 
             if let Err(e) = self.select().await {
@@ -467,6 +491,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 // CONNACK packet, the Client MUST use that value instead of the
                 // value it sent as the Keep Alive
                 self.clean_start = false;
+                self.connect_attempts = 0;
 
                 Ok(session_present)
             }
