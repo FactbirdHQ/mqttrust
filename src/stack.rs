@@ -168,19 +168,20 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         info!("Running stack!");
         loop {
             if !self.network.is_connected() {
-                match embassy_time::with_timeout(
-                    (self.config.backoff_algo)(self.connect_attempts),
-                    async {
-                        self.network.connect(&mut self.config.broker).await?;
-                        self.connect_mqtt().await?;
-                        Ok::<_, ConnectionError>(())
-                    },
-                )
+                match embassy_time::with_timeout(self.config.connect_timeout, async {
+                    self.network.connect(&mut self.config.broker).await?;
+                    self.connect_mqtt().await?;
+                    Ok::<_, ConnectionError>(())
+                })
                 .await
                 {
                     Ok(_) => {}
                     Err(_) => {
                         self.network.socket.take();
+                        embassy_time::Timer::after((self.config.backoff_algo)(
+                            self.connect_attempts,
+                        ))
+                        .await;
                         self.connect_attempts += 1;
                         continue;
                     }

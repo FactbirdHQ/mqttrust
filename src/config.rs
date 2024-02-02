@@ -11,6 +11,7 @@ pub struct Config<Broker> {
     // pub(crate) will: Option<SerializedWill<'a>>,
     pub(crate) client_id: heapless::String<64>,
     pub(crate) keepalive_interval: Duration,
+    pub(crate) connect_timeout: Duration,
     pub(crate) downgrade_qos: bool,
     pub(crate) backoff_algo: BackoffAlgo,
     // pub(crate) auth: Option<Auth<'a>>,
@@ -24,6 +25,7 @@ impl<Broker> Config<Broker> {
             client_id: heapless::String::from_str(client_id).unwrap(),
             // auth: None,
             keepalive_interval: Duration::from_secs(59),
+            connect_timeout: Duration::from_secs(5),
             downgrade_qos: false,
             backoff_algo: |attempt| {
                 let base_time_ms = 500;
