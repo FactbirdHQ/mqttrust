@@ -1,4 +1,5 @@
 mod connect;
+mod disconnect;
 mod pingreq;
 mod puback;
 #[cfg(feature = "qos2")]
@@ -12,6 +13,7 @@ mod subscribe;
 mod unsubscribe;
 
 pub use connect::*;
+pub use disconnect::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 pub use pingreq::*;
 pub use puback::*;

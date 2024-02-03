@@ -1,5 +1,6 @@
 use core::{
     cell::RefCell,
+    future::poll_fn,
     ops::{Deref, DerefMut},
 };
 
@@ -24,7 +25,7 @@ use crate::{
         SliceBufferProvider,
     },
     state::{Inflight, PendingAck, Shared},
-    Broker,
+    Broker, Disconnect,
 };
 
 #[cfg(feature = "qos2")]
@@ -125,6 +126,7 @@ pub struct MqttStack<'a, M: RawMutex, B, N: TcpConnect, const SUBS: usize> {
 
     clean_start: bool,
     connect_attempts: u8,
+    should_connect: bool,
 
     // Network handle
     network: Network<'a, N>,
@@ -147,6 +149,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
 
             clean_start: true,
             connect_attempts: 0,
+            should_connect: true,
 
             last_network_action: Instant::now(),
             await_pingresp: None,
@@ -164,9 +167,10 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         self.config = new_config;
     }
 
-    pub async fn run(&mut self) -> ! {
+    pub async fn run(&mut self) {
+        self.should_connect = true;
         info!("Running stack!");
-        loop {
+        while self.should_connect {
             if !self.network.is_connected() {
                 match embassy_time::with_timeout(self.config.connect_timeout, async {
                     self.network.connect(&mut self.config.broker).await?;
@@ -193,6 +197,23 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 // Clean state
             }
         }
+    }
+
+    pub async fn disconnect(&mut self) -> Result<(), ConnectionError> {
+        let disconnect = Disconnect {
+            reason_code: Default::default(),
+            #[cfg(feature = "mqttv5")]
+            properties: crate::Properties::Slice(&[]),
+        };
+
+        self.network
+            .write_packet(disconnect)
+            .await
+            .map_err(|e| ConnectionError::MqttState(e))?;
+
+        self.last_network_action = Instant::now();
+        self.should_connect = false;
+        Ok(())
     }
 
     async fn select(&mut self) -> Result<(), StateError> {
