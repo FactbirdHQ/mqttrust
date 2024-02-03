@@ -43,7 +43,6 @@ impl<Broker> Config<Broker> {
     // /// # Args
     // /// * `user_name` - The user name
     // /// * `password` - The password
-    // #[cfg(feature = "unsecure")]
     // pub fn set_auth(mut self, user_name: &str, password: &str) -> Result<Self, ProtocolError> {
     //     if self.auth.is_some() {
     //         return Err(ProtocolError::AuthAlreadySpecified);

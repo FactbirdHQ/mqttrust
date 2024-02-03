@@ -252,7 +252,8 @@ impl TopicFilter {
     /// This can fail if the filter is not correct, such as having a '#'
     /// wildcard in anyplace other than the last field, or if
     pub fn new(filter: &str) -> Result<Self, Error> {
-        let filter = heapless::String::<MAX_TOPIC_LEN>::from_str(filter).unwrap();
+        let filter =
+            heapless::String::<MAX_TOPIC_LEN>::from_str(filter).map_err(|_| Error::Overflow)?;
         let n = filter.len();
 
         if n == 0 {

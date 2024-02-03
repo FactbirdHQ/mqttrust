@@ -260,6 +260,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         // matches their topic_filter.
                         match self.rx_publisher.grant_async(publish.len()).await {
                             Ok(mut grant) => {
+                                // FIXME: Properly handle error instead of `unwrap`
                                 publish.copy_all(grant.deref_mut()).await.unwrap();
 
                                 // calling `commit` will wake all subscribers
@@ -394,6 +395,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                     PacketType::Publish => {
                         if tx_header.qos != Some(QoS::AtMostOnce) {
                             debug!("[Publish] Inserting {:?} into outgoing_pub", tx_header.pid);
+                            // FIXME: Properly handle error instead of `unwrap`
                             shared
                                 .outgoing_pub
                                 .insert(tx_header.pid.unwrap().get(), Inflight::new(packet_bytes))
@@ -402,6 +404,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                     }
                     PacketType::Subscribe => {
                         debug!("[Subscribe] Inserting {:?} into pending_ack", tx_header.pid);
+                        // FIXME: Properly handle error instead of `unwrap`
                         shared
                             .pending_ack
                             .insert(PendingAck::Subscribe(tx_header.pid.unwrap().get()))
@@ -412,6 +415,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                             "[Unsubscribe] Inserting {:?} into pending_ack",
                             tx_header.pid
                         );
+                        // FIXME: Properly handle error instead of `unwrap`
                         shared
                             .pending_ack
                             .insert(PendingAck::Unsubscribe(tx_header.pid.unwrap().get()))
