@@ -1,5 +1,6 @@
 use core::{
     cell::RefCell,
+    future::poll_fn,
     ops::{Deref, DerefMut},
 };
 
@@ -24,7 +25,7 @@ use crate::{
         SliceBufferProvider,
     },
     state::{Inflight, PendingAck, Shared},
-    Broker,
+    Broker, Disconnect,
 };
 
 #[cfg(feature = "qos2")]
@@ -125,6 +126,7 @@ pub struct MqttStack<'a, M: RawMutex, B, N: TcpConnect, const SUBS: usize> {
 
     clean_start: bool,
     connect_attempts: u8,
+    should_connect: bool,
 
     // Network handle
     network: Network<'a, N>,
@@ -147,6 +149,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
 
             clean_start: true,
             connect_attempts: 0,
+            should_connect: true,
 
             last_network_action: Instant::now(),
             await_pingresp: None,
@@ -155,23 +158,34 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         }
     }
 
-    pub async fn run(&mut self) -> ! {
+    // FIXME: This is currently not able to change between `Broker` types at
+    // runtime, meaning if `Stack` is insatantiated with a `DomainBroker` it is
+    // only possible to update the config to a new `DomainBroker` implementation
+    // with the same `Dns` resolver.
+    pub fn update_config(&mut self, new_config: Config<B>) {
+        self.network.socket.take();
+        self.config = new_config;
+    }
+
+    pub async fn run(&mut self) {
+        self.should_connect = true;
         info!("Running stack!");
-        loop {
+        while self.should_connect {
             if !self.network.is_connected() {
-                match embassy_time::with_timeout(
-                    (self.config.backoff_algo)(self.connect_attempts),
-                    async {
-                        self.network.connect(&mut self.config.broker).await?;
-                        self.connect_mqtt().await?;
-                        Ok::<_, ConnectionError>(())
-                    },
-                )
+                match embassy_time::with_timeout(self.config.connect_timeout, async {
+                    self.network.connect(&mut self.config.broker).await?;
+                    self.connect_mqtt().await?;
+                    Ok::<_, ConnectionError>(())
+                })
                 .await
                 {
                     Ok(_) => {}
                     Err(_) => {
                         self.network.socket.take();
+                        embassy_time::Timer::after((self.config.backoff_algo)(
+                            self.connect_attempts,
+                        ))
+                        .await;
                         self.connect_attempts += 1;
                         continue;
                     }
@@ -183,6 +197,23 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 // Clean state
             }
         }
+    }
+
+    pub async fn disconnect(&mut self) -> Result<(), ConnectionError> {
+        let disconnect = Disconnect {
+            reason_code: Default::default(),
+            #[cfg(feature = "mqttv5")]
+            properties: crate::Properties::Slice(&[]),
+        };
+
+        self.network
+            .write_packet(disconnect)
+            .await
+            .map_err(|e| ConnectionError::MqttState(e))?;
+
+        self.last_network_action = Instant::now();
+        self.should_connect = false;
+        Ok(())
     }
 
     async fn select(&mut self) -> Result<(), StateError> {
@@ -229,6 +260,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         // matches their topic_filter.
                         match self.rx_publisher.grant_async(publish.len()).await {
                             Ok(mut grant) => {
+                                // FIXME: Properly handle error instead of `unwrap`
                                 publish.copy_all(grant.deref_mut()).await.unwrap();
 
                                 // calling `commit` will wake all subscribers
@@ -363,6 +395,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                     PacketType::Publish => {
                         if tx_header.qos != Some(QoS::AtMostOnce) {
                             debug!("[Publish] Inserting {:?} into outgoing_pub", tx_header.pid);
+                            // FIXME: Properly handle error instead of `unwrap`
                             shared
                                 .outgoing_pub
                                 .insert(tx_header.pid.unwrap().get(), Inflight::new(packet_bytes))
@@ -371,6 +404,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                     }
                     PacketType::Subscribe => {
                         debug!("[Subscribe] Inserting {:?} into pending_ack", tx_header.pid);
+                        // FIXME: Properly handle error instead of `unwrap`
                         shared
                             .pending_ack
                             .insert(PendingAck::Subscribe(tx_header.pid.unwrap().get()))
@@ -381,6 +415,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                             "[Unsubscribe] Inserting {:?} into pending_ack",
                             tx_header.pid
                         );
+                        // FIXME: Properly handle error instead of `unwrap`
                         shared
                             .pending_ack
                             .insert(PendingAck::Unsubscribe(tx_header.pid.unwrap().get()))

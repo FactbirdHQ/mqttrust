@@ -12,6 +12,7 @@ pub enum Error {
     BadTopicFilter,
     MaxInflight,
     Timeout,
+    Overflow,
     Encoding(encoding::EncodingError),
 }
 

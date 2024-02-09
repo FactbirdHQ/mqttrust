@@ -125,9 +125,6 @@ impl<'a, R: Read> ReceivedPacket<'a, R> {
         let header = decoder.fixed_header();
 
         debug!("Read header {:?}", header);
-        if header.remaining_len > 500 {
-            error!("FUUCK {:?}", buf);
-        }
 
         let packet = match header.typ {
             PacketType::Unsubscribe => {
