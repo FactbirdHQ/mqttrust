@@ -7,14 +7,14 @@ pub type BackoffAlgo = fn(u8) -> Duration;
 
 #[derive(Debug)]
 pub struct Config<Broker> {
-    pub(crate) broker: Broker,
-    // pub(crate) will: Option<SerializedWill<'a>>,
-    pub(crate) client_id: heapless::String<64>,
-    pub(crate) keepalive_interval: Duration,
-    pub(crate) connect_timeout: Duration,
-    pub(crate) downgrade_qos: bool,
-    pub(crate) backoff_algo: BackoffAlgo,
-    // pub(crate) auth: Option<Auth<'a>>,
+    pub broker: Broker,
+    // pub will: Option<SerializedWill<'a>>,
+    pub client_id: heapless::String<64>,
+    pub keepalive_interval: Duration,
+    pub connect_timeout: Duration,
+    pub downgrade_qos: bool,
+    pub backoff_algo: BackoffAlgo,
+    // pub auth: Option<Auth<'a>>,
 }
 
 impl<Broker> Config<Broker> {
@@ -25,16 +25,17 @@ impl<Broker> Config<Broker> {
             client_id: heapless::String::from_str(client_id).unwrap(),
             // auth: None,
             keepalive_interval: Duration::from_secs(59),
-            connect_timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(50),
             downgrade_qos: false,
             backoff_algo: |attempt| {
-                let base_time_ms = 500;
-                let backoff = base_time_ms * u32::pow(2, attempt as u32);
+                let base_time_ms: u32 = 500;
+                let backoff = base_time_ms.saturating_mul(u32::pow(2, attempt as u32));
                 core::cmp::min(
                     Duration::from_secs(3 * 60),
                     Duration::from_millis(backoff.into()),
                 )
-            }, // will: None,
+            },
+            // will: None,
         }
     }
 
@@ -107,5 +108,23 @@ impl<Broker> Config<Broker> {
     //     self.will = Some(will.serialize(head)?);
 
     //     Ok(self)
+    // }
+
+    // /// Configure the TLS options on the socket.
+    // ///
+    // /// # Note
+    // /// If a broker is already set, that returns `Some(hostname)` on
+    // /// `Broker::get_hostname()`, then the server_name in the tls config will be
+    // /// automatically set to that hostname.
+    // ///
+    // /// # Args
+    // /// * `tls_config` - The TLS config to be passed on to `embedded-tls` when
+    // ///   doing TLS handshake during TCP connect.
+    // #[cfg(feature = "embedded-tls")]
+    // pub fn tls_config(mut self, mut tls_config: embedded_tls::TlsConfig<'a>) -> Config<'a, Broker> {
+    //     tls_config.server_name = self.broker.get_hostname();
+    //     self.tls_config = tls_config;
+
+    //     self
     // }
 }

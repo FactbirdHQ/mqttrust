@@ -6,7 +6,7 @@ use heapless::{FnvIndexMap, IndexMap};
 
 use crate::encoding::Pid;
 
-const MAX_INFLIGHT: usize = 2;
+const MAX_INFLIGHT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingAck {

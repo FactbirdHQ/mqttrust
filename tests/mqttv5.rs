@@ -1,13 +1,18 @@
-#![cfg(feature = "mqttv5")]
+#![cfg(all(feature = "mqttv5", feature = "embedded-tls"))]
 
 mod common;
+
+use std::include_bytes;
 
 use common::network::Network;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{Config, IpBroker, Publish, State, Subscribe, SubscribeTopic};
-use embedded_nal_async::Ipv4Addr;
+use embedded_mqtt::{
+    transport::embedded_tls::{TlsNalTransport, TlsState}, Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic
+};
+use embedded_tls::{Certificate, TlsConfig};
 use futures::StreamExt;
+use rand::rngs::OsRng;
 use static_cell::StaticCell;
 
 const ROUND_TRIP_COUNT: usize = 15;
@@ -19,16 +24,17 @@ async fn mqttv5() {
     static NETWORK: StaticCell<Network> = StaticCell::new();
     let network = NETWORK.init(Network::new());
 
-    let client_id = "mqtt_test_client_id";
-
+    let client_id = "csr_test";
+    let hostname = "a2twqv2u8qs5xt-ats.iot.eu-west-1.amazonaws.com";
+    
     // Create the MQTT stack
-    let broker = IpBroker::new(Ipv4Addr::new(127, 0, 0, 1), 1883);
+    let broker = DomainBroker::<_, 256>::new(hostname, &*network).unwrap();
     let config =
         Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 2>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 1024, 1024, 2>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config, network);
+    let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let idle = async {
         log::debug!("Starting publish!");
@@ -73,9 +79,19 @@ async fn mqttv5() {
         }
     };
 
+    let provider = embedded_tls::UnsecureProvider::new::<embedded_tls::Aes128GcmSha256>(OsRng);
+
+    let tls_config = TlsConfig::new().with_server_name(hostname)
+        .with_ca(Certificate::X509(include_bytes!("/home/mathias/Downloads/embedded-tls-test-certs/ca.der")))
+        .with_cert(Certificate::X509(include_bytes!("/home/mathias/Downloads/embedded-tls-test-certs/cert.der")))
+        .with_priv_key(include_bytes!("/home/mathias/Downloads/embedded-tls-test-certs/private.der"));
+
+    let tls_state = TlsState::new();
+    let mut transport = TlsNalTransport::new(network, &tls_state, &tls_config, provider);
+
     embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(5),
-        select::select3(stack.run(), idle, sub),
+        embassy_time::Duration::from_secs(55),
+        select::select3(stack.run(&mut transport), idle, sub),
     )
     .await
     .unwrap();

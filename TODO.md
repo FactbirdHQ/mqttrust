@@ -7,11 +7,13 @@ TODO:
 - [x] Publish before connect handling
 - [x] MQTTv5 handling
 - [x] Reconnect backoff
-- [ ] Change config from client?
+- [x] Update config on-the-fly
+- [x] `embedded-tls` support
+- [x] Plug-able transport layer
 - [ ] Error handling
 - [ ] Framed inflight buffer
 - [ ] Republish
-- [ ] Persistence
+- [ ] Plug-able persistence layer
 - [ ] Logging
 - [ ] Docs
 - [ ] TEST & Evaluate!

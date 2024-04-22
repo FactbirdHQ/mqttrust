@@ -1,6 +1,7 @@
 #![cfg_attr(all(not(test), not(feature = "std")), no_std)]
 #![allow(async_fn_in_trait)]
 mod fmt;
+pub mod transport;
 
 #[cfg(all(feature = "mqttv3", feature = "mqttv5"))]
 compile_error!("You must enable at most one of the following features: mqttv3, mqttv5");
@@ -23,7 +24,6 @@ use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 
 pub use broker::{Broker, DomainBroker, IpBroker};
 pub use config::Config;
-use embedded_nal_async::TcpConnect;
 use pubsub::{PubSubChannel, SliceBufferProvider};
 pub use stack::MqttStack;
 use state::Shared;
@@ -76,15 +76,13 @@ pub fn new<
     'd,
     M: RawMutex,
     B: Broker,
-    N: TcpConnect,
     const TX: usize,
     const RX: usize,
     const SUBS: usize,
 >(
     state: &'d mut State<M, TX, RX, SUBS>,
     config: Config<B>,
-    network: &'d N,
-) -> (MqttStack<'d, M, B, N, SUBS>, MqttClient<'d, M, SUBS>) {
+) -> (MqttStack<'d, M, B, SUBS>, MqttClient<'d, M, SUBS>) {
     // safety: this is a self-referential struct, however:
     // - it can't move while the `'d` borrow is active.
     // - when the borrow ends, the dangling references inside the MaybeUninit will never be used again.
@@ -101,7 +99,6 @@ pub fn new<
 
     (
         MqttStack::new(
-            network,
             config,
             &state.shared,
             state.tx.framed_subscriber().unwrap(),

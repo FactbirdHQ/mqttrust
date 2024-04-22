@@ -36,7 +36,7 @@ impl Dns for Network {
         host: &str,
         addr_type: AddrType,
     ) -> Result<IpAddr, Self::Error> {
-        for ip in tokio::net::lookup_host(host).await? {
+        for ip in tokio::net::lookup_host(format!("{}:8883", host)).await? {
             match (&addr_type, ip) {
                 (AddrType::IPv4 | AddrType::Either, SocketAddr::V4(ip)) => {
                     return Ok(IpAddr::V4(Ipv4Addr::from(ip.ip().octets())))
