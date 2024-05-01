@@ -1,58 +1,27 @@
+use embedded_io_async::{Read, Write};
 
-// impl<S: Read + Write> Transport for S {
-//     type Socket = S;
+use crate::{error::ConnectionError, Broker};
 
-//     async fn connect(&mut self, _broker: &mut impl Broker) -> Result<(), ConnectionError> {
-//         Ok(())
-//     }
+use super::Transport;
 
-//     fn disconnect(&mut self) -> Result<(), ConnectionError> {
-//         Ok(())
-//     }
+pub struct ConnectedSocketTransport<S>(S);
 
-//     fn is_connected(&self) -> bool {
-//         true
-//     }
+impl<S: Read + Write> Transport for ConnectedSocketTransport<S> {
+    type Socket = S;
 
-//     async fn write_packet<P: MqttEncode>(&mut self, packet: P) -> Result<(), StateError> {
-//         // FIXME: Reuse packet buffer?
-//         let mut buf = [0u8; 128];
-//         let mut encoder = MqttEncoder::new(&mut buf);
-//         packet
-//             .to_buffer(&mut encoder)
-//             .map_err(|_| StateError::Deserialization)?;
-//         Transport::write(self, encoder.packet_bytes()).await?;
-//         Ok(())
-//     }
+    async fn connect(&mut self, _broker: &mut impl Broker) -> Result<(), ConnectionError> {
+        Ok(())
+    }
 
-//     async fn write(&mut self, buf: &[u8]) -> Result<(), StateError> {
-//         trace!("Writing {} bytes to socket", buf.len());
-//         self.write_all(buf)
-//             .await
-//             .map_err(|e| StateError::Io(e.kind()))?;
-//         self.flush().await.map_err(|e| StateError::Io(e.kind()))
-//     }
+    fn disconnect(&mut self) -> Result<(), ConnectionError> {
+        Ok(())
+    }
 
-//     async fn get_received_packet(
-//         &mut self,
-//     ) -> Result<ReceivedPacket<'_, Self::Socket>, StateError> {
-//         if !self.is_connected() {
-//             return Err(StateError::Io(ErrorKind::NotConnected));
-//         };
+    fn is_connected(&self) -> bool {
+        true
+    }
 
-//         while !self.packet_buf.packet_available() {
-//             self.packet_buf
-//                 .receive(self.socket.as_mut().unwrap())
-//                 .await
-//                 .map_err(|kind| {
-//                     error!("DISCONNECTING {:?}", kind);
-//                     self.socket.take();
-//                     StateError::Io(kind)
-//                 })?;
-//         }
-
-//         self.packet_buf
-//             .received_packet(self.socket.as_mut().unwrap())
-//             .map_err(|_| StateError::Deserialization)
-//     }
-// }
+    fn socket(&mut self) -> Result<&mut Self::Socket, crate::StateError> {
+        Ok(&mut self.0)
+    }
+}

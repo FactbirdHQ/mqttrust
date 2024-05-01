@@ -369,7 +369,7 @@ where
     ///
     /// NOTE:  If the `thumbv6` feature is selected, this function takes a short critical
     /// section while committing.
-    pub fn commit(mut self, used: usize) {
+    pub fn commit(self, used: usize) {
         self.commit_inner(used);
         core::mem::forget(self);
     }
@@ -417,9 +417,9 @@ where
     }
 
     #[inline(always)]
-    pub(crate) fn commit_inner(&mut self, used: usize) {
-        self.channel.lock(|channel| {
-            let mut inner = channel.borrow_mut();
+    pub(crate) fn commit_inner(&self, used: usize) {
+        self.channel.lock(|ch| {
+            let mut inner = ch.borrow_mut();
             // If there is no grant in progress, return early. This
             // generally means we are dropping the grant within a
             // wrapper structure
@@ -434,15 +434,16 @@ where
             let len = self.buf.len();
             let used = min(len, used);
 
-            inner.reserve -= len - used;
+            let write = inner.write;
+            inner.reserve = inner.reserve.wrapping_sub(len - used);
 
             let max = len;
             let new_write = inner.reserve;
 
-            if (new_write < inner.write) && (inner.write != max) {
+            if (new_write < write) && (write != max) {
                 // We have already wrapped, but we are skipping some bytes at the end of the ring.
                 // Mark `last` where the write pointer used to be to hold the line here
-                inner.last = inner.write;
+                inner.last = write;
             } else if new_write > inner.last {
                 // We're about to pass the last pointer, which was previously the artificial
                 // end of the ring. Now that we've passed it, we can "unlock" the section

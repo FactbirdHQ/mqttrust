@@ -6,6 +6,8 @@ use core::{
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use embassy_time::{Instant, Timer};
+use embedded_io_async::Error as _;
+use embedded_io_async::Write as _;
 
 use crate::{
     config::Config,
@@ -15,6 +17,7 @@ use crate::{
         QosPid, StateError,
     },
     error::ConnectionError,
+    packet::PacketBuffer,
     pubsub::{
         framed::{FramePublisher, FrameSubscriber},
         SliceBufferProvider,
@@ -33,6 +36,7 @@ pub struct MqttStack<'a, M: RawMutex, B, const SUBS: usize> {
     rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, SUBS>,
 
     config: Config<B>,
+    packet_buf: PacketBuffer<128>,
 
     last_network_action: Instant,
     await_pingresp: Option<Instant>,
@@ -55,6 +59,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             rx_publisher,
 
             config,
+            packet_buf: PacketBuffer::new(),
 
             clean_start: true,
             connect_attempts: 0,
@@ -111,7 +116,10 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             properties: crate::Properties::Slice(&[]),
         };
 
-        transport.write_packet(disconnect).await.ok();
+        self.packet_buf
+            .write_packet(transport, disconnect)
+            .await
+            .ok();
 
         self.last_network_action = Instant::now();
     }
@@ -129,7 +137,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
         };
 
         match select3(
-            transport.get_received_packet(),
+            self.packet_buf.get_received_packet(transport),
             self.tx_subscriber.read_async(),
             keep_alive_sleep,
         )
@@ -184,7 +192,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                             QosPid::AtLeastOnce(pid) => {
                                 warn!("sending puback {:?}", pid);
                                 let puback = PubAck { pid };
-                                transport.write_packet(puback).await?;
+                                self.packet_buf.write_packet(transport, puback).await?;
                             }
                             #[cfg(feature = "qos2")]
                             QosPid::ExactlyOnce(pid) => {
@@ -197,7 +205,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                                     .unwrap();
 
                                 let pubrec = PubRec { pid };
-                                transport.write_packet(pubrec).await?;
+                                self.packet_buf.write_packet(transport, pubrec).await?;
                             }
                         }
                     }
@@ -218,7 +226,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         match shared.incoming_pub.remove(&pid.get()) {
                             true => {
                                 let pubcomp = PubComp { pid };
-                                transport.write_packet(pubcomp).await?;
+                                self.packet_buf.write_packet(transport, pubcomp).await?;
                             }
                             false => {
                                 error!("Unsolicited pubrel packet: {:?}", pid);
@@ -235,7 +243,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                                 shared.outgoing_rel.insert(pid.get());
 
                                 let pubrel = PubRel { pid };
-                                transport.write_packet(pubrel).await?;
+                                self.packet_buf.write_packet(transport, pubrel).await?;
                             }
                             None => {
                                 error!("Unsolicited pubrec packet: {:?}", pid);
@@ -335,7 +343,17 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     }
                 }
 
-                transport.write(packet_bytes).await?;
+                transport
+                    .socket()?
+                    .write_all(packet_bytes)
+                    .await
+                    .map_err(|e| StateError::Io(e.kind()))?;
+
+                transport
+                    .socket()?
+                    .flush()
+                    .await
+                    .map_err(|e| StateError::Io(e.kind()))?;
 
                 shared.wake_tx();
                 self.last_network_action = Instant::now();
@@ -357,7 +375,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                 );
 
                 let pingreq = PingReq;
-                transport.write_packet(pingreq).await?;
+                self.packet_buf.write_packet(transport, pingreq).await?;
 
                 self.last_network_action = Instant::now();
                 self.await_pingresp = Some(Instant::now());
@@ -395,8 +413,8 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
         }
 
         // send mqtt connect packet
-        transport
-            .write_packet(connect)
+        self.packet_buf
+            .write_packet(transport, connect)
             .await
             .map_err(|e| ConnectionError::MqttState(e))?;
 
@@ -404,8 +422,9 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
 
         // validate connack
         // TODO: ERROR types
-        match transport
-            .get_received_packet()
+        match self
+            .packet_buf
+            .get_received_packet(transport)
             .await
             .map_err(|_| ConnectionError::FlushTimeout)?
         {

@@ -227,7 +227,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         Ok(Subscription {
             subscriber,
             topic_filters,
-            _client: self,
+            client: self,
         })
     }
 }
@@ -309,7 +309,7 @@ impl core::fmt::Display for TopicFilter {
 pub struct Subscription<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> {
     topic_filters: heapless::Vec<TopicFilter, MAX_TOPICS>,
     subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, SUBS>,
-    _client: &'b MqttClient<'a, M, SUBS>,
+    client: &'b MqttClient<'a, M, SUBS>,
 }
 
 impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
@@ -369,14 +369,15 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
     fn drop(&mut self) {
         warn!("Dropping subscription! {:?}", self.topic_filters);
 
-        let pid = if let Ok(state_ref) = self._client.shared.try_lock() {
+        let pid = if let Ok(state_ref) = self.client.shared.try_lock() {
             state_ref.borrow_mut().next_pid()
         } else {
             Pid::new()
         };
 
-        // FIXME: Error handling and unsubscribe guarantee & unsuback? basically async drop?
-        if let Ok(tx_prod_ref) = self._client.tx_publisher.try_lock() {
+        // FIXME: Error handling and unsubscribe guarantee & unsuback? basically
+        // async drop? Might be possible to handle using persistence layer?
+        if let Ok(tx_prod_ref) = self.client.tx_publisher.try_lock() {
             let mut tx_prod = tx_prod_ref.borrow_mut();
 
             let packet = Unsubscribe {
@@ -415,7 +416,8 @@ impl<'a, M: RawMutex, const SUBS: usize> Message<'a, M, SUBS> {
 
         let topic_name = {
             let topic_name_start = decoder.offset() + 2;
-            decoder.read_str().ok()?;
+            let name = decoder.read_str().ok()?;
+            warn!("GOT MESSAGE TOPIC: {}", name);
             topic_name_start..decoder.offset()
         };
 
@@ -521,6 +523,7 @@ mod tests {
 
         let filter = TopicFilter::new(FILTER1).unwrap();
         assert!(filter.is_match("some/topic/thing"));
+        assert!(filter.is_match("some/topic/thing/more/sections"));
 
         assert_eq!(filter.filter(), FILTER1);
 

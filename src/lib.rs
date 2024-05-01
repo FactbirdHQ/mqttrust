@@ -72,14 +72,7 @@ struct StateInner<'a, M: RawMutex, const SUBS: usize> {
     pub(crate) shared: Mutex<M, RefCell<Shared<SUBS>>>,
 }
 
-pub fn new<
-    'd,
-    M: RawMutex,
-    B: Broker,
-    const TX: usize,
-    const RX: usize,
-    const SUBS: usize,
->(
+pub fn new<'d, M: RawMutex, B: Broker, const TX: usize, const RX: usize, const SUBS: usize>(
     state: &'d mut State<M, TX, RX, SUBS>,
     config: Config<B>,
 ) -> (MqttStack<'d, M, B, SUBS>, MqttClient<'d, M, SUBS>) {

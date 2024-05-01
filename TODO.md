@@ -10,14 +10,15 @@ TODO:
 - [x] Update config on-the-fly
 - [x] `embedded-tls` support
 - [x] Plug-able transport layer
-- [ ] Error handling
+- [x] Deferred publish payload
+- [ ] Automatically drop packet if all subscribers touched it in `PubSub`
 - [ ] Framed inflight buffer
 - [ ] Republish
 - [ ] Plug-able persistence layer
+- [ ] MQTTv5 Properties
+- [ ] Packet builders?
+- [ ] Error handling
+- [ ] Setup integration tests & CI
 - [ ] Logging
 - [ ] Docs
 - [ ] TEST & Evaluate!
-- [ ] Packet builders?
-- [ ] Automatically drop packet if all subscribers touched it in `PubSub`
-- [ ] Setup integration tests & CI
-- [x] Deferred publish payload

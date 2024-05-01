@@ -428,7 +428,7 @@ where
             debug_assert!(used <= self.buf.len());
 
             // This should be fine, purely incrementing
-            inner.read += used;
+            inner.read = inner.read.wrapping_add(used);
 
             inner.read_in_progress = false;
             inner.publisher_waker.wake();
@@ -520,7 +520,7 @@ where
 
             if used <= self.buf1.len() {
                 // This should be fine, purely incrementing
-                inner.read += used;
+                inner.read = inner.read.wrapping_add(used);
             } else {
                 // Also release parts of the second buffer
                 inner.read = used - self.buf1.len();

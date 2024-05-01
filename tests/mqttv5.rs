@@ -8,7 +8,8 @@ use common::network::Network;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{
-    transport::embedded_tls::{TlsNalTransport, TlsState}, Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic
+    transport::embedded_tls::{TlsNalTransport, TlsState},
+    Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic,
 };
 use embedded_tls::{Certificate, TlsConfig};
 use futures::StreamExt;
@@ -26,7 +27,7 @@ async fn mqttv5() {
 
     let client_id = "csr_test";
     let hostname = "a2twqv2u8qs5xt-ats.iot.eu-west-1.amazonaws.com";
-    
+
     // Create the MQTT stack
     let broker = DomainBroker::<_, 256>::new(hostname, &*network).unwrap();
     let config =
@@ -81,12 +82,19 @@ async fn mqttv5() {
 
     let provider = embedded_tls::UnsecureProvider::new::<embedded_tls::Aes128GcmSha256>(OsRng);
 
-    let tls_config = TlsConfig::new().with_server_name(hostname)
-        .with_ca(Certificate::X509(include_bytes!("/home/mathias/Downloads/embedded-tls-test-certs/ca.der")))
-        .with_cert(Certificate::X509(include_bytes!("/home/mathias/Downloads/embedded-tls-test-certs/cert.der")))
-        .with_priv_key(include_bytes!("/home/mathias/Downloads/embedded-tls-test-certs/private.der"));
+    let tls_config = TlsConfig::new()
+        .with_server_name(hostname)
+        .with_ca(Certificate::X509(include_bytes!(
+            "/home/mathias/Downloads/embedded-tls-test-certs/ca.der"
+        )))
+        .with_cert(Certificate::X509(include_bytes!(
+            "/home/mathias/Downloads/embedded-tls-test-certs/cert.der"
+        )))
+        .with_priv_key(include_bytes!(
+            "/home/mathias/Downloads/embedded-tls-test-certs/private.der"
+        ));
 
-    let tls_state = TlsState::new();
+    let tls_state = TlsState::<2048, 2048>::new();
     let mut transport = TlsNalTransport::new(network, &tls_state, &tls_config, provider);
 
     embassy_time::with_timeout(

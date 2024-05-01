@@ -87,18 +87,16 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
             None
         }
     }
-    
+
     fn get_hostname(&self) -> Option<&str> {
         let hostname = self
-                .raw
-                .split_once(':')
-                .map(|f| f.0)
-                .unwrap_or(self.raw.as_str());
+            .raw
+            .split_once(':')
+            .map(|f| f.0)
+            .unwrap_or(self.raw.as_str());
 
         Some(hostname)
     }
-
-    
 }
 
 /// A simple broker specification where the address of the broker is known in advance.

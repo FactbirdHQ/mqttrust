@@ -37,7 +37,7 @@ pub struct Shared<const SUBS: usize> {
     tx_waker: MultiWakerRegistration<MAX_INFLIGHT>,
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<1536>, MAX_INFLIGHT>,
+    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<4>, MAX_INFLIGHT>,
     pub(crate) pending_ack: heapless::FnvIndexSet<PendingAck, SUBS>,
 
     /// Packet ids of released QoS 2 publishes
@@ -99,7 +99,7 @@ impl<const L: usize> Inflight<L> {
         //     "Only non-zero QoSs are allowed."
         // );
         Self {
-            publish: heapless::Vec::from_slice(publish).unwrap(),
+            publish: heapless::Vec::from_slice(&[]).unwrap(),
             last_touch: Instant::now(),
         }
     }
