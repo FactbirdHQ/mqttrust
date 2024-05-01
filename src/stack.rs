@@ -1,22 +1,20 @@
 use core::{
     cell::RefCell,
-    future::poll_fn,
     ops::{Deref, DerefMut},
 };
 
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use embassy_time::{Instant, Timer};
-use embedded_io_async::{Error as _, ErrorKind, Write};
-use embedded_nal_async::TcpConnect;
+use embedded_io_async::Error as _;
+use embedded_io_async::Write as _;
 
 use crate::{
     config::Config,
     encoder::TxHeader,
     encoding::{
-        encoder::{MqttEncode, MqttEncoder},
-        received_packet::ReceivedPacket,
-        Connect, PacketType, PingReq, Protocol, PubAck, QoS, QosPid, StateError,
+        received_packet::ReceivedPacket, Connect, PacketType, PingReq, Protocol, PubAck, QoS,
+        QosPid, StateError,
     },
     error::ConnectionError,
     packet::PacketBuffer,
@@ -25,101 +23,20 @@ use crate::{
         SliceBufferProvider,
     },
     state::{Inflight, PendingAck, Shared},
+    transport::Transport,
     Broker, Disconnect,
 };
 
 #[cfg(feature = "qos2")]
 use crate::encoding::{PubComp, PubRec, PubRel};
 
-pub(crate) struct Network<'a, N: TcpConnect> {
-    network: &'a N,
-    socket: Option<N::Connection<'a>>,
-    packet_buf: PacketBuffer<128>,
-}
-
-impl<'a, N: TcpConnect> Network<'a, N> {
-    pub fn new(network: &'a N) -> Self {
-        Self {
-            network,
-            socket: None,
-            packet_buf: PacketBuffer::new(),
-        }
-    }
-
-    pub async fn connect<B: Broker>(&mut self, broker: &mut B) -> Result<(), ConnectionError> {
-        let addr = broker
-            .get_address()
-            .await
-            .ok_or(ConnectionError::InvalidAddress)?;
-        // info!("Connecting network to {:?}", addr);
-        let socket = self
-            .network
-            .connect(addr)
-            .await
-            .map_err(|e| ConnectionError::Io(e.kind()))?;
-        self.socket.replace(socket);
-
-        Ok(())
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.socket.is_some()
-    }
-
-    pub async fn write_packet<P: MqttEncode>(&mut self, packet: P) -> Result<(), StateError> {
-        // FIXME: Reuse packet buffer?
-        let mut buf = [0u8; 128];
-        let mut encoder = MqttEncoder::new(&mut buf);
-        packet
-            .to_buffer(&mut encoder)
-            .map_err(|_| StateError::Deserialization)?;
-        self.write(encoder.packet_bytes()).await?;
-        Ok(())
-    }
-
-    pub async fn write(&mut self, buf: &[u8]) -> Result<(), StateError> {
-        let Some(ref mut socket) = self.socket else {
-            return Err(StateError::Io(ErrorKind::NotConnected));
-        };
-
-        trace!("Writing {} bytes to socket", buf.len());
-        socket
-            .write_all(buf)
-            .await
-            .map_err(|e| StateError::Io(e.kind()))?;
-        socket.flush().await.map_err(|e| StateError::Io(e.kind()))
-    }
-
-    async fn get_received_packet(
-        &mut self,
-    ) -> Result<ReceivedPacket<'_, N::Connection<'a>>, StateError> {
-        if !self.is_connected() {
-            return Err(StateError::Io(ErrorKind::NotConnected));
-        };
-
-        while !self.packet_buf.packet_available() {
-            self.packet_buf
-                .receive(self.socket.as_mut().unwrap())
-                .await
-                .map_err(|kind| {
-                    error!("DISCONNECTING {:?}", kind);
-                    self.socket.take();
-                    StateError::Io(kind)
-                })?;
-        }
-
-        self.packet_buf
-            .received_packet(self.socket.as_mut().unwrap())
-            .map_err(|_| StateError::Deserialization)
-    }
-}
-
-pub struct MqttStack<'a, M: RawMutex, B, N: TcpConnect, const SUBS: usize> {
+pub struct MqttStack<'a, M: RawMutex, B, const SUBS: usize> {
     shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
-    tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
-    rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, SUBS>,
+    tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
+    rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
 
     config: Config<B>,
+    packet_buf: PacketBuffer<128>,
 
     last_network_action: Instant,
     await_pingresp: Option<Instant>,
@@ -127,18 +44,14 @@ pub struct MqttStack<'a, M: RawMutex, B, N: TcpConnect, const SUBS: usize> {
     clean_start: bool,
     connect_attempts: u8,
     should_connect: bool,
-
-    // Network handle
-    network: Network<'a, N>,
 }
 
-impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a, M, B, N, SUBS> {
+impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
     pub(crate) fn new(
-        network: &'a N,
         config: Config<B>,
         shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
-        tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
-        rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, SUBS>,
+        tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
+        rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
     ) -> Self {
         Self {
             shared,
@@ -146,6 +59,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
             rx_publisher,
 
             config,
+            packet_buf: PacketBuffer::new(),
 
             clean_start: true,
             connect_attempts: 0,
@@ -153,8 +67,6 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
 
             last_network_action: Instant::now(),
             await_pingresp: None,
-
-            network: Network::new(network),
         }
     }
 
@@ -162,26 +74,26 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
     // runtime, meaning if `Stack` is insatantiated with a `DomainBroker` it is
     // only possible to update the config to a new `DomainBroker` implementation
     // with the same `Dns` resolver.
-    pub fn update_config(&mut self, new_config: Config<B>) {
-        self.network.socket.take();
-        self.config = new_config;
+    pub fn update_config<F: FnOnce(&mut Config<B>)>(&mut self, f: F) {
+        f(&mut self.config);
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self, transport: &mut impl Transport) {
         self.should_connect = true;
         info!("Running stack!");
         while self.should_connect {
-            if !self.network.is_connected() {
+            if !transport.is_connected() {
                 match embassy_time::with_timeout(self.config.connect_timeout, async {
-                    self.network.connect(&mut self.config.broker).await?;
-                    self.connect_mqtt().await?;
+                    transport.connect(&mut self.config.broker).await?;
+
+                    self.connect_mqtt(transport).await?;
                     Ok::<_, ConnectionError>(())
                 })
                 .await
                 {
                     Ok(_) => {}
                     Err(_) => {
-                        self.network.socket.take();
+                        transport.disconnect();
                         embassy_time::Timer::after((self.config.backoff_algo)(
                             self.connect_attempts,
                         ))
@@ -192,31 +104,32 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 }
             }
 
-            if let Err(e) = self.select().await {
+            if let Err(e) = self.select(transport).await {
                 error!("Stack error {}", e);
                 // Clean state
             }
         }
-    }
 
-    pub async fn disconnect(&mut self) -> Result<(), ConnectionError> {
         let disconnect = Disconnect {
             reason_code: Default::default(),
             #[cfg(feature = "mqttv5")]
             properties: crate::Properties::Slice(&[]),
         };
 
-        self.network
-            .write_packet(disconnect)
+        self.packet_buf
+            .write_packet(transport, disconnect)
             .await
-            .map_err(|e| ConnectionError::MqttState(e))?;
+            .ok();
 
         self.last_network_action = Instant::now();
+    }
+
+    pub async fn disconnect(&mut self) -> Result<(), ConnectionError> {
         self.should_connect = false;
         Ok(())
     }
 
-    async fn select(&mut self) -> Result<(), StateError> {
+    async fn select(&mut self, transport: &mut impl Transport) -> Result<(), StateError> {
         let keep_alive_sleep = if let Some(instant) = self.await_pingresp {
             Timer::after(instant + self.config.keepalive_interval - Instant::now())
         } else {
@@ -224,7 +137,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         };
 
         match select3(
-            self.network.get_received_packet(),
+            self.packet_buf.get_received_packet(transport),
             self.tx_subscriber.read_async(),
             keep_alive_sleep,
         )
@@ -279,7 +192,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                             QosPid::AtLeastOnce(pid) => {
                                 warn!("sending puback {:?}", pid);
                                 let puback = PubAck { pid };
-                                self.network.write_packet(puback).await?;
+                                self.packet_buf.write_packet(transport, puback).await?;
                             }
                             #[cfg(feature = "qos2")]
                             QosPid::ExactlyOnce(pid) => {
@@ -292,15 +205,15 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                                     .unwrap();
 
                                 let pubrec = PubRec { pid };
-                                self.network.write_packet(pubrec).await?;
+                                self.packet_buf.write_packet(transport, pubrec).await?;
                             }
                         }
                     }
                     ReceivedPacket::PubAck { pid, .. } => {
                         let shared_ref = self.shared.lock().await;
                         let mut shared = shared_ref.borrow_mut();
-                        debug!("Removing PID {:?} from outgoing_pub", pid.get());
-                        if shared.outgoing_pub.remove(&pid.get()).is_none() {
+                        debug!("Removing PID {:?} from inflight_pub", pid.get());
+                        if shared.inflight_pub.remove(&pid.get()).is_none() {
                             warn!("Unexpected Puback, PID: {:?}", pid.get());
                         }
                         // TODO: Handle collisions (See rumqttc state.rs)
@@ -313,7 +226,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         match shared.incoming_pub.remove(&pid.get()) {
                             true => {
                                 let pubcomp = PubComp { pid };
-                                self.network.write_packet(pubcomp).await?;
+                                self.packet_buf.write_packet(transport, pubcomp).await?;
                             }
                             false => {
                                 error!("Unsolicited pubrel packet: {:?}", pid);
@@ -325,12 +238,12 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                     ReceivedPacket::PubRec { pid, .. } => {
                         let shared_ref = self.shared.lock().await;
                         let mut shared = shared_ref.borrow_mut();
-                        match shared.outgoing_pub.remove(&pid.get()) {
+                        match shared.inflight_pub.remove(&pid.get()) {
                             Some(_) => {
                                 shared.outgoing_rel.insert(pid.get());
 
                                 let pubrel = PubRel { pid };
-                                self.network.write_packet(pubrel).await?;
+                                self.packet_buf.write_packet(transport, pubrel).await?;
                             }
                             None => {
                                 error!("Unsolicited pubrec packet: {:?}", pid);
@@ -394,10 +307,10 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 match tx_header.typ {
                     PacketType::Publish => {
                         if tx_header.qos != Some(QoS::AtMostOnce) {
-                            debug!("[Publish] Inserting {:?} into outgoing_pub", tx_header.pid);
+                            debug!("[Publish] Inserting {:?} into inflight_pub", tx_header.pid);
                             // FIXME: Properly handle error instead of `unwrap`
                             shared
-                                .outgoing_pub
+                                .inflight_pub
                                 .insert(tx_header.pid.unwrap().get(), Inflight::new(packet_bytes))
                                 .unwrap();
                         }
@@ -428,11 +341,26 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                         error!("TX Packet has invalid header?! Dropping packet {:?}", e);
                         return Ok(());
                     }
+                };
+
+                if let Some(pid) = tx_header.pid {
+                    shared.outgoing_pid.remove(&pid.get());
                 }
 
-                self.network.write(packet_bytes).await?;
+                transport
+                    .socket()?
+                    .write_all(packet_bytes)
+                    .await
+                    .map_err(|e| StateError::Io(e.kind()))?;
+
+                transport
+                    .socket()?
+                    .flush()
+                    .await
+                    .map_err(|e| StateError::Io(e.kind()))?;
 
                 shared.wake_tx();
+
                 self.last_network_action = Instant::now();
             }
             Either3::Third(_) => {
@@ -452,7 +380,7 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
                 );
 
                 let pingreq = PingReq;
-                self.network.write_packet(pingreq).await?;
+                self.packet_buf.write_packet(transport, pingreq).await?;
 
                 self.last_network_action = Instant::now();
                 self.await_pingresp = Some(Instant::now());
@@ -462,7 +390,10 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         Ok(())
     }
 
-    async fn connect_mqtt(&mut self) -> Result<bool, ConnectionError> {
+    async fn connect_mqtt(
+        &mut self,
+        transport: &mut impl Transport,
+    ) -> Result<bool, ConnectionError> {
         let connect = Connect {
             #[cfg(feature = "mqttv3")]
             protocol: Protocol::MQTT311,
@@ -487,8 +418,8 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         }
 
         // send mqtt connect packet
-        self.network
-            .write_packet(connect)
+        self.packet_buf
+            .write_packet(transport, connect)
             .await
             .map_err(|e| ConnectionError::MqttState(e))?;
 
@@ -497,8 +428,8 @@ impl<'a, M: RawMutex, B: Broker, N: TcpConnect, const SUBS: usize> MqttStack<'a,
         // validate connack
         // TODO: ERROR types
         match self
-            .network
-            .get_received_packet()
+            .packet_buf
+            .get_received_packet(transport)
             .await
             .map_err(|_| ConnectionError::FlushTimeout)?
         {
@@ -584,13 +515,13 @@ mod tests {
     #[tokio::test]
     #[ignore = "Skipped for now"]
     async fn subscribe_publish() {
-        let network = MockNetwork;
+        let mut network = crate::transport::embedded_nal::NalTransport::new(&MockNetwork);
 
         // Create the MQTT stack
         static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
         let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
         let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
-        let (mut stack, client) = crate::new(state, config, &network);
+        let (mut stack, client) = crate::new(state, config);
 
         let fut = async {
             // Use the MQTT client to subscribe
@@ -640,20 +571,20 @@ mod tests {
             }
         };
 
-        embassy_futures::select::select(stack.run(), fut).await;
+        embassy_futures::select::select(stack.run(&mut network), fut).await;
     }
 
     #[cfg(feature = "mqttv5")]
     #[tokio::test]
     #[ignore = "Skipped for now"]
     async fn multiple_subscribe() {
-        let network = MockNetwork;
+        let mut network = crate::transport::embedded_nal::NalTransport::new(&MockNetwork);
 
         // Create the MQTT stack
         static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
         let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
         let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
-        let (mut stack, client) = crate::new(state, config, &network);
+        let (mut stack, client) = crate::new(state, config);
 
         // Use the MQTT client to subscribe
 
@@ -735,7 +666,10 @@ mod tests {
             }
         };
 
-        embassy_futures::select::select(stack.run(), embassy_futures::join::join(fut_a, fut_b))
-            .await;
+        embassy_futures::select::select(
+            stack.run(&mut network),
+            embassy_futures::join::join(fut_a, fut_b),
+        )
+        .await;
     }
 }

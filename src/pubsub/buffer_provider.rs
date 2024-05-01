@@ -41,6 +41,6 @@ impl<'a> SliceBufferProvider<'a> {
 
 impl BufferProvider for SliceBufferProvider<'_> {
     fn buf(&mut self) -> &mut [u8] {
-        &mut self.buf
+        self.buf
     }
 }

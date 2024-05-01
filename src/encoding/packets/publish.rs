@@ -195,13 +195,18 @@ impl<'a, S: Read> PartialPublish<'a, S> {
         &mut self,
         buf: &mut [u8],
     ) -> Result<(), embedded_io_async::ReadExactError<S::Error>> {
+        trace!("Starting multipart copy of publish packet...");
+        trace!("Part 1: {} bytes", self.buf.len());
         buf[..self.buf.len()].copy_from_slice(&self.buf);
 
-        if self.buf.len() < self.packet_len {
+        if self.buf.len() < self.len() {
+            trace!("Part 2: {} bytes", self.len() - self.buf.len());
+
             self.reader
-                .read_exact(&mut buf[self.buf.len()..self.packet_len])
+                .read_exact(&mut buf[self.buf.len()..self.len()])
                 .await?;
         }
+        trace!("Finished multipart copy of {} bytes!", self.len());
 
         Ok(())
     }

@@ -7,15 +7,18 @@ TODO:
 - [x] Publish before connect handling
 - [x] MQTTv5 handling
 - [x] Reconnect backoff
-- [ ] Change config from client?
-- [ ] Error handling
+- [x] Update config on-the-fly
+- [x] `embedded-tls` support
+- [x] Plug-able transport layer
+- [x] Deferred publish payload
+- [ ] Automatically drop packet if all subscribers touched it in `PubSub`
 - [ ] Framed inflight buffer
 - [ ] Republish
-- [ ] Persistence
+- [ ] Plug-able persistence layer
+- [ ] MQTTv5 Properties
+- [ ] Packet builders?
+- [ ] Error handling
+- [ ] Setup integration tests & CI
 - [ ] Logging
 - [ ] Docs
 - [ ] TEST & Evaluate!
-- [ ] Packet builders?
-- [ ] Automatically drop packet if all subscribers touched it in `PubSub`
-- [ ] Setup integration tests & CI
-- [x] Deferred publish payload

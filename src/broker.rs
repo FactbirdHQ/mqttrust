@@ -1,12 +1,20 @@
 use core::convert::TryFrom;
 use embedded_nal_async::{AddrType, Dns, IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
+#[cfg(not(feature = "embedded-tls"))]
 const MQTT_DEFAULT_PORT: u16 = 1883;
+
+#[cfg(feature = "embedded-tls")]
+const MQTT_DEFAULT_PORT: u16 = 8883;
 
 /// A type that allows us to (eventually) determine the broker address.
 pub trait Broker {
     /// Retrieve the broker address (if available).
     async fn get_address(&mut self) -> Option<SocketAddr>;
+
+    fn get_hostname(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A broker that is specified using a qualified domain-name. The name will be resolved at some
@@ -56,6 +64,8 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
                 .map(|f| f.0)
                 .unwrap_or(self.raw.as_str());
 
+            info!("Tryng to resolve IP of {:?}", hostname);
+
             match self
                 .resolver
                 .get_host_by_name(hostname, AddrType::IPv4)
@@ -76,6 +86,16 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
         } else {
             None
         }
+    }
+
+    fn get_hostname(&self) -> Option<&str> {
+        let hostname = self
+            .raw
+            .split_once(':')
+            .map(|f| f.0)
+            .unwrap_or(self.raw.as_str());
+
+        Some(hostname)
     }
 }
 

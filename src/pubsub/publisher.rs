@@ -1,15 +1,12 @@
-use core::cell::RefCell;
 use core::cmp::min;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::slice::from_raw_parts_mut;
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Release};
 use core::task::{Context, Poll};
-
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use embassy_sync::blocking_mutex::Mutex;
 use futures::Future;
 
-use super::{state::PubSubState, BufferProvider, Error, Result};
+use super::{atomic, BufferProvider, Error, PubSubChannel, Result};
 
 /// `Publisher` is the primary interface for pushing data into a `PubSubState`.
 /// There are various methods for obtaining a grant to write to the buffer, with
@@ -35,25 +32,20 @@ use super::{state::PubSubState, BufferProvider, Error, Result};
 ///
 /// See [this github issue](https://github.com/jamesmunns/PubSubState/issues/38) for a
 /// discussion of grant methods that could be added in the future.
-pub struct Publisher<'a, M, B, const SUBS: usize>
+pub struct Publisher<'a, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>,
+    channel: &'a PubSubChannel<B, SUBS>,
 }
 
-unsafe impl<'a, M: RawMutex, B: BufferProvider, const SUBS: usize> Send
-    for Publisher<'a, M, B, SUBS>
-{
-}
+unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for Publisher<'a, B, SUBS> {}
 
-impl<'a, M, B, const SUBS: usize> Publisher<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> Publisher<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>) -> Self {
+    pub(super) fn new(channel: &'a PubSubChannel<B, SUBS>) -> Self {
         Self { channel }
     }
 
@@ -89,7 +81,7 @@ where
     /// # channeltest();
     /// # }
     /// ```
-    pub fn grant_exact(&mut self, sz: usize) -> Result<GrantW<'a, M, B, SUBS>> {
+    pub fn grant_exact(&mut self, sz: usize) -> Result<GrantW<'a, B, SUBS>> {
         self.grant_exact_with_context(sz, None)
     }
 
@@ -97,73 +89,66 @@ where
         &mut self,
         sz: usize,
         cx: Option<&mut Context<'_>>,
-    ) -> Result<GrantW<'a, M, B, SUBS>> {
-        self.channel.lock(|channel| {
-            let mut inner = channel.borrow_mut();
-            if inner.write_in_progress {
+    ) -> Result<GrantW<'a, B, SUBS>> {
+        let inner = self.channel;
+
+        if atomic::swap(&inner.write_in_progress, true, AcqRel) {
+            return Err(Error::GrantInProgress);
+        }
+
+        // Writer component. Must never write to `read`,
+        // be careful writing to `load`
+        let write = inner.write.load(Acquire);
+        let read = inner.read.load(Acquire);
+        let max = inner.capacity;
+        let already_inverted = write < read;
+
+        let start = if already_inverted {
+            if (write + sz) < read {
+                // Inverted, room is still available
+                write
+            } else {
+                // Inverted, no room is available
+                inner.write_in_progress.store(false, Release);
                 if let Some(cx) = cx {
                     inner.publisher_waker.register(cx.waker());
                 }
-                return Err(Error::GrantInProgress);
+                return Err(Error::InsufficientSize);
             }
-            inner.write_in_progress = true;
+        } else if write + sz <= max {
+            // Non inverted condition
+            write
+        } else {
+            // Not inverted, but need to go inverted
 
-            // Writer component. Must never write to `read`,
-            // be careful writing to `load`
-            let max = inner.capacity();
-            let already_inverted = inner.write < inner.read;
-
-            let start = if already_inverted {
-                if (inner.write + sz) < inner.read {
-                    // Inverted, room is still available
-                    inner.write
-                } else {
-                    // Inverted, no room is available
-                    inner.write_in_progress = false;
-                    if let Some(cx) = cx {
-                        inner.publisher_waker.register(cx.waker());
-                    }
-                    return Err(Error::InsufficientSize);
-                }
+            // NOTE: We check sz < read, NOT <=, because
+            // write must never == read in an inverted condition, since
+            // we will then not be able to tell if we are inverted or not
+            if sz < read {
+                // Invertible situation
+                0
             } else {
-                if inner.write + sz <= max {
-                    // Non inverted condition
-                    inner.write
-                } else {
-                    // Not inverted, but need to go inverted
-
-                    // NOTE: We check sz < read, NOT <=, because
-                    // write must never == read in an inverted condition, since
-                    // we will then not be able to tell if we are inverted or not
-                    if sz < inner.read {
-                        // Invertible situation
-                        0
-                    } else {
-                        // Not invertible, no space
-                        inner.write_in_progress = false;
-                        if let Some(cx) = cx {
-                            inner.publisher_waker.register(cx.waker());
-                        }
-                        return Err(Error::InsufficientSize);
-                    }
+                // Not invertible, no space
+                inner.write_in_progress.store(false, Release);
+                if let Some(cx) = cx {
+                    inner.publisher_waker.register(cx.waker());
                 }
-            };
+                return Err(Error::InsufficientSize);
+            }
+        };
 
-            // Safe write, only viewed by this task
-            inner.reserve = start + sz;
+        // Safe write, only viewed by this task
+        inner.reserve.store(start + sz, Release);
 
-            // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
-            // are all `#[repr(Transparent)]
-            let start_of_buf_ptr =
-                unsafe { (&mut *inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
-            let grant_slice =
-                unsafe { from_raw_parts_mut(start_of_buf_ptr.offset(start as isize), sz) };
+        // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
+        // are all `#[repr(Transparent)]
+        let start_of_buf_ptr = unsafe { (*inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
+        let grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(start), sz) };
 
-            Ok(GrantW {
-                buf: grant_slice,
-                channel: self.channel,
-                to_commit: 0,
-            })
+        Ok(GrantW {
+            buf: grant_slice,
+            channel: self.channel,
+            to_commit: 0,
         })
     }
 
@@ -205,7 +190,7 @@ where
     /// # channeltest();
     /// # }
     /// ```
-    pub fn grant_max_remaining(&mut self, sz: usize) -> Result<GrantW<'a, M, B, SUBS>> {
+    pub fn grant_max_remaining(&mut self, sz: usize) -> Result<GrantW<'a, B, SUBS>> {
         self.grant_max_remaining_with_context(sz, None)
     }
 
@@ -213,79 +198,71 @@ where
         &mut self,
         mut sz: usize,
         cx: Option<&mut Context<'_>>,
-    ) -> Result<GrantW<'a, M, B, SUBS>> {
-        self.channel.lock(|channel| {
-            let mut inner = channel.borrow_mut();
+    ) -> Result<GrantW<'a, B, SUBS>> {
+        let inner = self.channel;
 
-            if inner.write_in_progress {
+        if atomic::swap(&inner.write_in_progress, true, AcqRel) {
+            return Err(Error::GrantInProgress);
+        }
+
+        // Writer component. Must never write to `read`,
+        // be careful writing to `load`
+        let write = inner.write.load(Acquire);
+        let read = inner.read.load(Acquire);
+        let max = inner.capacity;
+
+        let already_inverted = write < read;
+
+        let start = if already_inverted {
+            // In inverted case, read is always > write
+            let remain = read - write - 1;
+
+            if remain != 0 {
+                sz = min(remain, sz);
+                write
+            } else {
+                // Inverted, no room is available
+                inner.write_in_progress.store(false, Release);
                 if let Some(cx) = cx {
                     inner.publisher_waker.register(cx.waker());
                 }
-                return Err(Error::GrantInProgress);
+                return Err(Error::InsufficientSize);
             }
-            inner.write_in_progress = true;
+        } else if write != max {
+            // Some (or all) room remaining in un-inverted case
+            sz = min(max - write, sz);
+            write
+        } else {
+            // Not inverted, but need to go inverted
 
-            // Writer component. Must never write to `read`,
-            // be careful writing to `load`
-            let max = inner.capacity();
-
-            let already_inverted = inner.write < inner.read;
-
-            let start = if already_inverted {
-                // In inverted case, read is always > write
-                let remain = inner.read - inner.write - 1;
-
-                if remain != 0 {
-                    sz = min(remain, sz);
-                    inner.write
-                } else {
-                    // Inverted, no room is available
-                    inner.write_in_progress = false;
-                    if let Some(cx) = cx {
-                        inner.publisher_waker.register(cx.waker());
-                    }
-                    return Err(Error::InsufficientSize);
-                }
+            // NOTE: We check read > 1, NOT read >= 1, because
+            // write must never == read in an inverted condition, since
+            // we will then not be able to tell if we are inverted or not
+            if read > 1 {
+                sz = min(read - 1, sz);
+                0
             } else {
-                if inner.write != max {
-                    // Some (or all) room remaining in un-inverted case
-                    sz = min(max - inner.write, sz);
-                    inner.write
-                } else {
-                    // Not inverted, but need to go inverted
-
-                    // NOTE: We check read > 1, NOT read >= 1, because
-                    // write must never == read in an inverted condition, since
-                    // we will then not be able to tell if we are inverted or not
-                    if inner.read > 1 {
-                        sz = min(inner.read - 1, sz);
-                        0
-                    } else {
-                        // Not invertible, no space
-                        inner.write_in_progress = false;
-                        if let Some(cx) = cx {
-                            inner.publisher_waker.register(cx.waker());
-                        }
-                        return Err(Error::InsufficientSize);
-                    }
+                // Not invertible, no space
+                inner.write_in_progress.store(false, Release);
+                if let Some(cx) = cx {
+                    inner.publisher_waker.register(cx.waker());
                 }
-            };
+                return Err(Error::InsufficientSize);
+            }
+        };
 
-            // Safe write, only viewed by this task
-            inner.reserve = start + sz;
+        // Safe write, only viewed by this task
+        inner.reserve.store(start + sz, Release);
 
-            // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
-            // are all `#[repr(Transparent)]
-            let start_of_buf_ptr =
-                unsafe { (&mut *inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
-            let grant_slice =
-                unsafe { from_raw_parts_mut(start_of_buf_ptr.offset(start as isize), sz) };
+        // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
+        // are all `#[repr(Transparent)]
+        let start_of_buf_ptr = unsafe { (*inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
+        let grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(start), sz) };
 
-            Ok(GrantW {
-                buf: grant_slice,
-                channel: self.channel,
-                to_commit: 0,
-            })
+        Ok(GrantW {
+            buf: grant_slice,
+            channel: self.channel,
+            to_commit: 0,
         })
     }
 
@@ -300,7 +277,7 @@ where
     ///              Write pointer
     /// We cannot request a size of size 7, since we would loop over the read pointer
     /// even if the buffer is empty. In this case, an error is returned
-    pub fn grant_exact_async(&'_ mut self, sz: usize) -> GrantExactFuture<'a, '_, M, B, SUBS> {
+    pub fn grant_exact_async(&'_ mut self, sz: usize) -> GrantExactFuture<'a, '_, B, SUBS> {
         GrantExactFuture {
             publisher: self,
             sz,
@@ -312,7 +289,7 @@ where
     pub fn grant_max_remaining_async(
         &'_ mut self,
         sz: usize,
-    ) -> GrantMaxRemainingFuture<'a, '_, M, B, SUBS> {
+    ) -> GrantMaxRemainingFuture<'a, '_, B, SUBS> {
         GrantMaxRemainingFuture {
             publisher: self,
             sz,
@@ -320,16 +297,12 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> Drop for Publisher<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> Drop for Publisher<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
-        self.channel.lock(|channel| {
-            let mut inner = channel.borrow_mut();
-            inner.publisher_taken = false;
-        })
+        self.channel.publisher_taken.store(false, Release);
     }
 }
 
@@ -343,21 +316,19 @@ where
 ///
 /// If the `thumbv6` feature is selected, dropping the grant
 /// without committing it takes a short critical section,
-pub struct GrantW<'a, M, B, const SUBS: usize>
+pub struct GrantW<'a, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     pub(crate) buf: &'a mut [u8],
-    channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>,
+    channel: &'a PubSubChannel<B, SUBS>,
     pub(crate) to_commit: usize,
 }
 
-unsafe impl<'a, M: RawMutex, B: BufferProvider, const SUBS: usize> Send for GrantW<'a, M, B, SUBS> {}
+unsafe impl<'a, B: BufferProvider, const SUBS: usize> Send for GrantW<'a, B, SUBS> {}
 
-impl<'a, M, B, const SUBS: usize> GrantW<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> GrantW<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     /// Finalizes a writable grant given by `grant()` or `grant_max()`.
@@ -418,56 +389,56 @@ where
 
     #[inline(always)]
     pub(crate) fn commit_inner(&mut self, used: usize) {
-        self.channel.lock(|channel| {
-            let mut inner = channel.borrow_mut();
-            // If there is no grant in progress, return early. This
-            // generally means we are dropping the grant within a
-            // wrapper structure
-            if !inner.write_in_progress {
-                return;
-            }
+        let inner = self.channel;
+        // If there is no grant in progress, return early. This
+        // generally means we are dropping the grant within a
+        // wrapper structure
+        if !inner.write_in_progress.load(Acquire) {
+            return;
+        }
 
-            // Writer component. Must never write to READ,
-            // be careful writing to LAST
+        // Writer component. Must never write to READ,
+        // be careful writing to LAST
 
-            // Saturate the grant commit
-            let len = self.buf.len();
-            let used = min(len, used);
+        // Saturate the grant commit
+        let len = self.buf.len();
+        let used = min(len, used);
 
-            inner.reserve -= len - used;
+        let write = inner.write.load(Acquire);
+        atomic::fetch_sub(&inner.reserve, len - used, AcqRel);
 
-            let max = len;
-            let new_write = inner.reserve;
+        let max = len;
+        let last = inner.last.load(Acquire);
+        let new_write = inner.reserve.load(Acquire);
 
-            if (new_write < inner.write) && (inner.write != max) {
-                // We have already wrapped, but we are skipping some bytes at the end of the ring.
-                // Mark `last` where the write pointer used to be to hold the line here
-                inner.last = inner.write;
-            } else if new_write > inner.last {
-                // We're about to pass the last pointer, which was previously the artificial
-                // end of the ring. Now that we've passed it, we can "unlock" the section
-                // that was previously skipped.
-                //
-                // Since new_write is strictly larger than last, it is safe to move this as
-                // the other thread will still be halted by the (about to be updated) write
-                // value
-                inner.last = max;
-            }
-            // else: If new_write == last, either:
-            // * last == max, so no need to write, OR
-            // * If we write in the end chunk again, we'll update last to max next time
-            // * If we write to the start chunk in a wrap, we'll update last when we
-            //     move write backwards
+        if (new_write < write) && (write != max) {
+            // We have already wrapped, but we are skipping some bytes at the end of the ring.
+            // Mark `last` where the write pointer used to be to hold the line here
+            inner.last.store(write, Release);
+        } else if new_write > last {
+            // We're about to pass the last pointer, which was previously the artificial
+            // end of the ring. Now that we've passed it, we can "unlock" the section
+            // that was previously skipped.
+            //
+            // Since new_write is strictly larger than last, it is safe to move this as
+            // the other thread will still be halted by the (about to be updated) write
+            // value
+            inner.last.store(max, Release);
+        }
+        // else: If new_write == last, either:
+        // * last == max, so no need to write, OR
+        // * If we write in the end chunk again, we'll update last to max next time
+        // * If we write to the start chunk in a wrap, we'll update last when we
+        //     move write backwards
 
-            // Write must be updated AFTER last, otherwise read could think it was
-            // time to invert early!
-            inner.write = new_write;
+        // Write must be updated AFTER last, otherwise read could think it was
+        // time to invert early!
+        inner.write.store(new_write, Release);
 
-            // Allow subsequent grants
-            inner.write_in_progress = false;
+        // Allow subsequent grants
+        inner.write_in_progress.store(false, Release);
 
-            inner.subscriber_wakers.wake();
-        })
+        inner.subscriber_wakers.wake();
     }
 
     /// Configures the amount of bytes to be commited on drop.
@@ -476,9 +447,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> Drop for GrantW<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> Drop for GrantW<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
@@ -486,9 +456,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> Deref for GrantW<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> Deref for GrantW<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -498,9 +467,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> DerefMut for GrantW<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> DerefMut for GrantW<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
@@ -509,21 +477,19 @@ where
 }
 
 /// Future returned [Publisher::grant_exact_async]
-pub struct GrantExactFuture<'a, 'b, M, B, const SUBS: usize>
+pub struct GrantExactFuture<'a, 'b, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    publisher: &'b mut Publisher<'a, M, B, SUBS>,
+    publisher: &'b mut Publisher<'a, B, SUBS>,
     sz: usize,
 }
 
-impl<'a, 'b, M, B, const SUBS: usize> Future for GrantExactFuture<'a, 'b, M, B, SUBS>
+impl<'a, 'b, B, const SUBS: usize> Future for GrantExactFuture<'a, 'b, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<GrantW<'a, M, B, SUBS>>;
+    type Output = Result<GrantW<'a, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Check if it's event  possible to get the requested size
@@ -534,12 +500,9 @@ where
         // Check if the buffer from 6 to 8 satisfies or if the buffer from 0 to 5 does.
         // If so, create the future, if not, we need the return since the future will never resolve.
         // Ideally, we could just wait for all the read to complete and reset the read and write to 0, but that is currently not supported
-
-        if self.publisher.channel.lock(|channel| {
-            let inner = channel.borrow();
-            let max = inner.capacity();
-            self.sz > max || (self.sz > max - inner.write && self.sz >= inner.write)
-        }) {
+        let max = self.publisher.channel.capacity;
+        let write = self.publisher.channel.write.load(Acquire);
+        if self.sz > max || (self.sz > max - write && self.sz >= write) {
             return Poll::Ready(Err(Error::InsufficientSize));
         }
 
@@ -547,32 +510,30 @@ where
 
         match self.publisher.grant_exact_with_context(sz, Some(cx)) {
             Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(_) => Poll::Pending,
+            Err(e) => match e {
+                Error::GrantInProgress | Error::InsufficientSize => Poll::Pending,
+                _ => Poll::Ready(Err(e)),
+            },
         }
     }
 }
 
-impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
-    for GrantExactFuture<'a, 'b, M, B, SUBS>
-{
-}
+impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantExactFuture<'a, 'b, B, SUBS> {}
 
 /// Future returned [Publisher::grant_max_remaining_async]
-pub struct GrantMaxRemainingFuture<'a, 'b, M, B, const SUBS: usize>
+pub struct GrantMaxRemainingFuture<'a, 'b, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    publisher: &'b mut Publisher<'a, M, B, SUBS>,
+    publisher: &'b mut Publisher<'a, B, SUBS>,
     sz: usize,
 }
 
-impl<'a, 'b, M, B, const SUBS: usize> Future for GrantMaxRemainingFuture<'a, 'b, M, B, SUBS>
+impl<'a, 'b, B, const SUBS: usize> Future for GrantMaxRemainingFuture<'a, 'b, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<GrantW<'a, M, B, SUBS>>;
+    type Output = Result<GrantW<'a, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let sz = self.sz;
@@ -587,7 +548,7 @@ where
     }
 }
 
-impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
-    for GrantMaxRemainingFuture<'a, 'b, M, B, SUBS>
+impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin
+    for GrantMaxRemainingFuture<'a, 'b, B, SUBS>
 {
 }

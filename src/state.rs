@@ -6,7 +6,7 @@ use heapless::{FnvIndexMap, IndexMap};
 
 use crate::encoding::Pid;
 
-const MAX_INFLIGHT: usize = 2;
+const MAX_INFLIGHT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingAck {
@@ -37,8 +37,9 @@ pub struct Shared<const SUBS: usize> {
     tx_waker: MultiWakerRegistration<MAX_INFLIGHT>,
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) outgoing_pub: FnvIndexMap<u16, Inflight<1536>, MAX_INFLIGHT>,
+    pub(crate) inflight_pub: FnvIndexMap<u16, Inflight<4>, MAX_INFLIGHT>,
     pub(crate) pending_ack: heapless::FnvIndexSet<PendingAck, SUBS>,
+    pub(crate) outgoing_pid: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
 
     /// Packet ids of released QoS 2 publishes
     #[cfg(feature = "qos2")]
@@ -56,8 +57,9 @@ impl<const SUBS: usize> Shared<SUBS> {
 
             tx_waker: MultiWakerRegistration::new(),
 
-            outgoing_pub: IndexMap::new(),
+            inflight_pub: IndexMap::new(),
             pending_ack: heapless::IndexSet::new(),
+            outgoing_pid: heapless::IndexSet::new(),
 
             #[cfg(feature = "qos2")]
             outgoing_rel: heapless::IndexSet::new(),
@@ -82,6 +84,7 @@ impl<const SUBS: usize> Shared<SUBS> {
 
 /// Client publication message data.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct Inflight<const L: usize> {
     /// A publish of non-zero QoS.
     publish: heapless::Vec<u8, L>,
@@ -99,7 +102,7 @@ impl<const L: usize> Inflight<L> {
         //     "Only non-zero QoSs are allowed."
         // );
         Self {
-            publish: heapless::Vec::from_slice(publish).unwrap(),
+            publish: heapless::Vec::from_slice(&[]).unwrap(),
             last_touch: Instant::now(),
         }
     }

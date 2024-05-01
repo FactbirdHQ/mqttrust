@@ -1,6 +1,12 @@
-use embedded_io_async::{Error, ErrorKind, Read};
+use embedded_io_async::{Error, ErrorKind, Read, Write};
 
-use crate::{decoder::MqttDecoder, encoding::received_packet::ReceivedPacket, PacketType};
+use crate::{
+    decoder::MqttDecoder,
+    encoder::{MqttEncode, MqttEncoder},
+    encoding::received_packet::ReceivedPacket,
+    transport::Transport,
+    PacketType, StateError,
+};
 
 pub(crate) struct PacketBuffer<const N: usize> {
     // MqttStack holds an RX buffer just big enough to hold a single packet
@@ -20,11 +26,49 @@ impl<const N: usize> PacketBuffer<N> {
         }
     }
 
-    pub fn commit(&mut self, count: usize) {
-        self.read_bytes += count;
+    pub async fn write_packet(
+        &mut self,
+        transport: &mut impl Transport,
+        packet: impl MqttEncode,
+    ) -> Result<(), StateError> {
+        // FIXME: Reuse packet buffer?
+        let mut buf = [0u8; 128];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        packet
+            .to_buffer(&mut encoder)
+            .map_err(|_| StateError::Deserialization)?;
+
+        transport
+            .socket()?
+            .write_all(encoder.packet_bytes())
+            .await
+            .map_err(|e| StateError::Io(e.kind()))?;
+
+        transport
+            .socket()?
+            .flush()
+            .await
+            .map_err(|e| StateError::Io(e.kind()))?;
+        Ok(())
     }
 
-    pub fn receive_buffer(&mut self) -> Result<&mut [u8], crate::encoding::EncodingError> {
+    pub async fn get_received_packet<'a, T: Transport>(
+        &'a mut self,
+        transport: &'a mut T,
+    ) -> Result<ReceivedPacket<'a, T::Socket>, StateError> {
+        while !self.packet_len.is_some() {
+            self.receive(transport.socket()?).await.map_err(|kind| {
+                error!("DISCONNECTING {:?}", kind);
+                transport.disconnect();
+                StateError::Io(kind)
+            })?;
+        }
+
+        self.received_packet(transport.socket()?)
+            .map_err(|_| StateError::Deserialization)
+    }
+
+    fn receive_buffer(&mut self) -> Result<&mut [u8], crate::encoding::EncodingError> {
         if self.packet_len.is_none() {
             match self.probe_fixed_header() {
                 Ok(_) | Err(crate::encoding::EncodingError::InvalidLength) => {}
@@ -43,7 +87,7 @@ impl<const N: usize> PacketBuffer<N> {
         Ok(&mut self.buf[self.read_bytes..end])
     }
 
-    pub fn received_packet<'a, R: Read>(
+    fn received_packet<'a, R: Read>(
         &'a mut self,
         reader: &'a mut R,
     ) -> Result<ReceivedPacket<'a, R>, crate::encoding::EncodingError> {
@@ -65,7 +109,7 @@ impl<const N: usize> PacketBuffer<N> {
         Ok(packet)
     }
 
-    pub fn probe_fixed_header(&mut self) -> Result<(), crate::encoding::EncodingError> {
+    fn probe_fixed_header(&mut self) -> Result<(), crate::encoding::EncodingError> {
         let mut decoder = MqttDecoder::try_new(&self.buf[..self.read_bytes])?;
 
         if decoder.fixed_header().typ == PacketType::Publish {
@@ -78,11 +122,7 @@ impl<const N: usize> PacketBuffer<N> {
         Ok(())
     }
 
-    pub fn packet_available(&mut self) -> bool {
-        self.packet_len.is_some()
-    }
-
-    pub(crate) async fn receive<S: Read>(&mut self, socket: &mut S) -> Result<(), ErrorKind> {
+    async fn receive<S: Read>(&mut self, socket: &mut S) -> Result<(), ErrorKind> {
         let buffer = match self.receive_buffer() {
             Ok(buffer) => buffer,
             Err(e) => {
@@ -98,7 +138,7 @@ impl<const N: usize> PacketBuffer<N> {
         }
 
         let received_bytes = socket.read(buffer).await.map_err(|e| e.kind())?;
-        self.commit(received_bytes);
+        self.read_bytes += received_bytes;
 
         if received_bytes > 0 {
             Ok(())

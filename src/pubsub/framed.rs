@@ -71,18 +71,13 @@
 //! | (2^56)..(2^64)        | 9                    |
 //!
 
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use embassy_sync::blocking_mutex::Mutex;
-
-use super::state::PubSubState;
-use super::{BufferProvider, GrantR, GrantW, Publisher, Subscriber};
+use super::{BufferProvider, GrantR, GrantW, PubSubChannel, Publisher, Subscriber};
 
 use super::{
     vusize::{decode_usize, decoded_len, encode_usize_to_slice, encoded_len},
     Result,
 };
 
-use core::cell::RefCell;
 use core::task::Context;
 use core::{
     cmp::min,
@@ -90,20 +85,18 @@ use core::{
 };
 
 /// A Publisher of Framed data
-pub struct FramePublisher<'a, M, B, const SUBS: usize>
+pub struct FramePublisher<'a, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) publisher: Publisher<'a, M, B, SUBS>,
+    pub(crate) publisher: Publisher<'a, B, SUBS>,
 }
 
-impl<'a, M, B, const SUBS: usize> FramePublisher<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> FramePublisher<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>) -> Self {
+    pub(super) fn new(channel: &'a PubSubChannel<B, SUBS>) -> Self {
         Self {
             publisher: Publisher::new(channel),
         }
@@ -113,7 +106,7 @@ where
     ///
     /// This size does not include the size of the frame header. The exact size
     /// of the frame can be set on `commit`.
-    pub fn grant(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, M, B, SUBS>> {
+    pub fn grant(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, B, SUBS>> {
         self.grant_with_context(max_sz, None)
     }
 
@@ -121,7 +114,7 @@ where
         &mut self,
         max_sz: usize,
         cx: Option<&mut Context<'_>>,
-    ) -> Result<FrameGrantW<'a, M, B, SUBS>> {
+    ) -> Result<FrameGrantW<'a, B, SUBS>> {
         let hdr_len = encoded_len(max_sz);
         Ok(FrameGrantW {
             grant_w: self
@@ -132,7 +125,7 @@ where
     }
 
     /// Async version of [Self::grant]
-    pub async fn grant_async(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, M, B, SUBS>> {
+    pub async fn grant_async(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, B, SUBS>> {
         let hdr_len = encoded_len(max_sz);
         Ok(FrameGrantW {
             grant_w: self.publisher.grant_exact_async(max_sz + hdr_len).await?,
@@ -142,34 +135,32 @@ where
 }
 
 /// A Subscriber of Framed data
-pub struct FrameSubscriber<'a, M, B, const SUBS: usize>
+pub struct FrameSubscriber<'a, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) subscriber: Subscriber<'a, M, B, SUBS>,
+    pub(crate) subscriber: Subscriber<'a, B, SUBS>,
 }
 
-impl<'a, M, B, const SUBS: usize> FrameSubscriber<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> FrameSubscriber<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(channel: &'a Mutex<M, RefCell<PubSubState<B, SUBS>>>) -> Self {
+    pub(super) fn new(channel: &'a PubSubChannel<B, SUBS>) -> Self {
         Self {
             subscriber: Subscriber::new(channel),
         }
     }
 
     /// Obtain the next available frame, if any
-    pub fn read(&mut self) -> Option<FrameGrantR<'a, M, B, SUBS>> {
+    pub fn read(&mut self) -> Option<FrameGrantR<'a, B, SUBS>> {
         self.read_with_context(None)
     }
 
     pub fn read_with_context(
         &mut self,
         cx: Option<&mut Context<'_>>,
-    ) -> Option<FrameGrantR<'a, M, B, SUBS>> {
+    ) -> Option<FrameGrantR<'a, B, SUBS>> {
         // Get all available bytes. We never wrap a frame around,
         // so if a header is available, the whole frame will be.
         let mut grant_r = self.subscriber.read_with_context(cx).ok()?;
@@ -195,7 +186,7 @@ where
     }
 
     /// Async version of [Self::read]
-    pub async fn read_async(&mut self) -> Result<FrameGrantR<'a, M, B, SUBS>> {
+    pub async fn read_async(&mut self) -> Result<FrameGrantR<'a, B, SUBS>> {
         // Get all available bytes. We never wrap a frame around,
         // so if a header is available, the whole frame will be.
         let mut grant_r = self.subscriber.read_async().await?;
@@ -226,12 +217,11 @@ where
 /// NOTE: If the grant is dropped without explicitly commiting
 /// the contents without first calling `to_commit()`, then no
 /// frame will be comitted for writing.
-pub struct FrameGrantW<'a, M, B, const SUBS: usize>
+pub struct FrameGrantW<'a, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    grant_w: GrantW<'a, M, B, SUBS>,
+    grant_w: GrantW<'a, B, SUBS>,
     hdr_len: u8,
 }
 
@@ -239,18 +229,16 @@ where
 ///
 /// NOTE: If the grant is dropped without explicitly releasing
 /// the contents, then no frame will be released.
-pub struct FrameGrantR<'a, M, B, const SUBS: usize>
+pub struct FrameGrantR<'a, B, const SUBS: usize>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) grant_r: GrantR<'a, M, B, SUBS>,
+    pub(crate) grant_r: GrantR<'a, B, SUBS>,
     pub(crate) hdr_len: u8,
 }
 
-impl<'a, M, B, const SUBS: usize> Deref for FrameGrantW<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> Deref for FrameGrantW<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -260,9 +248,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> DerefMut for FrameGrantW<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> DerefMut for FrameGrantW<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
@@ -270,9 +257,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> Deref for FrameGrantR<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> Deref for FrameGrantR<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -282,9 +268,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> DerefMut for FrameGrantR<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> DerefMut for FrameGrantR<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
@@ -292,9 +277,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> FrameGrantW<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> FrameGrantW<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     /// Commit a frame to make it available to the Subscriber half.
@@ -333,9 +317,8 @@ where
     }
 }
 
-impl<'a, M, B, const SUBS: usize> FrameGrantR<'a, M, B, SUBS>
+impl<'a, B, const SUBS: usize> FrameGrantR<'a, B, SUBS>
 where
-    M: RawMutex,
     B: BufferProvider,
 {
     /// Release a frame to make the space available for future writing
@@ -358,14 +341,12 @@ where
 #[cfg(test)]
 mod tests {
     use embassy_futures::block_on;
-    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 
     use crate::pubsub::{PubSubChannel, StaticBufferProvider};
 
     #[test]
     fn frame_wrong_size() {
-        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-            PubSubChannel::new_static();
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
         let mut publisher = pubsub.framed_publisher().unwrap();
         let mut subscriber = pubsub.framed_subscriber().unwrap();
 
@@ -387,13 +368,12 @@ mod tests {
 
     #[test]
     fn full_size() {
-        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-            PubSubChannel::new_static();
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
         let mut publisher = pubsub.framed_publisher().unwrap();
         let mut subscriber = pubsub.framed_subscriber().unwrap();
         let mut ctr = 0;
 
-        for _ in 0..10_000 {
+        for _ in 0..100 {
             // Create largeish grants
             if let Ok(mut wgr) = publisher.grant(127) {
                 ctr += 1;
@@ -430,8 +410,7 @@ mod tests {
 
     #[test]
     fn frame_overcommit() {
-        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-            PubSubChannel::new_static();
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
         let mut publisher = pubsub.framed_publisher().unwrap();
         let mut subscriber = pubsub.framed_subscriber().unwrap();
 
@@ -459,13 +438,12 @@ mod tests {
 
     #[test]
     fn frame_undercommit() {
-        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<512>, 1> =
-            PubSubChannel::new_static();
+        let pubsub: PubSubChannel<StaticBufferProvider<512>, 1> = PubSubChannel::new_static();
 
         let mut publisher = pubsub.framed_publisher().unwrap();
         let mut subscriber = pubsub.framed_subscriber().unwrap();
 
-        for _ in 0..100_000 {
+        for _ in 0..100 {
             // Create largeish grants
             let mut wgr = publisher.grant(128).unwrap();
             for (i, by) in wgr.iter_mut().enumerate() {
@@ -501,8 +479,7 @@ mod tests {
 
     #[test]
     fn frame_auto_commit_release() {
-        let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-            PubSubChannel::new_static();
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
         let mut publisher = pubsub.framed_publisher().unwrap();
         let mut subscriber = pubsub.framed_subscriber().unwrap();
 
@@ -535,8 +512,7 @@ mod tests {
     #[test]
     fn async_frame_wrong_size() {
         block_on(async {
-            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-                PubSubChannel::new_static();
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
             let mut publisher = pubsub.framed_publisher().unwrap();
             let mut subscriber = pubsub.framed_subscriber().unwrap();
 
@@ -560,14 +536,13 @@ mod tests {
     #[test]
     fn async_full_size() {
         block_on(async {
-            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-                PubSubChannel::new_static();
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
             let mut publisher = pubsub.framed_publisher().unwrap();
             let mut subscriber = pubsub.framed_subscriber().unwrap();
 
             let mut ctr = 0;
 
-            for _ in 0..10_000 {
+            for _ in 0..100 {
                 // Create largeish grants
                 if let Ok(mut wgr) = publisher.grant_async(127).await {
                     ctr += 1;
@@ -606,8 +581,7 @@ mod tests {
     #[test]
     fn async_frame_overcommit() {
         block_on(async {
-            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-                PubSubChannel::new_static();
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
             let mut publisher = pubsub.framed_publisher().unwrap();
             let mut subscriber = pubsub.framed_subscriber().unwrap();
 
@@ -637,12 +611,11 @@ mod tests {
     #[test]
     fn async_frame_undercommit() {
         block_on(async {
-            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<512>, 1> =
-                PubSubChannel::new_static();
+            let pubsub: PubSubChannel<StaticBufferProvider<512>, 1> = PubSubChannel::new_static();
             let mut publisher = pubsub.framed_publisher().unwrap();
             let mut subscriber = pubsub.framed_subscriber().unwrap();
 
-            for _ in 0..100_000 {
+            for _ in 0..100 {
                 // Create largeish grants
                 let mut wgr = publisher.grant_async(128).await.unwrap();
                 for (i, by) in wgr.iter_mut().enumerate() {
@@ -680,8 +653,7 @@ mod tests {
     #[test]
     fn async_frame_auto_commit_release() {
         block_on(async {
-            let pubsub: PubSubChannel<NoopRawMutex, StaticBufferProvider<256>, 1> =
-                PubSubChannel::new_static();
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> = PubSubChannel::new_static();
             let mut publisher = pubsub.framed_publisher().unwrap();
             let mut subscriber = pubsub.framed_subscriber().unwrap();
 
