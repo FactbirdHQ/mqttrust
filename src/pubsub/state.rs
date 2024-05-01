@@ -1,6 +1,6 @@
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize}};
 
-use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
+use embassy_sync::waitqueue::{AtomicWaker, MultiWakerRegistration};
 
 use super::{BufferProvider, StaticBufferProvider};
 
@@ -15,10 +15,10 @@ where
     pub(crate) capacity: usize,
 
     /// Where the next byte will be written
-    pub(crate) write: usize,
+    pub(crate) write: AtomicUsize,
 
     /// Where the next byte will be read from
-    pub(crate) read: usize,
+    pub(crate) read: AtomicUsize,
 
     /// Used in the inverted case to mark the end of the
     /// readable streak. Otherwise will == sizeof::<self.buf>().
@@ -26,28 +26,28 @@ where
     /// place when entering an inverted condition, and Reader
     /// is responsible for moving it back to sizeof::<self.buf>()
     /// when exiting the inverted condition
-    pub(crate) last: usize,
+    pub(crate) last: AtomicUsize,
 
     /// Used by the Writer to remember what bytes are currently
     /// allowed to be written to, but are not yet ready to be
     /// read from
-    pub(crate) reserve: usize,
+    pub(crate) reserve: AtomicUsize,
 
     /// Is there an active read grant?
-    pub(crate) read_in_progress: bool,
+    pub(crate) read_in_progress: AtomicBool,
 
     /// Is there an active write grant?
-    pub(crate) write_in_progress: bool,
+    pub(crate) write_in_progress: AtomicBool,
 
     /// Collection of wakers for Subscribers that are waiting.  
     pub(crate) subscriber_wakers: MultiWakerRegistration<SUBS>,
 
-    pub(crate) subscriber_count: usize,
-    pub(crate) publisher_taken: bool,
+    pub(crate) subscriber_count: AtomicUsize,
+    pub(crate) publisher_taken: AtomicBool,
 
     /// Write waker for async support
     /// Woken up when a release is done
-    pub(crate) publisher_waker: WakerRegistration,
+    pub(crate) publisher_waker: AtomicWaker,
 }
 
 unsafe impl<B, const SUBS: usize> Sync for PubSubState<B, SUBS> where B: BufferProvider {}
@@ -72,15 +72,15 @@ where
         Self {
             capacity: buf.buf().len(),
             buf: UnsafeCell::new(buf),
-            write: 0,
-            read: 0,
-            last: 0,
-            reserve: 0,
-            read_in_progress: false,
-            write_in_progress: false,
-            publisher_taken: false,
-            publisher_waker: WakerRegistration::new(),
-            subscriber_count: 0,
+            write: AtomicUsize::new(0),
+            read: AtomicUsize::new(0),
+            last: AtomicUsize::new(0),
+            reserve: AtomicUsize::new(0),
+            read_in_progress: AtomicBool::new(false),
+            write_in_progress: AtomicBool::new(false),
+            publisher_taken: AtomicBool::new(false),
+            publisher_waker: AtomicWaker::new(),
+            subscriber_count: AtomicUsize::new(0),
             subscriber_wakers: MultiWakerRegistration::new(),
         }
     }
@@ -125,15 +125,15 @@ impl<const N: usize, const SUBS: usize> PubSubState<StaticBufferProvider<N>, SUB
         Self {
             capacity: N,
             buf: UnsafeCell::new(StaticBufferProvider::new()),
-            write: 0,
-            read: 0,
-            last: 0,
-            reserve: 0,
-            read_in_progress: false,
-            write_in_progress: false,
-            publisher_taken: false,
-            publisher_waker: WakerRegistration::new(),
-            subscriber_count: 0,
+            write: AtomicUsize::new(0),
+            read: AtomicUsize::new(0),
+            last: AtomicUsize::new(0),
+            reserve: AtomicUsize::new(0),
+            read_in_progress: AtomicBool::new(false),
+            write_in_progress: AtomicBool::new(false),
+            publisher_taken: AtomicBool::new(false),
+            publisher_waker: AtomicWaker::new(),
+            subscriber_count: AtomicUsize::new(0),
             subscriber_wakers: MultiWakerRegistration::new(),
         }
     }

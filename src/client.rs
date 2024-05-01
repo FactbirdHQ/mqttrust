@@ -27,17 +27,17 @@ use crate::{
 };
 
 pub struct MqttClient<'a, M: RawMutex, const SUBS: usize> {
-    tx_publisher: Mutex<M, RefCell<FramePublisher<'a, M, SliceBufferProvider<'a>, 1>>>,
+    tx_publisher: Mutex<M, RefCell<FramePublisher<'a, SliceBufferProvider<'a>, 1>>>,
     shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
-    rx_pubsub: &'a PubSubChannel<M, SliceBufferProvider<'a>, SUBS>,
+    rx_pubsub: &'a PubSubChannel<SliceBufferProvider<'a>, SUBS>,
     client_id: heapless::String<64>,
 }
 
 impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
     pub(crate) fn new(
-        tx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, 1>,
+        tx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, 1>,
         shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
-        rx_pubsub: &'a PubSubChannel<M, SliceBufferProvider<'a>, SUBS>,
+        rx_pubsub: &'a PubSubChannel<SliceBufferProvider<'a>, SUBS>,
         client_id: heapless::String<64>,
     ) -> Self {
         Self {
@@ -308,14 +308,14 @@ impl core::fmt::Display for TopicFilter {
 
 pub struct Subscription<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> {
     topic_filters: heapless::Vec<TopicFilter, MAX_TOPICS>,
-    subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, SUBS>,
+    subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, SUBS>,
     client: &'b MqttClient<'a, M, SUBS>,
 }
 
 impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
     Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
 {
-    pub async fn next_message(&mut self) -> Option<Message<'a, M, SUBS>> {
+    pub async fn next_message(&mut self) -> Option<Message<'a, SUBS>> {
         let grant = self.subscriber.read_async().await.ok()?;
         if let Some(mut msg) = Message::try_new(grant) {
             if self
@@ -335,7 +335,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
 impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures::Stream
     for Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
 {
-    type Item = Message<'a, M, SUBS>;
+    type Item = Message<'a, SUBS>;
 
     fn poll_next(
         mut self: core::pin::Pin<&mut Self>,
@@ -397,8 +397,8 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
     }
 }
 
-pub struct Message<'a, M: RawMutex, const SUBS: usize> {
-    grant: FrameGrantR<'a, M, SliceBufferProvider<'a>, SUBS>,
+pub struct Message<'a, const SUBS: usize> {
+    grant: FrameGrantR<'a, SliceBufferProvider<'a>, SUBS>,
     header: FixedHeader,
     qos_pid: QosPid,
     topic_name: Range<usize>,
@@ -406,8 +406,8 @@ pub struct Message<'a, M: RawMutex, const SUBS: usize> {
     properties: Range<usize>,
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> Message<'a, M, SUBS> {
-    fn try_new(grant: FrameGrantR<'a, M, SliceBufferProvider<'a>, SUBS>) -> Option<Self> {
+impl<'a, const SUBS: usize> Message<'a, SUBS> {
+    fn try_new(grant: FrameGrantR<'a, SliceBufferProvider<'a>, SUBS>) -> Option<Self> {
         let mut decoder = MqttDecoder::try_new(grant.deref()).ok()?;
         // FIXME: would returning result here be more intuitive?
 
@@ -489,7 +489,7 @@ impl<'a, M: RawMutex, const SUBS: usize> Message<'a, M, SUBS> {
     }
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> Deref for Message<'a, M, SUBS> {
+impl<'a, const SUBS: usize> Deref for Message<'a, SUBS> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -497,7 +497,7 @@ impl<'a, M: RawMutex, const SUBS: usize> Deref for Message<'a, M, SUBS> {
     }
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> DerefMut for Message<'a, M, SUBS> {
+impl<'a, const SUBS: usize> DerefMut for Message<'a, SUBS> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.payload_mut()
     }

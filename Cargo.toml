@@ -9,6 +9,8 @@ default-members = ["."]
 exclude = ["examples"]
 
 [dependencies]
+cortex-m = { version = "0.7.6", optional = true }
+
 embedded-io-async = { version = "0.6" }
 embedded-nal-async = { version = "0.7" }
 heapless = { version = "0.8", features = ["serde"] }
@@ -51,6 +53,8 @@ static_cell = { version = "2", features = ["nightly"]}
 
 [features]
 default = ["mqttv5", "max_topic_len_128", "embedded-tls"]
+
+thumbv6 = ["dep:cortex-m"]
 
 embedded-tls = ["dep:embedded-tls"]
 

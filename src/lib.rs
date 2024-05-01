@@ -67,8 +67,8 @@ impl<M: RawMutex, const TX: usize, const RX: usize, const SUBS: usize> State<M, 
 }
 
 struct StateInner<'a, M: RawMutex, const SUBS: usize> {
-    pub(crate) tx: PubSubChannel<M, SliceBufferProvider<'a>, 1>,
-    pub(crate) rx_pubsub: PubSubChannel<M, SliceBufferProvider<'a>, SUBS>,
+    pub(crate) tx: PubSubChannel<SliceBufferProvider<'a>, 1>,
+    pub(crate) rx_pubsub: PubSubChannel<SliceBufferProvider<'a>, SUBS>,
     pub(crate) shared: Mutex<M, RefCell<Shared<SUBS>>>,
 }
 

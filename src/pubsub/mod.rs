@@ -1,10 +1,14 @@
+mod atomic_multiwakers;
 mod publisher;
-mod state;
 mod subscriber;
 
-use core::cell::RefCell;
+use core::cell::UnsafeCell;
+use core::slice::from_raw_parts_mut;
+use core::sync::atomic::Ordering::Release;
+use core::sync::atomic::Ordering::{AcqRel, Acquire};
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 
-use embassy_sync::blocking_mutex::{raw::RawMutex, Mutex};
+use embassy_sync::waitqueue::AtomicWaker;
 pub use publisher::*;
 pub use subscriber::*;
 
@@ -37,73 +41,117 @@ pub enum Error {
     MaximumSubscribersReached,
 }
 
-pub struct PubSubChannel<M: RawMutex, B: BufferProvider, const SUBS: usize> {
-    inner: Mutex<M, RefCell<state::PubSubState<B, SUBS>>>,
+pub struct PubSubChannel<B: BufferProvider, const SUBS: usize> {
+    /// The buffer provider
+    pub(crate) buf: UnsafeCell<B>,
+
+    /// Max capacity of the buffer
+    pub(crate) capacity: usize,
+
+    /// Where the next byte will be written
+    pub(crate) write: AtomicUsize,
+
+    /// Where the next byte will be read from
+    pub(crate) read: AtomicUsize,
+
+    /// Used in the inverted case to mark the end of the
+    /// readable streak. Otherwise will == sizeof::<self.buf>().
+    /// Writer is responsible for placing this at the correct
+    /// place when entering an inverted condition, and Reader
+    /// is responsible for moving it back to sizeof::<self.buf>()
+    /// when exiting the inverted condition
+    pub(crate) last: AtomicUsize,
+
+    /// Used by the Writer to remember what bytes are currently
+    /// allowed to be written to, but are not yet ready to be
+    /// read from
+    pub(crate) reserve: AtomicUsize,
+
+    /// Is there an active read grant?
+    pub(crate) read_in_progress: AtomicBool,
+
+    /// Is there an active write grant?
+    pub(crate) write_in_progress: AtomicBool,
+
+    /// Collection of wakers for Subscribers that are waiting.  
+    pub(crate) subscriber_wakers: atomic_multiwakers::MultiWakerRegistration<SUBS>,
+
+    pub(crate) subscriber_count: AtomicUsize,
+    pub(crate) publisher_taken: AtomicBool,
+
+    /// Write waker for async support
+    /// Woken up when a release is done
+    pub(crate) publisher_waker: AtomicWaker,
 }
 
-impl<M: RawMutex, B: BufferProvider, const SUBS: usize> PubSubChannel<M, B, SUBS> {
-    pub fn new(buf: B) -> Self {
+impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
+    pub fn new(mut buf: B) -> Self {
         Self {
-            inner: Mutex::const_new(M::INIT, RefCell::new(state::PubSubState::new(buf))),
+            capacity: buf.buf().len(),
+            buf: UnsafeCell::new(buf),
+            write: AtomicUsize::new(0),
+            read: AtomicUsize::new(0),
+            last: AtomicUsize::new(0),
+            reserve: AtomicUsize::new(0),
+            read_in_progress: AtomicBool::new(false),
+            write_in_progress: AtomicBool::new(false),
+            publisher_taken: AtomicBool::new(false),
+            publisher_waker: AtomicWaker::new(),
+            subscriber_count: AtomicUsize::new(0),
+            subscriber_wakers: atomic_multiwakers::MultiWakerRegistration::new(),
         }
     }
 
-    pub fn read(&mut self) -> Result<GrantR<'_, M, B, SUBS>> {
-        self.inner.lock(|state| {
-            let mut inner = state.borrow_mut();
+    pub fn read(&mut self) -> Result<GrantR<'_, B, SUBS>> {
+        if atomic::swap(&self.write_in_progress, true, AcqRel) {
+            return Err(Error::GrantInProgress);
+        }
 
-            if inner.read_in_progress {
-                return Err(Error::GrantInProgress);
-            }
-            inner.read_in_progress = true;
+        let write = self.write.load(Acquire);
+        let last = self.last.load(Acquire);
+        let mut read = self.read.load(Acquire);
 
-            let mut read = inner.read;
+        // Resolve the inverted case or end of read
+        if (read == last) && (write < read) {
+            read = 0;
+            // This has some room for error, the other thread reads this
+            // Impact to Grant:
+            //   Grant checks if read < write to see if inverted. If not inverted, but
+            //     no space left, Grant will initiate an inversion, but will not trigger it
+            // Impact to Commit:
+            //   Commit does not check read, but if Grant has started an inversion,
+            //   grant could move Last to the prior write position
+            // MOVING READ BACKWARDS!
+            self.read.store(0, Release);
+        }
 
-            // Resolve the inverted case or end of read
-            if (read == inner.last) && (inner.write < read) {
-                read = 0;
-                // This has some room for error, the other thread reads this
-                // Impact to Grant:
-                //   Grant checks if read < write to see if inverted. If not inverted, but
-                //     no space left, Grant will initiate an inversion, but will not trigger it
-                // Impact to Commit:
-                //   Commit does not check read, but if Grant has started an inversion,
-                //   grant could move Last to the prior write position
-                // MOVING READ BACKWARDS!
-                inner.read = 0;
-            }
+        let sz = if write < read {
+            // Inverted, only believe last
+            last
+        } else {
+            // Not inverted, only believe write
+            write
+        } - read;
 
-            let sz = if inner.write < read {
-                // Inverted, only believe last
-                inner.last
-            } else {
-                // Not inverted, only believe write
-                inner.write
-            } - read;
+        if sz == 0 {
+            self.read_in_progress.store(false, Release);
+            return Err(Error::InsufficientSize);
+        }
 
-            if sz == 0 {
-                inner.read_in_progress = false;
-                return Err(Error::InsufficientSize);
-            }
+        // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
+        // are all `#[repr(Transparent)]
+        let start_of_buf_ptr = unsafe { (*self.buf.get()).buf().as_mut_ptr().cast::<u8>() };
+        let grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(read), sz) };
 
-            // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
-            // are all `#[repr(Transparent)]
-            let start_of_buf_ptr =
-                unsafe { (&mut *inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
-            let grant_slice = unsafe {
-                core::slice::from_raw_parts_mut(start_of_buf_ptr.offset(read as isize), sz)
-            };
-
-            Ok(GrantR {
-                buf: grant_slice,
-                channel: &self.inner,
-                to_release: 0,
-            })
+        Ok(GrantR {
+            buf: grant_slice,
+            channel: self,
+            to_release: 0,
         })
     }
 
     /// Obtain the next available frame, if any
-    pub fn read_framed(&mut self) -> Option<FrameGrantR<'_, M, B, SUBS>> {
+    pub fn read_framed(&mut self) -> Option<FrameGrantR<'_, B, SUBS>> {
         // Get all available bytes. We never wrap a frame around,
         // so if a header is available, the whole frame will be.
         let mut grant_r = self.read().ok()?;
@@ -131,88 +179,150 @@ impl<M: RawMutex, B: BufferProvider, const SUBS: usize> PubSubChannel<M, B, SUBS
     /// Create a new `Subscriber`. It will only receive messages that are published after its creation.
     ///
     /// If there are no subscriber slots left, an error will be returned.
-    pub fn subscriber(&self) -> Result<Subscriber<'_, M, B, SUBS>> {
-        self.inner.lock(|inner| {
-            let mut s = inner.borrow_mut();
-
-            if s.subscriber_count >= SUBS {
-                Err(Error::MaximumSubscribersReached)
-            } else {
-                s.subscriber_count += 1;
-                Ok(Subscriber::new(&self.inner))
-            }
-        })
+    pub fn subscriber(&self) -> Result<Subscriber<'_, B, SUBS>> {
+        if self.subscriber_count.load(Acquire) >= SUBS {
+            Err(Error::MaximumSubscribersReached)
+        } else {
+            atomic::fetch_add(&self.subscriber_count, 1, AcqRel);
+            Ok(Subscriber::new(&self))
+        }
     }
 
     /// Create a new `FrameSubscriber`. It will only receive messages that are published after its creation.
     ///
     /// If there are no subscriber slots left, an error will be returned.
-    pub fn framed_subscriber(&self) -> Result<FrameSubscriber<'_, M, B, SUBS>> {
-        self.inner.lock(|inner| {
-            let mut s = inner.borrow_mut();
-
-            if s.subscriber_count >= SUBS {
-                Err(Error::MaximumSubscribersReached)
-            } else {
-                s.subscriber_count += 1;
-                Ok(FrameSubscriber::new(&self.inner))
-            }
-        })
+    pub fn framed_subscriber(&self) -> Result<FrameSubscriber<'_, B, SUBS>> {
+        if self.subscriber_count.load(Acquire) >= SUBS {
+            Err(Error::MaximumSubscribersReached)
+        } else {
+            atomic::fetch_add(&self.subscriber_count, 1, AcqRel);
+            Ok(FrameSubscriber::new(&self))
+        }
     }
 
     /// Create a new `Publisher`.
     ///
     /// If a publisher has already been taken, an error will be returned.
-    pub fn publisher(&self) -> Result<Publisher<'_, M, B, SUBS>> {
-        self.inner.lock(|inner| {
-            let mut s = inner.borrow_mut();
+    pub fn publisher(&self) -> Result<Publisher<'_, B, SUBS>> {
+        if atomic::swap(&self.publisher_taken, true, AcqRel) {
+            return Err(Error::PublisherAlreadyTaken);
+        }
 
-            if s.publisher_taken {
-                Err(Error::PublisherAlreadyTaken)
-            } else {
-                s.publisher_taken = true;
-                Ok(Publisher::new(&self.inner))
-            }
-        })
+        unsafe {
+            // Explicitly zero the data to avoid undefined behavior.
+            // This is required, because we hand out references to the buffers,
+            // which mean that creating them as references is technically UB for now
+            let mu_ptr = (*self.buf.get()).buf();
+            core::ptr::write_bytes(mu_ptr.as_mut_ptr(), 0, mu_ptr.len());
+        }
+
+        Ok(Publisher::new(&self))
     }
 
     /// Create a new `Publisher`.
     ///
     /// If a publisher has already been taken, an error will be returned.
-    pub fn framed_publisher(&self) -> Result<FramePublisher<'_, M, B, SUBS>> {
-        self.inner.lock(|inner| {
-            let mut s = inner.borrow_mut();
+    pub fn framed_publisher(&self) -> Result<FramePublisher<'_, B, SUBS>> {
+        if atomic::swap(&self.publisher_taken, true, AcqRel) {
+            return Err(Error::PublisherAlreadyTaken);
+        }
 
-            if s.publisher_taken {
-                Err(Error::PublisherAlreadyTaken)
-            } else {
-                s.publisher_taken = true;
-                Ok(FramePublisher::new(&self.inner))
-            }
-        })
+        unsafe {
+            // Explicitly zero the data to avoid undefined behavior.
+            // This is required, because we hand out references to the buffers,
+            // which mean that creating them as references is technically UB for now
+            let mu_ptr = (*self.buf.get()).buf();
+            core::ptr::write_bytes(mu_ptr.as_mut_ptr(), 0, mu_ptr.len());
+        }
+
+        Ok(FramePublisher::new(&self))
     }
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> PubSubChannel<M, SliceBufferProvider<'a>, SUBS> {
+impl<'a, const SUBS: usize> PubSubChannel<SliceBufferProvider<'a>, SUBS> {
     pub fn new_from_slice(buf: &'a mut [u8]) -> Self {
         Self::new(SliceBufferProvider::new(buf))
     }
 }
 
-impl<'a, M: RawMutex, const N: usize, const SUBS: usize>
-    PubSubChannel<M, StaticBufferProvider<N>, SUBS>
-{
+impl<'a, const N: usize, const SUBS: usize> PubSubChannel<StaticBufferProvider<N>, SUBS> {
     pub const fn new_static() -> Self {
         Self {
-            inner: Mutex::const_new(M::INIT, RefCell::new(state::PubSubState::new_static())),
+            capacity: N,
+            buf: UnsafeCell::new(StaticBufferProvider::new()),
+            write: AtomicUsize::new(0),
+            read: AtomicUsize::new(0),
+            last: AtomicUsize::new(0),
+            reserve: AtomicUsize::new(0),
+            read_in_progress: AtomicBool::new(false),
+            write_in_progress: AtomicBool::new(false),
+            publisher_taken: AtomicBool::new(false),
+            publisher_waker: AtomicWaker::new(),
+            subscriber_count: AtomicUsize::new(0),
+            subscriber_wakers: atomic_multiwakers::MultiWakerRegistration::new(),
         }
+    }
+}
+
+#[cfg(feature = "thumbv6")]
+mod atomic {
+    use core::sync::atomic::{
+        AtomicBool, AtomicUsize,
+        Ordering::{self, Acquire, Release},
+    };
+    use cortex_m::interrupt::free;
+
+    #[inline(always)]
+    pub fn fetch_add(atomic: &AtomicUsize, val: usize, _order: Ordering) -> usize {
+        free(|_| {
+            let prev = atomic.load(Acquire);
+            atomic.store(prev.wrapping_add(val), Release);
+            prev
+        })
+    }
+
+    #[inline(always)]
+    pub fn fetch_sub(atomic: &AtomicUsize, val: usize, _order: Ordering) -> usize {
+        free(|_| {
+            let prev = atomic.load(Acquire);
+            atomic.store(prev.wrapping_sub(val), Release);
+            prev
+        })
+    }
+
+    #[inline(always)]
+    pub fn swap(atomic: &AtomicBool, val: bool, _order: Ordering) -> bool {
+        free(|_| {
+            let prev = atomic.load(Acquire);
+            atomic.store(val, Release);
+            prev
+        })
+    }
+}
+
+#[cfg(not(feature = "thumbv6"))]
+mod atomic {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[inline(always)]
+    pub fn fetch_add(atomic: &AtomicUsize, val: usize, order: Ordering) -> usize {
+        atomic.fetch_add(val, order)
+    }
+
+    #[inline(always)]
+    pub fn fetch_sub(atomic: &AtomicUsize, val: usize, order: Ordering) -> usize {
+        atomic.fetch_sub(val, order)
+    }
+
+    #[inline(always)]
+    pub fn swap(atomic: &AtomicBool, val: bool, order: Ordering) -> bool {
+        atomic.swap(val, order)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Error, PubSubChannel, StaticBufferProvider};
-    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use rand::prelude::*;
     use std::thread::spawn;
     use std::time::{Duration, Instant};
@@ -250,11 +360,8 @@ mod tests {
 
         println!("RTX: Running test...");
 
-        static mut PUBSUB: PubSubChannel<
-            CriticalSectionRawMutex,
-            StaticBufferProvider<QUEUE_SIZE>,
-            1,
-        > = PubSubChannel::new_static();
+        static mut PUBSUB: PubSubChannel<StaticBufferProvider<QUEUE_SIZE>, 1> =
+            PubSubChannel::new_static();
         let mut tx = unsafe { PUBSUB.publisher().unwrap() };
         let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
 
@@ -346,11 +453,8 @@ mod tests {
 
     #[test]
     fn sanity_check() {
-        static mut PUBSUB: PubSubChannel<
-            CriticalSectionRawMutex,
-            StaticBufferProvider<QUEUE_SIZE>,
-            1,
-        > = PubSubChannel::new_static();
+        static mut PUBSUB: PubSubChannel<StaticBufferProvider<QUEUE_SIZE>, 1> =
+            PubSubChannel::new_static();
         let mut tx = unsafe { PUBSUB.publisher().unwrap() };
         let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
 
@@ -445,11 +549,8 @@ mod tests {
 
     #[test]
     fn sanity_check_grant_max() {
-        static mut PUBSUB: PubSubChannel<
-            CriticalSectionRawMutex,
-            StaticBufferProvider<QUEUE_SIZE>,
-            1,
-        > = PubSubChannel::new_static();
+        static mut PUBSUB: PubSubChannel<StaticBufferProvider<QUEUE_SIZE>, 1> =
+            PubSubChannel::new_static();
         let mut tx = unsafe { PUBSUB.publisher().unwrap() };
         let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
 

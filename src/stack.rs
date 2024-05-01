@@ -32,8 +32,8 @@ use crate::encoding::{PubComp, PubRec, PubRel};
 
 pub struct MqttStack<'a, M: RawMutex, B, const SUBS: usize> {
     shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
-    tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
-    rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, SUBS>,
+    tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
+    rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
 
     config: Config<B>,
     packet_buf: PacketBuffer<128>,
@@ -50,8 +50,8 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
     pub(crate) fn new(
         config: Config<B>,
         shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
-        tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
-        rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, SUBS>,
+        tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
+        rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
     ) -> Self {
         Self {
             shared,
