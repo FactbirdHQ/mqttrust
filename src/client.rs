@@ -15,7 +15,7 @@ use crate::{
     encoding::{
         decoder::{FixedHeader, MqttDecoder},
         encoder::{MqttEncode, MqttEncoder},
-        PacketType, Pid, Publish, QoS, QosPid, Subscribe,
+        Pid, Publish, QoS, QosPid, Subscribe,
     },
     error::Error,
     pubsub::{
@@ -60,7 +60,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             // Check if we can send, based on `MAX_INFLIGHT` & packet.qos()
             match packet.get_qos() {
                 Some(qos) if qos == QoS::AtMostOnce => {}
-                Some(_) if shared.outgoing_pub.len() == shared.outgoing_pub.capacity() => {
+                Some(_) if shared.inflight_pub.len() == shared.inflight_pub.capacity() => {
                     return Err(Error::MaxInflight)
                 }
                 _ => {}
@@ -75,58 +75,37 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             let mut grant = tx_prod
                 .grant_async(packet.max_packet_size())
                 .await
-                .map_err(|_| Error::StateMismatch)?;
+                .map_err(|_| Error::Overflow)?;
 
             let mut encoder = MqttEncoder::new(grant.deref_mut());
             packet.to_buffer(&mut encoder).ok();
             let used = encoder.used_size();
             grant.commit(used);
+            shared
+                .outgoing_pid
+                .insert(pid.get())
+                .map_err(|_| Error::MaxInflight)?;
 
             pid
         };
 
         if should_await {
-            poll_fn(|cx| {
+            let transmit_fut = poll_fn(|cx| {
                 if let Ok(shared) = self.shared.try_lock() {
                     let mut state = shared.borrow_mut();
 
-                    match P::PACKET_TYPE {
-                        PacketType::Publish => {
-                            // Check if `pid` has been flushed to the network
-                            if !state.outgoing_pub.contains_key(&pid.get()) {
-                                state.register_tx_waker(cx);
-                                return Poll::Pending;
-                            }
-                        }
-                        PacketType::Subscribe => {
-                            // Check if `pid` has been flushed to the network
-                            if !state
-                                .pending_ack
-                                .contains(&PendingAck::Subscribe(pid.get()))
-                            {
-                                state.register_tx_waker(cx);
-                                return Poll::Pending;
-                            }
-                        }
-                        PacketType::Unsubscribe => {
-                            // Check if `pid` has been flushed to the network
-                            if !state
-                                .pending_ack
-                                .contains(&PendingAck::Unsubscribe(pid.get()))
-                            {
-                                state.register_tx_waker(cx);
-                                return Poll::Pending;
-                            }
-                        }
-                        _ => {}
+                    if state.outgoing_pid.contains(&pid.get()) {
+                        state.register_tx_waker(cx);
+                        return Poll::Pending;
                     }
 
                     return Poll::Ready(());
                 }
                 cx.waker().wake_by_ref();
                 Poll::Pending
-            })
-            .await;
+            });
+
+            let _ = with_timeout(Duration::from_millis(100), transmit_fut).await;
         }
 
         Ok(pid)
@@ -140,13 +119,13 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         &self,
         packet: impl Into<Publish<'_, P>>,
     ) -> Result<(), Error> {
-        debug!("Sending publish");
-
         let pub_pkg: Publish<'_, P> = packet.into();
+        debug!("[Publish] Sending to {:?}", pub_pkg.topic_name);
+
         let should_wait_ack = !matches!(pub_pkg.qos, QoS::AtMostOnce);
         let pid = self.send(pub_pkg, should_wait_ack).await?;
 
-        debug!("Sent pid {:?}", pid);
+        debug!("[Publish] Sent pid {:?}", pid);
 
         if should_wait_ack {
             // Wait until `pid` has been ack'd (known by it being removed from the state)
@@ -155,7 +134,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                     let mut state = shared.borrow_mut();
 
                     // Check if `pid` has been acked by the broker
-                    if !state.outgoing_pub.contains_key(&pid.get()) {
+                    if !state.inflight_pub.contains_key(&pid.get()) {
                         debug!("publish ack {:?}", pid.get());
                         return Poll::Ready(());
                     }
@@ -192,7 +171,11 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             .map(|sub| TopicFilter::new(sub.topic_path))
             .collect::<Result<_, _>>()?;
 
+        debug!("[Subscribe] Subscribing to {:?}", topic_filters);
+
         let pid = self.send(subscribe, true).await?;
+
+        debug!("[Subscribe] Sent pid {:?}", pid);
 
         // Wait until `pid` has been ack'd (known by it being removed from the state)
         let ack_fut = poll_fn(|cx| {

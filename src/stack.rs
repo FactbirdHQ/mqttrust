@@ -212,8 +212,8 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     ReceivedPacket::PubAck { pid, .. } => {
                         let shared_ref = self.shared.lock().await;
                         let mut shared = shared_ref.borrow_mut();
-                        debug!("Removing PID {:?} from outgoing_pub", pid.get());
-                        if shared.outgoing_pub.remove(&pid.get()).is_none() {
+                        debug!("Removing PID {:?} from inflight_pub", pid.get());
+                        if shared.inflight_pub.remove(&pid.get()).is_none() {
                             warn!("Unexpected Puback, PID: {:?}", pid.get());
                         }
                         // TODO: Handle collisions (See rumqttc state.rs)
@@ -238,7 +238,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     ReceivedPacket::PubRec { pid, .. } => {
                         let shared_ref = self.shared.lock().await;
                         let mut shared = shared_ref.borrow_mut();
-                        match shared.outgoing_pub.remove(&pid.get()) {
+                        match shared.inflight_pub.remove(&pid.get()) {
                             Some(_) => {
                                 shared.outgoing_rel.insert(pid.get());
 
@@ -307,10 +307,10 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                 match tx_header.typ {
                     PacketType::Publish => {
                         if tx_header.qos != Some(QoS::AtMostOnce) {
-                            debug!("[Publish] Inserting {:?} into outgoing_pub", tx_header.pid);
+                            debug!("[Publish] Inserting {:?} into inflight_pub", tx_header.pid);
                             // FIXME: Properly handle error instead of `unwrap`
                             shared
-                                .outgoing_pub
+                                .inflight_pub
                                 .insert(tx_header.pid.unwrap().get(), Inflight::new(packet_bytes))
                                 .unwrap();
                         }
@@ -341,6 +341,10 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         error!("TX Packet has invalid header?! Dropping packet {:?}", e);
                         return Ok(());
                     }
+                };
+
+                if let Some(pid) = tx_header.pid {
+                    shared.outgoing_pid.remove(&pid.get());
                 }
 
                 transport
@@ -356,6 +360,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     .map_err(|e| StateError::Io(e.kind()))?;
 
                 shared.wake_tx();
+
                 self.last_network_action = Instant::now();
             }
             Either3::Third(_) => {
