@@ -1,5 +1,6 @@
 mod common;
 
+use mqttrust::encoding::v4::{Connack, ConnectReturnCode};
 use mqttrust::{Mqtt, QoS, SubscribeTopic};
 use mqttrust_core::bbqueue::BBBuffer;
 use mqttrust_core::{EventLoop, MqttOptions, Notification};
@@ -44,10 +45,13 @@ fn main() {
         .spawn(move || loop {
             match nb::block!(mqtt_eventloop.connect(&mut network)) {
                 Err(_) => continue,
-                Ok(true) => {
+                Ok(Some(Notification::ConnAck(Connack {
+                    session_present,
+                    code: ConnectReturnCode::Accepted,
+                }))) => {
                     log::info!("Successfully connected to broker");
                 }
-                Ok(false) => {}
+                Ok(_) => {}
             }
 
             match mqtt_eventloop.yield_event(&mut network) {
@@ -64,14 +68,14 @@ fn main() {
         thread::sleep(std::time::Duration::from_millis(5000));
         mqtt_client
             .subscribe(&[SubscribeTopic {
-                topic_path: format!("{}/device/advisor", thing_name).as_str(),
+                topic_path: format!("plc/output/{}", thing_name).as_str(),
                 qos: QoS::AtLeastOnce,
             }])
             .unwrap();
 
         mqtt_client
             .publish(
-                format!("{}/device/advisor/hello", thing_name).as_str(),
+                format!("plc/input/{}", thing_name).as_str(),
                 format!("Hello from {}", thing_name).as_bytes(),
                 QoS::AtLeastOnce,
             )

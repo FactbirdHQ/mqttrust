@@ -18,6 +18,7 @@ pub use client::Client;
 use core::convert::TryFrom;
 pub use eventloop::EventLoop;
 use heapless::{String, Vec};
+use mqttrust::encoding::v4::Connack;
 pub use mqttrust::encoding::v4::{Pid, Publish, QoS, QosPid, Suback};
 pub use mqttrust::*;
 pub use options::{Broker, MqttOptions};
@@ -39,7 +40,7 @@ pub struct PublishNotification {
 // #[cfg_attr(feature = "defmt-impl", derive(defmt::Format))]
 pub enum Notification {
     /// Incoming connection acknowledge
-    ConnAck,
+    ConnAck(Connack),
     /// Incoming publish from the broker
     #[cfg(not(feature = "std"))]
     Publish(heapless::pool::singleton::Box<state::BoxedPublish, heapless::pool::Init>),

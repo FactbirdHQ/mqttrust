@@ -72,9 +72,8 @@ jobs:
       AWS_DEFAULT_REGION: ${{ secrets.MGMT_AWS_DEFAULT_REGION }}
       AWS_ACCESS_KEY_ID: ${{ secrets.MGMT_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.MGMT_AWS_SECRET_ACCESS_KEY }}
-      SUITE_ID: greb3uy2wtq3
-      THING_ARN: arn:aws:iot:eu-west-1:274906834921:thing/mqttrust
-      CERTIFICATE_ARN: arn:aws:iot:eu-west-1:274906834921:cert/e7280d8d316b58da3058037a2c1730d9eb15de50e96f4d47e54ea655266b76db
+      SUITE_ID: 1gaev57dq6i5
+      THING_ARN: arn:aws:iot:eu-west-1:411974994697:thing/mqttrust
     steps:
       - name: Checkout
         uses: actions/checkout@v1
@@ -89,7 +88,7 @@ jobs:
       - name: Get AWS_HOSTNAME
         id: hostname
         run: |
-          hostname=$(aws iotdeviceadvisor get-endpoint --output text --query endpoint)
+          hostname=$(aws iotdeviceadvisor get-endpoint --thing-arn ${{ env.THING_ARN }} --output text --query endpoint)
           ret=$?
           echo "::set-output name=AWS_HOSTNAME::$hostname"
           exit $ret
@@ -105,7 +104,7 @@ jobs:
       - name: Start test suite
         id: test_suite
         run: |
-          suite_id=$(aws iotdeviceadvisor start-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-configuration "primaryDevice={thingArn=${{ env.THING_ARN }},certificateArn=${{ env.CERTIFICATE_ARN }}}" --output text --query suiteRunId)
+          suite_id=$(aws iotdeviceadvisor start-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-configuration "primaryDevice={thingArn=${{ env.THING_ARN }}},parallelRun=true" --output text --query suiteRunId)
           ret=$?
           echo "::set-output name=SUITE_RUN_ID::$suite_id"
           exit $ret
@@ -121,9 +120,9 @@ jobs:
       
       - name: Monitor test run
         run: |
-          chmod +x ./.github/scripts/da_monitor.sh
+          chmod +x ./scripts/da_monitor.sh
           echo ${{ env.SUITE_ID }} ${{ steps.test_suite.outputs.SUITE_RUN_ID }} ${{ steps.binary.outputs.PID }}
-          ./.github/scripts/da_monitor.sh ${{ env.SUITE_ID }} ${{ steps.test_suite.outputs.SUITE_RUN_ID }} ${{ steps.binary.outputs.PID }}
+          ./scripts/da_monitor.sh ${{ env.SUITE_ID }} ${{ steps.test_suite.outputs.SUITE_RUN_ID }} ${{ steps.binary.outputs.PID }}
 
       - name: Kill test binary process
         if: ${{ always() }}

@@ -145,7 +145,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
         match packet {
             Packet::Connack(connack) => self
                 .handle_incoming_connack(connack)
-                .map(|()| (Notification::ConnAck.into(), None)),
+                .map(|()| (Notification::ConnAck(connack).into(), None)),
             Packet::Pingresp => self.handle_incoming_pingresp(),
             Packet::Publish(publish) => self.handle_incoming_publish(publish),
             Packet::Suback(suback) => self.handle_incoming_suback(suback),
@@ -269,12 +269,23 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
         let qospid = (publish.qos, publish.pid);
 
         #[cfg(not(feature = "std"))]
-        let boxed_publish = BoxedPublish::alloc().unwrap();
-        #[cfg(not(feature = "std"))]
-        let notification = Notification::Publish(boxed_publish.init(publish.try_into().unwrap()));
+        let notification = if publish.payload.len() > 4096 {
+            error!(
+                "Received payload larger the {}! Sending ACK but discarding payload notification!",
+                4096
+            );
+            None
+        } else {
+            let boxed_publish = BoxedPublish::alloc().unwrap();
+            Some(Notification::Publish(
+                boxed_publish.init(publish.try_into().unwrap()),
+            ))
+        };
 
         #[cfg(feature = "std")]
-        let notification = Notification::Publish(std::boxed::Box::new(publish.try_into().unwrap()));
+        let notification = Some(Notification::Publish(std::boxed::Box::new(
+            publish.try_into().unwrap(),
+        )));
 
         let request = match qospid {
             (QoS::AtMostOnce, _) => None,
@@ -289,7 +300,7 @@ impl<const TIMER_HZ: u32> MqttState<TIMER_HZ> {
             }
             _ => return Err(StateError::InvalidHeader),
         };
-        Ok((Some(notification), request))
+        Ok((notification, request))
     }
 
     fn handle_incoming_pubrel(

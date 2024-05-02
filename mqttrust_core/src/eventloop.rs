@@ -7,7 +7,7 @@ use core::convert::Infallible;
 use core::ops::DerefMut;
 use core::ops::RangeTo;
 use embedded_nal::{AddrType, Dns, SocketAddr, TcpClientStack};
-use fugit::ExtU32;
+use fugit::{ExtU32, TimerDurationU32};
 use heapless::{String, Vec};
 use mqttrust::encoding::v4::{decode_slice, encode_slice, Connect, Packet, Protocol};
 
@@ -24,6 +24,7 @@ where
     /// Request stream
     pub(crate) requests: Option<FrameConsumer<'a, L>>,
     network_handle: NetworkHandle<S>,
+    connect_counter: u8,
 }
 
 impl<'a, 'b, S, O, const TIMER_HZ: u32, const L: usize> EventLoop<'a, 'b, S, O, TIMER_HZ, L>
@@ -41,6 +42,7 @@ where
             options,
             requests: Some(requests),
             network_handle: NetworkHandle::new(),
+            connect_counter: 0,
         }
     }
 
@@ -54,7 +56,7 @@ where
     pub fn connect<N: Dns + TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
-    ) -> nb::Result<bool, EventError> {
+    ) -> nb::Result<Option<Notification>, EventError> {
         // connect to the broker
         match self.network_handle.is_connected(network) {
             Ok(false) => {
@@ -216,16 +218,23 @@ where
         }
     }
 
+    fn backoff(&self) -> TimerDurationU32<TIMER_HZ> {
+        let base_time_ms: u32 = 1000;
+        let backoff = base_time_ms.saturating_mul(u32::pow(2, self.connect_counter as u32 - 1));
+
+        core::cmp::min(50.secs(), backoff.millis())
+    }
+
     fn mqtt_connect<N: TcpClientStack<TcpSocket = S> + ?Sized>(
         &mut self,
         network: &mut N,
-    ) -> nb::Result<bool, EventError> {
+    ) -> nb::Result<Option<Notification>, EventError> {
         match self.state.connection_status {
-            MqttConnectionStatus::Connected => Ok(false),
+            MqttConnectionStatus::Connected => Ok(None),
             MqttConnectionStatus::Disconnected => {
-                info!("MQTT connecting..");
                 let now = self.last_outgoing_timer.now();
                 self.state.last_ping_entry().insert(now);
+                self.connect_counter += 1;
 
                 self.state.await_pingresp = false;
                 self.network_handle.rx_buf.init();
@@ -242,6 +251,12 @@ where
                     password,
                 });
 
+                info!(
+                    "MQTT connecting.. Attempt: {}. Backoff time: {}",
+                    self.connect_counter,
+                    self.backoff().to_millis()
+                );
+
                 // mqtt connection with timeout
                 self.network_handle.send_packet(network, &connect)?;
                 self.state.handle_outgoing_connect();
@@ -250,16 +265,19 @@ where
             MqttConnectionStatus::Handshake => {
                 let now = self.last_outgoing_timer.now();
 
+                let backoff_time = core::cmp::max(50.secs(), self.backoff());
+
                 if self
                     .state
                     .last_ping_entry()
                     .or_insert(now)
-                    .has_elapsed(&now, 50.secs())
+                    .has_elapsed(&now, backoff_time)
                 {
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
-                self.network_handle
+                let res = self
+                    .network_handle
                     .receive(network)
                     .map_err(|e| e.map(EventError::Network))?
                     .decode(&mut self.state)
@@ -267,8 +285,16 @@ where
                         if n.is_none() && p.is_none() {
                             return Err(nb::Error::WouldBlock);
                         }
-                        Ok(n.map(|n| n == Notification::ConnAck).unwrap_or(false))
-                    })
+                        Ok(n)
+                    });
+
+                match res {
+                    Ok(r) => {
+                        self.connect_counter = 0;
+                        Ok(r)
+                    }
+                    Err(e) => Err(e),
+                }
             }
         }
     }
@@ -417,7 +443,7 @@ impl<S> NetworkHandle<S> {
 #[derive(Debug)]
 struct PacketBuffer {
     range: RangeTo<usize>,
-    buffer: Vec<u8, 4096>,
+    buffer: Vec<u8, { 1024 * 16 }>,
 }
 
 impl PacketBuffer {
