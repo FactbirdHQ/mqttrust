@@ -220,7 +220,7 @@ where
 
     fn backoff(&self) -> TimerDurationU32<TIMER_HZ> {
         let base_time_ms: u32 = 1000;
-        let backoff = base_time_ms.saturating_mul(u32::pow(2, self.connect_counter as u32 - 1));
+        let backoff = base_time_ms.saturating_mul(u32::pow(2, self.connect_counter as u32));
 
         core::cmp::min(50.secs(), backoff.millis())
     }
@@ -725,12 +725,12 @@ mod tests {
         rx_buf.range.end += connack_len;
         let publish_len = encode_slice(&Packet::from(publish.clone()), rx_buf.buffer()).unwrap();
         rx_buf.range.end += publish_len;
-        assert_eq!(rx_buf.range.end, rx_buf.buffer.capacity());
+        assert_eq!(rx_buf.range.end, 4096);
 
         // Decode the first Connack packet on the Handshake state.
         state.connection_status = MqttConnectionStatus::Handshake;
         let (n, p) = PacketDecoder::new(&mut rx_buf).decode(&mut state).unwrap();
-        assert_eq!(n, Some(Notification::ConnAck));
+        assert!(matches!(n, Some(Notification::ConnAck(_))));
         assert_eq!(p, None);
 
         let mut pkg = SerializedPacket(&mut rx_buf.buffer[rx_buf.range]);
@@ -776,7 +776,7 @@ mod tests {
         rx_buf.range.end += connack_malformed_len;
         let publish_len = encode_slice(&Packet::from(publish.clone()), rx_buf.buffer()).unwrap();
         rx_buf.range.end += publish_len;
-        assert_eq!(rx_buf.range.end, rx_buf.buffer.capacity());
+        assert_eq!(rx_buf.range.end, 4096);
 
         // When a packet is malformed, we cannot tell its length. The decoder
         // discards the entire buffer.
