@@ -40,11 +40,14 @@ defmt = { version = "^0.3", optional = true }
 [dev-dependencies]
 native-tls = { version = "^0.2" }
 dns-lookup = "1.0.3"
-env_logger = "0.9.0"
+env_logger = "0.11"
+static_cell = "2.1"
 
 [features]
 default = []
 
 std = []
 
-defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl", "fugit/defmt"]
+log = ["dep:log", "mqttrust/log"]
+
+defmt-impl = ["dep:defmt", "mqttrust/defmt-impl", "heapless/defmt-impl", "fugit/defmt"]

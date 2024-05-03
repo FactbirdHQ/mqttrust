@@ -5,14 +5,12 @@ use std::{
 };
 pub struct SysClock {
     start_time: u32,
-    countdown_end: Option<u32>,
 }
 
 impl SysClock {
     pub fn new() -> Self {
         Self {
             start_time: Self::epoch(),
-            countdown_end: None,
         }
     }
 
