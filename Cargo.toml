@@ -24,7 +24,7 @@ embassy-sync = { version = "0.5" }
 embassy-futures = "0.1"
 embassy-time = { version = "0.3" }
 
-embedded-tls = { path = "../embedded-tls", default-features = false, optional = true }
+embedded-tls = { git = "https://github.com/drogue-iot/embedded-tls", rev = "f788e02", default-features = false, optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
