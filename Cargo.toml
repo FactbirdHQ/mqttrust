@@ -4,9 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = []
 default-members = ["."]
-exclude = ["examples"]
+exclude = ["examples", "aws_device_qualification"]
 
 [dependencies]
 cortex-m = { version = "0.7.6", optional = true }
