@@ -3,3 +3,4 @@
 .gdb_history
 Cargo.lock
 target/
+device_advisor_integration.log

@@ -11,4 +11,6 @@ pub fn root_ca() -> Certificate {
     Certificate::from_pem(include_bytes!("../secrets/root-ca.pem")).unwrap()
 }
 
-pub const HOSTNAME: Option<&'static str> = option_env!("AWS_HOSTNAME");
+pub fn hostname() -> String {
+    env::var("AWS_HOSTNAME").unwrap()
+}

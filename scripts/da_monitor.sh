@@ -44,6 +44,15 @@ function report_status {
     done
 }
 
+function check_pid {
+    if [ -n "$pid" ]; then
+        ps -p $pid > /dev/null;
+        return $?
+    else
+        return 0
+    fi
+}
+
 while test ${IN_PROGRESS} == 1; do
     # Fetch the current status and stash in /tmp so we can use it throughout the status fetch process.
 
@@ -68,13 +77,16 @@ while test ${IN_PROGRESS} == 1; do
     elif test x"${overall_status}" == x${STATUS_PASS}; then
         MONITOR_STATUS=0
         IN_PROGRESS=0
+    elif test x"${overall_status}" == x${STATUS_PASS_WITH_WARNINGS}; then
+        MONITOR_STATUS=0
+        IN_PROGRESS=0
     elif test x"${overall_status}" == x${STATUS_STOPPING}; then
         MONITOR_STATUS=1
         IN_PROGRESS=0
     elif test x"${overall_status}" == x${STATUS_STOPPED}; then
         MONITOR_STATUS=1
         IN_PROGRESS=0
-    elif { ps -p $pid > /dev/null; }; [ "$?" = 1 ]; then
+    elif check_pid; [ "$?" = 1 ]; then
         echo Binary is not running any more?
 
         MONITOR_STATUS=1

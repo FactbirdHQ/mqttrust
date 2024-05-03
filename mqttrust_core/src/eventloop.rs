@@ -219,7 +219,7 @@ where
     }
 
     fn backoff(&self) -> TimerDurationU32<TIMER_HZ> {
-        let base_time_ms: u32 = 1000;
+        let base_time_ms: u32 = 200;
         let backoff = base_time_ms.saturating_mul(u32::pow(2, self.connect_counter as u32));
 
         core::cmp::min(50.secs(), backoff.millis())
@@ -265,7 +265,7 @@ where
             MqttConnectionStatus::Handshake => {
                 let now = self.last_outgoing_timer.now();
 
-                let backoff_time = core::cmp::max(50.secs(), self.backoff());
+                let backoff_time = self.backoff();
 
                 if self
                     .state
@@ -273,6 +273,7 @@ where
                     .or_insert(now)
                     .has_elapsed(&now, backoff_time)
                 {
+                    warn!("Timed out waiting for connect packet!");
                     return Err(nb::Error::Other(EventError::Timeout));
                 }
 
@@ -562,6 +563,7 @@ impl<'a> PacketDecoder<'a> {
                 Err(EventError::Encoding(e).into())
             }
             Ok(Some(packet)) => {
+                warn!("Got packet! {:?}", packet);
                 self.is_err.replace(false);
                 state
                     .handle_incoming_packet(packet)
