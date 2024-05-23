@@ -31,7 +31,6 @@ rand = "0.8.5"
 criterion = "0.5.1"
 crossbeam-utils = "0.8.16"
 crossbeam = "0.8.2"
-native-tls = { version = "^0.2" }
 dns-lookup = "2"
 async-io = { version = "2", default-features = false }
 futures-lite = { version = "2.1", default-features = false, features = ["std"] }
@@ -49,6 +48,7 @@ env_logger = "0.11"
 futures = { version = "0.3.17" }
 log = "0.4.14"
 static_cell = { version = "2", features = ["nightly"]}
+openssl = "0.10"
 
 [features]
 default = ["mqttv5", "max_topic_len_128", "embedded-tls"]

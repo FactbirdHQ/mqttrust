@@ -7,12 +7,17 @@ fi
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 SECRETS_DIR="$SCRIPT_DIR/../secrets"
+CLIENT_CONFIG="$SECRETS_DIR/client.config"
 THING_NAME="embedded-mqtt"
 
 CERT_PATH="$SECRETS_DIR/cert.pem"
 PRIV_KEY_PATH="$SECRETS_DIR/priv.key.pem"
+CSR_PATH="$SECRETS_DIR/client.csr.pem"
 
-CERT_ARN=$(aws iot create-keys-and-certificate --set-as-active --certificate-pem-outfile $CERT_PATH --private-key-outfile $PRIV_KEY_PATH | jq -r .certificateArn);
+openssl ecparam -name prime256v1 -genkey -noout -out $PRIV_KEY_PATH
+openssl req -new -sha256 -config $CLIENT_CONFIG -key $PRIV_KEY_PATH -out $CSR_PATH
+
+CERT_ARN=$(aws iot create-certificate-from-csr --certificate-signing-request file://$CSR_PATH --set-as-active --certificate-pem-outfile $CERT_PATH | jq -r .certificateArn);
 for OLD_CERT in $(aws iot list-thing-principals --thing-name $THING_NAME | jq -r '.principals[]' | xargs); do
   CERT_ID=$(echo $OLD_CERT | cut -d "/" -f 2)
   aws iot detach-thing-principal --thing-name $THING_NAME --principal $OLD_CERT
@@ -24,10 +29,11 @@ aws iot attach-policy --policy-name Connect --target $CERT_ARN > /dev/null 2>&1
 aws iot attach-policy --policy-name Input --target $CERT_ARN > /dev/null 2>&1
 aws iot attach-policy --policy-name Output --target $CERT_ARN > /dev/null 2>&1
 
-rm $SECRETS_DIR/identity.pfx
+rm -f $SECRETS_DIR/identity.pfx
 
 # Generate new identity.pfx
 openssl pkcs12 -export -passout pass:"$DEVICE_ADVISOR_PASSWORD" -out $SECRETS_DIR/identity.pfx -inkey $PRIV_KEY_PATH -in $CERT_PATH
 
 rm $CERT_PATH
 rm $PRIV_KEY_PATH
+rm $CSR_PATH

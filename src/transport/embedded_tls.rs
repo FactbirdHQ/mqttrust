@@ -61,8 +61,10 @@ impl<
 
         debug!("Connected socket to {:?}", broker.get_hostname());
 
-        let mut socket = TlsConnection::new(socket, self.tls_state)
-            .map_err(|e| ConnectionError::Io(e.kind()))?;
+        let mut socket = TlsConnection::new(socket, self.tls_state).map_err(|e| {
+            warn!("Failed tls connection: {:?}", e);
+            ConnectionError::Io(e.kind())
+        })?;
 
         socket
             .open(TlsContext::new(self.tls_config, &mut self.provider))

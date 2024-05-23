@@ -114,6 +114,9 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             reason_code: Default::default(),
             #[cfg(feature = "mqttv5")]
             properties: crate::Properties::Slice(&[]),
+
+            #[cfg(feature = "mqttv3")]
+            _marker: core::marker::PhantomData,
         };
 
         self.packet_buf
@@ -525,7 +528,6 @@ mod tests {
 
         let fut = async {
             // Use the MQTT client to subscribe
-
             let subscribe = Subscribe::new(&[SubscribeTopic {
                 topic_path: "ABC",
                 maximum_qos: QoS::AtLeastOnce,

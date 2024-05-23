@@ -1,19 +1,16 @@
-#![cfg(all(feature = "mqttv5", feature = "embedded-tls"))]
+#![cfg(feature = "mqttv5")]
 
 mod common;
-
-use std::include_bytes;
 
 use common::network::Network;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{
-    transport::embedded_tls::{TlsNalTransport, TlsState},
-    Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic,
+    transport::embedded_nal::NalTransport, Config, IpBroker, Publish, State, Subscribe,
+    SubscribeTopic,
 };
-use embedded_tls::{Certificate, TlsConfig};
+use embedded_nal_async::Ipv4Addr;
 use futures::StreamExt;
-use rand::rngs::OsRng;
 use static_cell::StaticCell;
 
 const ROUND_TRIP_COUNT: usize = 15;
@@ -25,11 +22,10 @@ async fn mqttv5() {
     static NETWORK: StaticCell<Network> = StaticCell::new();
     let network = NETWORK.init(Network::new());
 
-    let client_id = "csr_test";
-    let hostname = "a2twqv2u8qs5xt-ats.iot.eu-west-1.amazonaws.com";
+    let client_id = "mqtt_test_client_id_v5";
 
     // Create the MQTT stack
-    let broker = DomainBroker::<_, 256>::new(hostname, &*network).unwrap();
+    let broker = IpBroker::new(Ipv4Addr::new(127, 0, 0, 1), 1883);
     let config =
         Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 
@@ -52,13 +48,39 @@ async fn mqttv5() {
                 })
                 .await
                 .unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            client
+                .publish(Publish {
+                    dup: false,
+                    qos: embedded_mqtt::QoS::AtLeastOnce,
+                    pid: None,
+                    retain: false,
+                    topic_name: "embedded_mqtt/embassy_async/other_topic",
+                    payload: format!("This is my super secret payload {i}").as_bytes(),
+                    properties: embedded_mqtt::Properties::Slice(&[]),
+                })
+                .await
+                .unwrap();
+
+            client
+                .publish(Publish {
+                    dup: false,
+                    qos: embedded_mqtt::QoS::AtLeastOnce,
+                    pid: None,
+                    retain: false,
+                    topic_name: "embedded_mqtt/embassy_async_no_subs/hello",
+                    payload: format!("This is my super secret payload {i}").as_bytes(),
+                    properties: embedded_mqtt::Properties::Slice(&[]),
+                })
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     };
 
     let sub = async {
         let subscribe = Subscribe::new(&[SubscribeTopic {
-            topic_path: "embedded_mqtt/embassy_async/hello",
+            topic_path: "embedded_mqtt/embassy_async/#",
             maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
             no_local: false,
             retain_as_published: false,
@@ -74,28 +96,13 @@ async fn mqttv5() {
                 core::str::from_utf8(message.payload())
             );
             msg_cnt += 1;
-            if msg_cnt >= ROUND_TRIP_COUNT {
+            if msg_cnt >= ROUND_TRIP_COUNT * 2 {
                 std::process::exit(0);
             }
         }
     };
 
-    let provider = embedded_tls::UnsecureProvider::new::<embedded_tls::Aes128GcmSha256>(OsRng);
-
-    let tls_config = TlsConfig::new()
-        .with_server_name(hostname)
-        .with_ca(Certificate::X509(include_bytes!(
-            "/home/mathias/Downloads/embedded-tls-test-certs/ca.der"
-        )))
-        .with_cert(Certificate::X509(include_bytes!(
-            "/home/mathias/Downloads/embedded-tls-test-certs/cert.der"
-        )))
-        .with_priv_key(include_bytes!(
-            "/home/mathias/Downloads/embedded-tls-test-certs/private.der"
-        ));
-
-    let tls_state = TlsState::<2048, 2048>::new();
-    let mut transport = TlsNalTransport::new(network, &tls_state, &tls_config, provider);
+    let mut transport = NalTransport::new(network);
 
     embassy_time::with_timeout(
         embassy_time::Duration::from_secs(55),

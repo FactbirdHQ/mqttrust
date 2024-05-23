@@ -18,6 +18,9 @@ pub struct Disconnect<'a> {
     /// A list of properties associated with the disconnect.
     #[cfg(feature = "mqttv5")]
     pub properties: Properties<'a>,
+
+    #[cfg(feature = "mqttv3")]
+    pub _marker: core::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> FixedHeader for Disconnect<'a> {
