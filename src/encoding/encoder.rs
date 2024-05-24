@@ -156,7 +156,7 @@ impl<'a> MqttEncoder<'a> {
     #[cfg(feature = "mqttv5")]
     pub(crate) fn write_property(&mut self, v: &Property<'_>) -> Result<(), Error> {
         let identifier: PropertyIdentifier = v.into();
-        self.write_varint(identifier as u32)?;
+        self.write_u8(identifier as u8)?;
 
         match v {
             Property::PayloadFormatIndicator(v) => self.write_u8(*v)?,

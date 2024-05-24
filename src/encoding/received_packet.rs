@@ -32,7 +32,7 @@ pub(crate) enum ReceivedPacket<'a, R: Read> {
 
         /// A list of properties associated with the connection.
         #[cfg(feature = "mqttv5")]
-        _properties: Properties<'a>,
+        properties: Properties<'a>,
     },
     Publish {
         qos_pid: QosPid,
@@ -164,7 +164,7 @@ impl<'a, R: Read> ReceivedPacket<'a, R> {
                     session_present: (conn_ack_flags & 0b1 == 1),
                     reason_code: ConnAckReasonCode::from(decoder.read_u8()?),
                     #[cfg(feature = "mqttv5")]
-                    _properties: decoder.read_properties()?,
+                    properties: decoder.read_properties()?,
                 }
             }
             PacketType::Publish => {

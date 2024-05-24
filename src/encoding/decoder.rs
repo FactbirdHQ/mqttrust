@@ -83,7 +83,7 @@ impl<'a> MqttDecoder<'a> {
 
     pub(crate) fn read_varint(&mut self) -> Result<u32, Error> {
         let mut integer = 0;
-        for (i, byte) in self.buf.iter().take(4).enumerate() {
+        for (i, byte) in self.buf[self.offset..].iter().take(4).enumerate() {
             integer += (*byte as u32 & 0x7f) << (7 * i);
             if (*byte & 0b1000_0000) == 0 {
                 self.offset += i + 1;
@@ -137,13 +137,20 @@ impl<'a> MqttDecoder<'a> {
 
     #[cfg(feature = "mqttv5")]
     pub(crate) fn read_properties(&mut self) -> Result<Properties<'a>, Error> {
-        self.check_remaining(0)?;
-        let len = self.read_varint()?;
-        if len != 0 {
-            warn!("PROPERTIES FOUND!");
+        let len = self.read_varint()? as usize;
+        self.check_remaining(len)?;
+        let v = &self.buf[self.offset..(self.offset + len)];
+        self.offset += len;
+
+        let properties = Properties::DataBlock(v);
+        if properties.size() > 0 {
+            info!("GOT CONNACK PROPS");
+            for prop in properties.iter() {
+                info!("{:?}", prop);
+            }
         }
 
-        // Ok(Properties::DataBlock(self.read_slice().unwrap_or_default()))
-        return Ok(Properties::Slice(&[]));
+
+        Ok(properties)
     }
 }

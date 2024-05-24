@@ -24,7 +24,7 @@ use crate::{
     },
     state::{Inflight, PendingAck, Shared},
     transport::Transport,
-    Broker, Disconnect,
+    Broker, Disconnect, Property,
 };
 
 #[cfg(feature = "qos2")]
@@ -439,7 +439,8 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             ReceivedPacket::ConnAck {
                 reason_code,
                 session_present,
-                ..
+                #[cfg(feature = "mqttv5")]
+                properties: _,
             } if reason_code.success() => {
                 if self.clean_start {
                     debug!("Connected! Reusing existing session: {}", session_present);
