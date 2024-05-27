@@ -144,7 +144,7 @@ impl<'a> MqttDecoder<'a> {
 
         let properties = Properties::DataBlock(v);
         if properties.size() > 0 {
-            info!("GOT CONNACK PROPS");
+            info!("GOT PROPS");
             for prop in properties.iter() {
                 info!("{:?}", prop);
             }

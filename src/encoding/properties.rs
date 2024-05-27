@@ -6,8 +6,6 @@ use crate::{varint_len, EncodingError, Error};
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub(crate) enum PropertyIdentifier {
-    Invalid = u8::MAX,
-
     PayloadFormatIndicator = 0x01,
     MessageExpiryInterval = 0x02,
     ContentType = 0x03,
@@ -287,72 +285,89 @@ impl<'a> PropertiesIter<'a> {
         Ok(v)
     }
 
-    fn read_property(&mut self) -> Result<Property<'a>, EncodingError> {
-        let v = PropertyIdentifier::try_from(self.read_u8()?)
-            .map_err(|_| EncodingError::InvalidProperty)?;
+    fn read_u32(&mut self) -> Result<u32, EncodingError> {
+        self.check_remaining(4)?;
+        let v = u32::from_be_bytes(
+            self.props[self.index..(self.index + 4)]
+                .try_into()
+                .map_err(|_| EncodingError::MalformedPacket)?,
+        );
+        self.index += 4;
+        Ok(v)
+    }
 
-        Ok(match v {
-            PropertyIdentifier::PayloadFormatIndicator => {
-                Property::PayloadFormatIndicator(self.read_u8()?)
-            }
-            PropertyIdentifier::MessageExpiryInterval => {
-                Property::MessageExpiryInterval(self.read_varint()?)
-            }
-            PropertyIdentifier::ContentType => Property::ContentType(self.read_str()?),
-            PropertyIdentifier::ResponseTopic => Property::ResponseTopic(self.read_str()?),
-            PropertyIdentifier::CorrelationData => Property::CorrelationData(self.read_slice()?),
-            PropertyIdentifier::SubscriptionIdentifier => {
-                Property::SubscriptionIdentifier(self.read_varint()?)
-            }
-            PropertyIdentifier::SessionExpiryInterval => {
-                Property::SessionExpiryInterval(self.read_varint()?)
-            }
-            PropertyIdentifier::AssignedClientIdentifier => {
-                Property::AssignedClientIdentifier(self.read_str()?)
-            }
-            PropertyIdentifier::ServerKeepAlive => Property::ServerKeepAlive(self.read_u16()?),
-            PropertyIdentifier::AuthenticationMethod => {
-                Property::AuthenticationMethod(self.read_str()?)
-            }
-            PropertyIdentifier::AuthenticationData => {
-                Property::AuthenticationData(self.read_slice()?)
-            }
-            PropertyIdentifier::RequestProblemInformation => {
-                Property::RequestProblemInformation(self.read_u8()?)
-            }
-            PropertyIdentifier::WillDelayInterval => {
-                Property::WillDelayInterval(self.read_varint()?)
-            }
-            PropertyIdentifier::RequestResponseInformation => {
-                Property::RequestResponseInformation(self.read_u8()?)
-            }
-            PropertyIdentifier::ResponseInformation => {
-                Property::ResponseInformation(self.read_str()?)
-            }
-            PropertyIdentifier::ServerReference => Property::ServerReference(self.read_str()?),
-            PropertyIdentifier::ReasonString => Property::ReasonString(self.read_str()?),
-            PropertyIdentifier::ReceiveMaximum => Property::ReceiveMaximum(self.read_u16()?),
-            PropertyIdentifier::TopicAliasMaximum => Property::TopicAliasMaximum(self.read_u16()?),
-            PropertyIdentifier::TopicAlias => Property::TopicAlias(self.read_u16()?),
-            PropertyIdentifier::MaximumQoS => Property::MaximumQoS(self.read_u8()?),
-            PropertyIdentifier::RetainAvailable => Property::RetainAvailable(self.read_u8()?),
-            PropertyIdentifier::UserProperty => {
-                Property::UserProperty(self.read_str()?, self.read_str()?)
-            }
-            PropertyIdentifier::MaximumPacketSize => {
-                Property::MaximumPacketSize(self.read_varint()?)
-            }
-            PropertyIdentifier::WildcardSubscriptionAvailable => {
-                Property::WildcardSubscriptionAvailable(self.read_u8()?)
-            }
-            PropertyIdentifier::SubscriptionIdentifierAvailable => {
-                Property::SubscriptionIdentifierAvailable(self.read_u8()?)
-            }
-            PropertyIdentifier::SharedSubscriptionAvailable => {
-                Property::SharedSubscriptionAvailable(self.read_u8()?)
-            }
-            PropertyIdentifier::Invalid => return Err(EncodingError::InvalidProperty),
-        })
+    fn read_property(&mut self) -> Result<Property<'a>, EncodingError> {
+        let property_v = self.read_u8()?;
+
+        Ok(
+            match PropertyIdentifier::try_from(property_v)
+                .map_err(|_| EncodingError::InvalidProperty(property_v))?
+            {
+                PropertyIdentifier::PayloadFormatIndicator => {
+                    Property::PayloadFormatIndicator(self.read_u8()?)
+                }
+                PropertyIdentifier::MessageExpiryInterval => {
+                    Property::MessageExpiryInterval(self.read_u32()?)
+                }
+                PropertyIdentifier::ContentType => Property::ContentType(self.read_str()?),
+                PropertyIdentifier::ResponseTopic => Property::ResponseTopic(self.read_str()?),
+                PropertyIdentifier::CorrelationData => {
+                    Property::CorrelationData(self.read_slice()?)
+                }
+                PropertyIdentifier::SubscriptionIdentifier => {
+                    Property::SubscriptionIdentifier(self.read_varint()?)
+                }
+                PropertyIdentifier::SessionExpiryInterval => {
+                    Property::SessionExpiryInterval(self.read_varint()?)
+                }
+                PropertyIdentifier::AssignedClientIdentifier => {
+                    Property::AssignedClientIdentifier(self.read_str()?)
+                }
+                PropertyIdentifier::ServerKeepAlive => Property::ServerKeepAlive(self.read_u16()?),
+                PropertyIdentifier::AuthenticationMethod => {
+                    Property::AuthenticationMethod(self.read_str()?)
+                }
+                PropertyIdentifier::AuthenticationData => {
+                    Property::AuthenticationData(self.read_slice()?)
+                }
+                PropertyIdentifier::RequestProblemInformation => {
+                    Property::RequestProblemInformation(self.read_u8()?)
+                }
+                PropertyIdentifier::WillDelayInterval => {
+                    Property::WillDelayInterval(self.read_u32()?)
+                }
+                PropertyIdentifier::RequestResponseInformation => {
+                    Property::RequestResponseInformation(self.read_u8()?)
+                }
+                PropertyIdentifier::ResponseInformation => {
+                    Property::ResponseInformation(self.read_str()?)
+                }
+                PropertyIdentifier::ServerReference => Property::ServerReference(self.read_str()?),
+                PropertyIdentifier::ReasonString => Property::ReasonString(self.read_str()?),
+                PropertyIdentifier::ReceiveMaximum => Property::ReceiveMaximum(self.read_u16()?),
+                PropertyIdentifier::TopicAliasMaximum => {
+                    Property::TopicAliasMaximum(self.read_u16()?)
+                }
+                PropertyIdentifier::TopicAlias => Property::TopicAlias(self.read_u16()?),
+                PropertyIdentifier::MaximumQoS => Property::MaximumQoS(self.read_u8()?),
+                PropertyIdentifier::RetainAvailable => Property::RetainAvailable(self.read_u8()?),
+                PropertyIdentifier::UserProperty => {
+                    Property::UserProperty(self.read_str()?, self.read_str()?)
+                }
+                PropertyIdentifier::MaximumPacketSize => {
+                    Property::MaximumPacketSize(self.read_u32()?)
+                }
+                PropertyIdentifier::WildcardSubscriptionAvailable => {
+                    Property::WildcardSubscriptionAvailable(self.read_u8()?)
+                }
+                PropertyIdentifier::SubscriptionIdentifierAvailable => {
+                    Property::SubscriptionIdentifierAvailable(self.read_u8()?)
+                }
+                PropertyIdentifier::SharedSubscriptionAvailable => {
+                    Property::SharedSubscriptionAvailable(self.read_u8()?)
+                }
+            },
+        )
     }
 }
 impl<'a> core::iter::Iterator for PropertiesIter<'a> {
