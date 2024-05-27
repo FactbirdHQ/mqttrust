@@ -365,6 +365,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
 
             let packet = Unsubscribe {
                 pid: Some(pid),
+                #[cfg(feature = "mqttv5")]
                 properties: Properties::Slice(&[]),
                 // FIXME:
                 topics: &[self.topic_filters[0].filter()],
@@ -386,6 +387,7 @@ pub struct Message<'a, const SUBS: usize> {
     qos_pid: QosPid,
     topic_name: Range<usize>,
     payload: Range<usize>,
+    #[cfg(feature = "mqttv5")]
     properties: Range<usize>,
 }
 

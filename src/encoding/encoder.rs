@@ -110,6 +110,13 @@ impl<'a> MqttEncoder<'a> {
         Ok(())
     }
 
+    pub(crate) fn write_u32(&mut self, v: u32) -> Result<(), Error> {
+        self.check_remaining(4)?;
+        self.buf[self.offset..self.offset + 4].copy_from_slice(&v.to_be_bytes());
+        self.offset += 4;
+        Ok(())
+    }
+
     pub(crate) fn write_slice(&mut self, v: &[u8]) -> Result<(), Error> {
         self.check_remaining(2 + v.len() as u32)?;
 
@@ -156,11 +163,11 @@ impl<'a> MqttEncoder<'a> {
     #[cfg(feature = "mqttv5")]
     pub(crate) fn write_property(&mut self, v: &Property<'_>) -> Result<(), Error> {
         let identifier: PropertyIdentifier = v.into();
-        self.write_varint(identifier as u32)?;
+        self.write_u8(identifier as u8)?;
 
         match v {
             Property::PayloadFormatIndicator(v) => self.write_u8(*v)?,
-            Property::MessageExpiryInterval(v) => self.write_varint(*v)?,
+            Property::MessageExpiryInterval(v) => self.write_u32(*v)?,
             Property::ContentType(v) => self.write_str(v)?,
             Property::ResponseTopic(v) => self.write_str(v)?,
             Property::CorrelationData(v) => self.write_slice(v)?,
@@ -171,7 +178,7 @@ impl<'a> MqttEncoder<'a> {
             Property::AuthenticationMethod(v) => self.write_str(v)?,
             Property::AuthenticationData(v) => self.write_slice(v)?,
             Property::RequestProblemInformation(v) => self.write_u8(*v)?,
-            Property::WillDelayInterval(v) => self.write_varint(*v)?,
+            Property::WillDelayInterval(v) => self.write_u32(*v)?,
             Property::RequestResponseInformation(v) => self.write_u8(*v)?,
             Property::ResponseInformation(v) => self.write_str(v)?,
             Property::ServerReference(v) => self.write_str(v)?,
@@ -185,7 +192,7 @@ impl<'a> MqttEncoder<'a> {
                 self.write_str(k)?;
                 self.write_str(v)?
             }
-            Property::MaximumPacketSize(v) => self.write_varint(*v)?,
+            Property::MaximumPacketSize(v) => self.write_u32(*v)?,
             Property::WildcardSubscriptionAvailable(v) => self.write_u8(*v)?,
             Property::SubscriptionIdentifierAvailable(v) => self.write_u8(*v)?,
             Property::SharedSubscriptionAvailable(v) => self.write_u8(*v)?,

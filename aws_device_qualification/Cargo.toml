@@ -1,0 +1,7 @@
+[package]
+name = "aws_device_qualification"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-mqtt = { path = "..", features = ["mqttv5", "log"]}

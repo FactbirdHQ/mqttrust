@@ -158,6 +158,16 @@ impl ConnAckReasonCode {
     }
 }
 
+#[cfg(feature = "mqttv3")]
+#[derive(Default, PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum DisconnectReasonCode {
+    #[default]
+    /// Normal disconnection
+    Normal = 0x00,
+}
+
 /// MQTTv5-defined codes that may be sent as Disconnect Reason Code values.
 #[cfg(feature = "mqttv5")]
 #[derive(Default, PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]

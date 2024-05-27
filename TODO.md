@@ -12,10 +12,11 @@ TODO:
 - [x] Plug-able transport layer
 - [x] Deferred publish payload
 - [ ] Automatically drop packet if all subscribers touched it in `PubSub`
+- [ ] Check subscribe reason code in SubAck packets
 - [ ] Framed inflight buffer
 - [ ] Republish
 - [ ] Plug-able persistence layer
-- [ ] MQTTv5 Properties
+- [x] MQTTv5 Properties
 - [ ] Packet builders?
 - [ ] Error handling
 - [ ] Setup integration tests & CI

@@ -89,6 +89,7 @@ pub struct Publish<'a, P: ToPayload> {
     pub pid: Option<Pid>,
     pub topic_name: &'a str,
     pub payload: P,
+    #[cfg(feature = "mqttv5")]
     pub properties: Properties<'a>,
 }
 

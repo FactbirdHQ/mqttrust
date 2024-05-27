@@ -1,12 +1,11 @@
 use num_enum::TryFromPrimitive;
 
-use crate::{varint_len, Error};
+use crate::{varint_len, EncodingError, Error};
 
 #[derive(Debug, Copy, Clone, PartialEq, TryFromPrimitive)]
-#[repr(u32)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
 pub(crate) enum PropertyIdentifier {
-    Invalid = u32::MAX,
-
     PayloadFormatIndicator = 0x01,
     MessageExpiryInterval = 0x02,
     ContentType = 0x03,
@@ -78,8 +77,7 @@ pub enum Property<'a> {
 
 impl<'a> Property<'a> {
     fn size(&self) -> usize {
-        let identifier: PropertyIdentifier = self.into();
-        let identifier_length = varint_len(identifier as usize) + identifier as usize;
+        let identifier_length = 1;
 
         match self {
             Property::ContentType(data)
@@ -199,7 +197,20 @@ impl<'a> Properties<'a> {
                 .chain([*correlation].iter())
                 .map(|prop| prop.size())
                 .sum(),
-            Properties::DataBlock(block) => block.len(),
+            Properties::DataBlock(block) => block.iter().len(),
+        }
+    }
+
+    pub fn iter(&self) -> impl core::iter::Iterator<Item = Result<Property<'a>, Error>> {
+        if let Properties::DataBlock(data) = self {
+            PropertiesIter {
+                props: data,
+                index: 0,
+            }
+        } else {
+            // Iterating over other property types is not implemented. The user may instead iterate
+            // through slices directly.
+            unimplemented!()
         }
     }
 }
@@ -220,6 +231,144 @@ impl<'a> PropertiesIter<'a> {
             }
         })
     }
+
+    fn check_remaining(&self, len: usize) -> Result<(), EncodingError> {
+        if self.props[self.index..].len() < len {
+            return Err(EncodingError::InvalidLength);
+        }
+        Ok(())
+    }
+
+    fn read_varint(&mut self) -> Result<u32, EncodingError> {
+        let mut integer = 0;
+        for (i, byte) in self.props[self.index..].iter().take(4).enumerate() {
+            integer += (*byte as u32 & 0x7f) << (7 * i);
+            if (*byte & 0b1000_0000) == 0 {
+                self.index += i + 1;
+                return Ok(integer);
+            }
+            if i == 3 {
+                return Err(EncodingError::MalformedPacket);
+            }
+        }
+        Err(EncodingError::InvalidLength)
+    }
+
+    fn read_str(&mut self) -> Result<&'a str, EncodingError> {
+        core::str::from_utf8(self.read_slice()?).map_err(|_| EncodingError::InvalidString)
+    }
+
+    fn read_slice(&mut self) -> Result<&'a [u8], EncodingError> {
+        let len = self.read_u16()? as usize;
+
+        self.check_remaining(len)?;
+        let bytes = &self.props[self.index..self.index + len];
+        self.index += len;
+        Ok(bytes)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, EncodingError> {
+        self.check_remaining(1)?;
+        let v = self.props[self.index];
+        self.index += 1;
+        Ok(v)
+    }
+
+    fn read_u16(&mut self) -> Result<u16, EncodingError> {
+        self.check_remaining(2)?;
+        let v = u16::from_be_bytes(
+            self.props[self.index..(self.index + 2)]
+                .try_into()
+                .map_err(|_| EncodingError::MalformedPacket)?,
+        );
+        self.index += 2;
+        Ok(v)
+    }
+
+    fn read_u32(&mut self) -> Result<u32, EncodingError> {
+        self.check_remaining(4)?;
+        let v = u32::from_be_bytes(
+            self.props[self.index..(self.index + 4)]
+                .try_into()
+                .map_err(|_| EncodingError::MalformedPacket)?,
+        );
+        self.index += 4;
+        Ok(v)
+    }
+
+    fn read_property(&mut self) -> Result<Property<'a>, EncodingError> {
+        let property_v = self.read_u8()?;
+
+        Ok(
+            match PropertyIdentifier::try_from(property_v)
+                .map_err(|_| EncodingError::InvalidProperty(property_v))?
+            {
+                PropertyIdentifier::PayloadFormatIndicator => {
+                    Property::PayloadFormatIndicator(self.read_u8()?)
+                }
+                PropertyIdentifier::MessageExpiryInterval => {
+                    Property::MessageExpiryInterval(self.read_u32()?)
+                }
+                PropertyIdentifier::ContentType => Property::ContentType(self.read_str()?),
+                PropertyIdentifier::ResponseTopic => Property::ResponseTopic(self.read_str()?),
+                PropertyIdentifier::CorrelationData => {
+                    Property::CorrelationData(self.read_slice()?)
+                }
+                PropertyIdentifier::SubscriptionIdentifier => {
+                    Property::SubscriptionIdentifier(self.read_varint()?)
+                }
+                PropertyIdentifier::SessionExpiryInterval => {
+                    Property::SessionExpiryInterval(self.read_varint()?)
+                }
+                PropertyIdentifier::AssignedClientIdentifier => {
+                    Property::AssignedClientIdentifier(self.read_str()?)
+                }
+                PropertyIdentifier::ServerKeepAlive => Property::ServerKeepAlive(self.read_u16()?),
+                PropertyIdentifier::AuthenticationMethod => {
+                    Property::AuthenticationMethod(self.read_str()?)
+                }
+                PropertyIdentifier::AuthenticationData => {
+                    Property::AuthenticationData(self.read_slice()?)
+                }
+                PropertyIdentifier::RequestProblemInformation => {
+                    Property::RequestProblemInformation(self.read_u8()?)
+                }
+                PropertyIdentifier::WillDelayInterval => {
+                    Property::WillDelayInterval(self.read_u32()?)
+                }
+                PropertyIdentifier::RequestResponseInformation => {
+                    Property::RequestResponseInformation(self.read_u8()?)
+                }
+                PropertyIdentifier::ResponseInformation => {
+                    Property::ResponseInformation(self.read_str()?)
+                }
+                PropertyIdentifier::ServerReference => Property::ServerReference(self.read_str()?),
+                PropertyIdentifier::ReasonString => Property::ReasonString(self.read_str()?),
+                PropertyIdentifier::ReceiveMaximum => Property::ReceiveMaximum(self.read_u16()?),
+                PropertyIdentifier::TopicAliasMaximum => {
+                    Property::TopicAliasMaximum(self.read_u16()?)
+                }
+                PropertyIdentifier::TopicAlias => Property::TopicAlias(self.read_u16()?),
+                PropertyIdentifier::MaximumQoS => Property::MaximumQoS(self.read_u8()?),
+                PropertyIdentifier::RetainAvailable => Property::RetainAvailable(self.read_u8()?),
+                PropertyIdentifier::UserProperty => {
+                    Property::UserProperty(self.read_str()?, self.read_str()?)
+                }
+                PropertyIdentifier::MaximumPacketSize => {
+                    Property::MaximumPacketSize(self.read_u32()?)
+                }
+                PropertyIdentifier::WildcardSubscriptionAvailable => {
+                    Property::WildcardSubscriptionAvailable(self.read_u8()?)
+                }
+                PropertyIdentifier::SubscriptionIdentifierAvailable => {
+                    Property::SubscriptionIdentifierAvailable(self.read_u8()?)
+                }
+                PropertyIdentifier::SharedSubscriptionAvailable => {
+                    Property::SharedSubscriptionAvailable(self.read_u8()?)
+                }
+            },
+        )
+    }
 }
 impl<'a> core::iter::Iterator for PropertiesIter<'a> {
     type Item = Result<Property<'a>, Error>;
@@ -229,14 +378,7 @@ impl<'a> core::iter::Iterator for PropertiesIter<'a> {
             return None;
         }
 
-        // TODO:
-        // Progressively deserialize properties and yield them.
-        // let mut deserializer = MqttDeserializer::new(&self.props[self.index..]);
-        // let property =
-        //     Property::deserialize(&mut deserializer).map_err(ProtocolError::Deserialization);
-        // self.index += deserializer.deserialized_bytes();
-        // Some(property)
-        None
+        Some(self.read_property().map_err(|e| e.into()))
     }
 }
 

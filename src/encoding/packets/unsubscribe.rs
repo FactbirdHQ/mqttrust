@@ -35,6 +35,7 @@ impl<'a> Unsubscribe<'a> {
         Self {
             pid: None,
             topics,
+            #[cfg(feature = "mqttv5")]
             properties: Properties::Slice(&[]),
         }
     }

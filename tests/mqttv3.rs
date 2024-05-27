@@ -5,7 +5,10 @@ mod common;
 use common::network::Network;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{Config, IpBroker, Publish, State, Subscribe, SubscribeTopic};
+use embedded_mqtt::{
+    transport::embedded_nal::NalTransport, Config, IpBroker, Publish, State, Subscribe,
+    SubscribeTopic,
+};
 use embedded_nal_async::Ipv4Addr;
 use futures::StreamExt;
 use static_cell::StaticCell;
@@ -16,10 +19,12 @@ const ROUND_TRIP_COUNT: usize = 15;
 async fn main() {
     env_logger::init();
 
+    // TODO: Configure a RUMQTTD broker instead of having to manually start a mosquitto broker. This also allows testing with TLS.
+
     static NETWORK: StaticCell<Network> = StaticCell::new();
     let network = NETWORK.init(Network::new());
 
-    let client_id = "mqtt_test_client_id";
+    let client_id = "mqtt_test_client_id_v3";
 
     // Create the MQTT stack
     let broker = IpBroker::new(Ipv4Addr::new(127, 0, 0, 1), 1883);
@@ -28,13 +33,11 @@ async fn main() {
 
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 2>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 1024, 1024, 2>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config, &*network);
-
-    // let client = make_static!(client);
+    let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let idle = async {
         log::debug!("Starting publish!");
-        for i in 0.. {
+        for i in 0..ROUND_TRIP_COUNT {
             client
                 .publish(Publish {
                     dup: false,
@@ -46,7 +49,7 @@ async fn main() {
                 })
                 .await
                 .unwrap();
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     };
 
@@ -56,19 +59,26 @@ async fn main() {
             maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
         }]);
 
-        let mut subscription = client.subscribe(subscribe).await.unwrap();
+        let mut msg_cnt = 0;
+        let mut subscription = client.subscribe::<1>(subscribe).await.unwrap();
         while let Some(message) = subscription.next().await {
             log::info!(
                 "Received message {:?} - {:?}",
                 message.topic_name(),
                 core::str::from_utf8(message.payload())
             );
+            msg_cnt += 1;
+            if msg_cnt >= ROUND_TRIP_COUNT * 2 {
+                std::process::exit(0);
+            }
         }
     };
 
+    let mut transport = NalTransport::new(network);
+
     embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(5),
-        select::select3(stack.run(), idle, sub),
+        embassy_time::Duration::from_secs(55),
+        select::select3(stack.run(&mut transport), idle, sub),
     )
     .await
     .unwrap();
