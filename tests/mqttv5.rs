@@ -1,5 +1,6 @@
 #![cfg(feature = "mqttv5")]
 
+mod broker;
 mod common;
 
 use common::network::Network;
@@ -19,13 +20,15 @@ const ROUND_TRIP_COUNT: usize = 15;
 async fn mqttv5() {
     env_logger::init();
 
+    broker::start_broker(broker::MqttVersion::V5);
+
     static NETWORK: StaticCell<Network> = StaticCell::new();
     let network = NETWORK.init(Network::new());
 
     let client_id = "mqtt_test_client_id_v5";
 
     // Create the MQTT stack
-    let broker = IpBroker::new(Ipv4Addr::new(127, 0, 0, 1), 1883);
+    let broker = IpBroker::new(Ipv4Addr::new(0, 0, 0, 0), 1883);
     let config =
         Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 

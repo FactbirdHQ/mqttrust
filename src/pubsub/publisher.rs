@@ -93,6 +93,9 @@ where
         let inner = self.channel;
 
         if atomic::swap(&inner.write_in_progress, true, AcqRel) {
+            if let Some(cx) = cx {
+                inner.publisher_waker.register(cx.waker());
+            }
             return Err(Error::GrantInProgress);
         }
 
@@ -202,6 +205,9 @@ where
         let inner = self.channel;
 
         if atomic::swap(&inner.write_in_progress, true, AcqRel) {
+            if let Some(cx) = cx {
+                inner.publisher_waker.register(cx.waker());
+            }
             return Err(Error::GrantInProgress);
         }
 
@@ -228,26 +234,29 @@ where
                 }
                 return Err(Error::InsufficientSize);
             }
-        } else if write != max {
-            // Some (or all) room remaining in un-inverted case
-            sz = min(max - write, sz);
-            write
         } else {
-            // Not inverted, but need to go inverted
-
-            // NOTE: We check read > 1, NOT read >= 1, because
-            // write must never == read in an inverted condition, since
-            // we will then not be able to tell if we are inverted or not
-            if read > 1 {
-                sz = min(read - 1, sz);
-                0
+            #[allow(clippy::collapsible_if)]
+            if write != max {
+                // Some (or all) room remaining in un-inverted case
+                sz = min(max - write, sz);
+                write
             } else {
-                // Not invertible, no space
-                inner.write_in_progress.store(false, Release);
-                if let Some(cx) = cx {
-                    inner.publisher_waker.register(cx.waker());
+                // Not inverted, but need to go inverted
+
+                // NOTE: We check read > 1, NOT read >= 1, because
+                // write must never == read in an inverted condition, since
+                // we will then not be able to tell if we are inverted or not
+                if read > 1 {
+                    sz = min(read - 1, sz);
+                    0
+                } else {
+                    // Not invertible, no space
+                    inner.write_in_progress.store(false, Release);
+                    if let Some(cx) = cx {
+                        inner.publisher_waker.register(cx.waker());
+                    }
+                    return Err(Error::InsufficientSize);
                 }
-                return Err(Error::InsufficientSize);
             }
         };
 
@@ -407,7 +416,7 @@ where
         let write = inner.write.load(Acquire);
         atomic::fetch_sub(&inner.reserve, len - used, AcqRel);
 
-        let max = len;
+        let max = inner.capacity;
         let last = inner.last.load(Acquire);
         let new_write = inner.reserve.load(Acquire);
 

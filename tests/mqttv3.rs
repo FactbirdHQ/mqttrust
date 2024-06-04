@@ -1,5 +1,6 @@
 #![cfg(feature = "mqttv3")]
 
+mod broker;
 mod common;
 
 use common::network::Network;
@@ -19,7 +20,7 @@ const ROUND_TRIP_COUNT: usize = 15;
 async fn main() {
     env_logger::init();
 
-    // TODO: Configure a RUMQTTD broker instead of having to manually start a mosquitto broker. This also allows testing with TLS.
+    broker::start_broker(broker::MqttVersion::V4);
 
     static NETWORK: StaticCell<Network> = StaticCell::new();
     let network = NETWORK.init(Network::new());
@@ -27,7 +28,7 @@ async fn main() {
     let client_id = "mqtt_test_client_id_v3";
 
     // Create the MQTT stack
-    let broker = IpBroker::new(Ipv4Addr::new(127, 0, 0, 1), 1883);
+    let broker = IpBroker::new(Ipv4Addr::new(0, 0, 0, 0), 1883);
     let config =
         Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
 

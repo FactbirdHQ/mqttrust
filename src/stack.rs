@@ -22,7 +22,7 @@ use crate::{
         framed::{FramePublisher, FrameSubscriber},
         SliceBufferProvider,
     },
-    state::{Inflight, PendingAck, Shared},
+    state::{AckStatus, Inflight, Shared},
     transport::Transport,
     Broker, Disconnect, Property,
 };
@@ -270,29 +270,41 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                             }
                         }
                     }
-                    ReceivedPacket::SubAck { pid, .. } => {
+                    ReceivedPacket::SubAck { pid, codes, .. } => {
                         let shared_ref = self.shared.lock().await;
                         let mut shared = shared_ref.borrow_mut();
                         // Pop pid from pending_ack
-                        debug!("Received suback: {:?}", pid);
+                        debug!("Received suback: {:?}, {:?}", pid, codes);
 
-                        if !shared.pending_ack.remove(&PendingAck::Subscribe(pid.get())) {
-                            error!("Unsolicited suback packet: {:?}", pid);
-                            return Err(StateError::Unsolicited(pid.get()));
+                        match shared.ack_status.get_mut(&pid.get()) {
+                            Some(status) if *status == AckStatus::AwaitingSubAck => {
+                                *status =
+                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap())
+                            }
+                            None | Some(_) => {
+                                error!("Unsolicited suback packet: {:?}", pid);
+                                return Err(StateError::Unsolicited(pid.get()));
+                            }
                         }
+
                         shared.wake_tx();
                     }
-                    ReceivedPacket::UnsubAck { pid, .. } => {
+                    ReceivedPacket::UnsubAck { pid, codes, .. } => {
                         let shared_ref = self.shared.lock().await;
                         let mut shared = shared_ref.borrow_mut();
+
                         // Pop pid from pending_ack
-                        if !shared
-                            .pending_ack
-                            .remove(&PendingAck::Unsubscribe(pid.get()))
-                        {
-                            error!("Unsolicited unsuback packet: {:?}", pid);
-                            return Err(StateError::Unsolicited(pid.get()));
+                        match shared.ack_status.get_mut(&pid.get()) {
+                            Some(status) if *status == AckStatus::AwaitingUnsubAck => {
+                                *status =
+                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap())
+                            }
+                            None | Some(_) => {
+                                error!("Unsolicited suback packet: {:?}", pid);
+                                return Err(StateError::Unsolicited(pid.get()));
+                            }
                         }
+
                         shared.wake_tx();
                     }
                 }
@@ -322,8 +334,8 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         debug!("[Subscribe] Inserting {:?} into pending_ack", tx_header.pid);
                         // FIXME: Properly handle error instead of `unwrap`
                         shared
-                            .pending_ack
-                            .insert(PendingAck::Subscribe(tx_header.pid.unwrap().get()))
+                            .ack_status
+                            .insert(tx_header.pid.unwrap().get(), AckStatus::AwaitingSubAck)
                             .unwrap();
                     }
                     PacketType::Unsubscribe => {
@@ -333,8 +345,8 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         );
                         // FIXME: Properly handle error instead of `unwrap`
                         shared
-                            .pending_ack
-                            .insert(PendingAck::Unsubscribe(tx_header.pid.unwrap().get()))
+                            .ack_status
+                            .insert(tx_header.pid.unwrap().get(), AckStatus::AwaitingUnsubAck)
                             .unwrap();
                     }
                     e => {
@@ -440,7 +452,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                 reason_code,
                 session_present,
                 #[cfg(feature = "mqttv5")]
-                properties: _,
+                    properties: _,
             } if reason_code.success() => {
                 if self.clean_start {
                     debug!("Connected! Reusing existing session: {}", session_present);

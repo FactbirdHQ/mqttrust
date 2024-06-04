@@ -49,6 +49,7 @@ futures = { version = "0.3.17" }
 log = "0.4.14"
 static_cell = { version = "2", features = ["nightly"]}
 openssl = "0.10"
+rumqttd = "0.19"
 
 [features]
 default = ["mqttv5", "max_topic_len_128", "embedded-tls"]

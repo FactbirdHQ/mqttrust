@@ -8,26 +8,11 @@ use crate::encoding::Pid;
 
 const MAX_INFLIGHT: usize = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PendingAck {
-    Subscribe(u16),
-    Unsubscribe(u16),
-}
-
-impl core::hash::Hash for PendingAck {
-    fn hash<H: core::hash::Hasher>(&self, h: &mut H) -> () {
-        match self {
-            PendingAck::Subscribe(pid) => {
-                h.write(&pid.to_le_bytes());
-                h.write(&[0]);
-            }
-            PendingAck::Unsubscribe(pid) => {
-                h.write(&pid.to_le_bytes());
-                h.write(&[1]);
-            }
-        }
-        h.finish();
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum AckStatus {
+    AwaitingSubAck,
+    AwaitingUnsubAck,
+    Acked(heapless::Vec<u8, 10>),
 }
 
 pub struct Shared<const SUBS: usize> {
@@ -38,7 +23,7 @@ pub struct Shared<const SUBS: usize> {
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
     pub(crate) inflight_pub: FnvIndexMap<u16, Inflight<4>, MAX_INFLIGHT>,
-    pub(crate) pending_ack: heapless::FnvIndexSet<PendingAck, SUBS>,
+    pub(crate) ack_status: FnvIndexMap<u16, AckStatus, SUBS>,
     pub(crate) outgoing_pid: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
 
     /// Packet ids of released QoS 2 publishes
@@ -58,7 +43,7 @@ impl<const SUBS: usize> Shared<SUBS> {
             tx_waker: MultiWakerRegistration::new(),
 
             inflight_pub: IndexMap::new(),
-            pending_ack: heapless::IndexSet::new(),
+            ack_status: IndexMap::new(),
             outgoing_pid: heapless::IndexSet::new(),
 
             #[cfg(feature = "qos2")]

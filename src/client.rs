@@ -22,7 +22,7 @@ use crate::{
         framed::{FrameGrantR, FramePublisher, FrameSubscriber},
         PubSubChannel, SliceBufferProvider,
     },
-    state::{PendingAck, Shared},
+    state::{AckStatus, Shared},
     Properties, ToPayload, Unsubscribe, MAX_TOPIC_LEN,
 };
 
@@ -152,6 +152,8 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 .map_err(|_| Error::Timeout)?;
         }
 
+        debug!("[Publish] Success pid {:?}", pid);
+
         Ok(())
     }
 
@@ -183,11 +185,12 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 let mut state = shared.borrow_mut();
 
                 // Check if `pid` has been acked by the broker
-                if !state
-                    .pending_ack
-                    .contains(&PendingAck::Subscribe(pid.get()))
-                {
-                    return Poll::Ready(());
+                if let Some(&AckStatus::Acked(_)) = state.ack_status.get(&pid.get()) {
+                    match state.ack_status.remove(&pid.get()) {
+                        Some(AckStatus::Acked(codes)) => return Poll::Ready(codes),
+                        // Should be checked above!
+                        _ => panic!(),
+                    }
                 }
 
                 state.register_tx_waker(cx);
@@ -198,14 +201,24 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         });
 
         // TODO: Proper timeout duration?
-        if let Err(TimeoutError) = with_timeout(Duration::from_secs(5), ack_fut).await {
-            let shared_ref = self.shared.lock().await;
-            let mut shared = shared_ref.borrow_mut();
-            // Pop pid from pending_ack
-            shared.pending_ack.remove(&PendingAck::Subscribe(pid.get()));
+        match with_timeout(Duration::from_secs(5), ack_fut).await {
+            Ok(status) => {
+                debug!("[Subscribe] Status codes: {:?}", status);
+                if status.iter().any(|c| *c >= 0x80) {
+                    return Err(Error::BadTopicFilter);
+                }
+            }
+            Err(TimeoutError) => {
+                let shared_ref = self.shared.lock().await;
+                let mut shared = shared_ref.borrow_mut();
+                // Pop pid from pending_ack
+                shared.ack_status.remove(&pid.get());
 
-            return Err(Error::Timeout);
+                return Err(Error::Timeout);
+            }
         }
+
+        debug!("[Subscribe] Success pid {:?}", pid);
 
         Ok(Subscription {
             subscriber,
@@ -299,19 +312,20 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
     Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
 {
     pub async fn next_message(&mut self) -> Option<Message<'a, SUBS>> {
-        let grant = self.subscriber.read_async().await.ok()?;
-        if let Some(mut msg) = Message::try_new(grant) {
-            if self
-                .topic_filters
-                .iter()
-                .any(|filter| filter.is_match(msg.topic_name()))
-            {
-                msg.auto_release();
+        loop {
+            let grant = self.subscriber.read_async().await.ok()?;
+            if let Some(mut msg) = Message::try_new(grant) {
+                if self
+                    .topic_filters
+                    .iter()
+                    .any(|filter| filter.is_match(msg.topic_name()))
+                {
+                    msg.auto_release();
 
-                return Some(msg);
+                    return Some(msg);
+                }
             }
         }
-        None
     }
 }
 
@@ -339,6 +353,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures::S
                 } else {
                     msg.auto_release();
                     debug!("NO MATCH MSG! {}", msg.topic_name());
+                    cx.waker().wake_by_ref();
                 }
             }
         }

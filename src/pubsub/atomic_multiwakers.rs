@@ -19,7 +19,7 @@ impl<const N: usize> MultiWakerRegistration<N> {
         }
     }
 
-    /// Register a waker. If the buffer is full the function returns it in the error
+    /// Register a waker.
     pub fn register<'a>(&self, w: &'a Waker) {
         self.wakers.lock(|inner| {
             let mut wakers = inner.borrow_mut();

@@ -98,8 +98,8 @@ pub(crate) enum ReceivedPacket<'a, R: Read> {
         _properties: Properties<'a>,
 
         /// The response status code of the subscription request.
-        #[cfg(feature = "mqttv3")]
-        codes: &'a [SubAckReturnCode],
+        // codes: &'a [SubAckReturnCode],
+        codes: &'a [u8],
     },
     UnsubAck {
         /// The ID of the packet being acknowledged.
@@ -108,6 +108,10 @@ pub(crate) enum ReceivedPacket<'a, R: Read> {
         /// The properties associated with this packet.
         #[cfg(feature = "mqttv5")]
         _properties: Properties<'a>,
+
+        /// The response status code of the subscription request.
+        // codes: &'a [UnsubAckReturnCode],
+        codes: &'a [u8],
     },
     Disconnect {
         /// A status code indicating the success status of the connection.
@@ -177,7 +181,12 @@ impl<'a, R: Read> ReceivedPacket<'a, R> {
                     QoS::ExactlyOnce => QosPid::ExactlyOnce(Pid::try_from(decoder.read_u16()?)?),
                 };
 
-                debug!("{:?}: {:?}", qos_pid, _topic_name);
+                debug!(
+                    "{:?}: {} bytes [{:?}]",
+                    qos_pid,
+                    decoder.packet_len(),
+                    _topic_name
+                );
 
                 let buf_len = core::cmp::min(decoder.packet_len(), buf.len());
 
@@ -233,13 +242,13 @@ impl<'a, R: Read> ReceivedPacket<'a, R> {
                 pid: Pid::try_from(decoder.read_u16()?)?,
                 #[cfg(feature = "mqttv5")]
                 _properties: decoder.read_properties()?,
-                #[cfg(feature = "mqttv3")]
-                codes: &[],
+                codes: decoder.read_payload()?,
             },
             PacketType::UnsubAck => Self::UnsubAck {
                 pid: Pid::try_from(decoder.read_u16()?)?,
                 #[cfg(feature = "mqttv5")]
                 _properties: decoder.read_properties()?,
+                codes: decoder.read_payload()?,
             },
             _ => return Err(Error::InvalidHeader),
         };

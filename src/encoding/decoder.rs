@@ -150,7 +150,6 @@ impl<'a> MqttDecoder<'a> {
             }
         }
 
-
         Ok(properties)
     }
 }
