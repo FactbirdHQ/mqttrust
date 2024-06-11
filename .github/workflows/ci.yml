@@ -18,9 +18,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-      strategy:
-        matrix:
-          mqtt_version: ["mqttv3", "mqttv5"]
+    strategy:
+      matrix:
+        mqtt_version: ["mqttv3", "mqttv5"]
     steps:
       - name: Checkout source code
         uses: actions/checkout@v2

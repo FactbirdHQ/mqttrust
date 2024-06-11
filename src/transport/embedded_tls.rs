@@ -111,7 +111,7 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> TlsConnection<'d, N, R
             .ok_or_else(|| TlsError::InsufficientSpace)?;
 
         let socket = unsafe {
-            embedded_tls::TlsConnection::new(socket, &mut bufs.as_mut().1, &mut bufs.as_mut().0)
+            embedded_tls::TlsConnection::new(socket, &mut bufs.as_mut().0, &mut bufs.as_mut().1)
         };
 
         Ok(Self {

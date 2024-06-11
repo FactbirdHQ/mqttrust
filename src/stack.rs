@@ -8,6 +8,7 @@ use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use embassy_time::{Instant, Timer};
 use embedded_io_async::Error as _;
 use embedded_io_async::Write as _;
+use futures::pin_mut;
 
 use crate::{
     config::Config,

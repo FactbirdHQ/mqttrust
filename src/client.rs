@@ -147,7 +147,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             });
 
             // TODO: Proper timeout duration?
-            with_timeout(Duration::from_secs(5), ack_fut)
+            with_timeout(Duration::from_secs(25), ack_fut)
                 .await
                 .map_err(|_| Error::Timeout)?;
         }

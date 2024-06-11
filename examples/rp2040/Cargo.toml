@@ -20,7 +20,7 @@ embassy-rp = { version = "0.1.0", features = [
     "unstable-pac",
     "time-driver",
 ] }
-embassy-sync = { version = "0.5.0" }
+embassy-sync = { version = "0.6" }
 portable-atomic = { version = "1.0.2", features = [
     "unsafe-assume-single-core",
 ] }
