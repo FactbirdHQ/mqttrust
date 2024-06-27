@@ -8,6 +8,7 @@ pub(crate) mod fmt;
 
 mod client;
 mod eventloop;
+mod max_payload;
 mod options;
 mod packet;
 mod state;
@@ -18,6 +19,7 @@ pub use client::Client;
 use core::convert::TryFrom;
 pub use eventloop::EventLoop;
 use heapless::{String, Vec};
+use max_payload::MAX_PAYLOAD_SIZE;
 pub use mqttrust::encoding::v4::{Pid, Publish, QoS, QosPid, Suback};
 pub use mqttrust::*;
 pub use options::{Broker, MqttOptions};
@@ -30,7 +32,7 @@ pub struct PublishNotification {
     pub qospid: QoS,
     pub retain: bool,
     pub topic_name: String<256>,
-    pub payload: Vec<u8, 4096>,
+    pub payload: Vec<u8, MAX_PAYLOAD_SIZE>,
 }
 
 /// Includes incoming packets from the network and other interesting events
