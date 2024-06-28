@@ -43,8 +43,17 @@ dns-lookup = "1.0.3"
 env_logger = "0.9.0"
 
 [features]
-default = []
+default = ["max_payload_size_4096"]
+max_payload_size_2048 = []
+max_payload_size_4096 = []
+max_payload_size_8192 = []
+
 
 std = []
 
-defmt-impl = ["defmt", "mqttrust/defmt-impl", "heapless/defmt-impl", "fugit/defmt"]
+defmt-impl = [
+    "defmt",
+    "mqttrust/defmt-impl",
+    "heapless/defmt-impl",
+    "fugit/defmt",
+]

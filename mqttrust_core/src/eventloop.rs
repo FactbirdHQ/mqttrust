@@ -1,3 +1,4 @@
+use crate::max_payload::MAX_PAYLOAD_SIZE;
 use crate::options::Broker;
 use crate::packet::SerializedPacket;
 use crate::state::{MqttConnectionStatus, MqttState};
@@ -417,7 +418,7 @@ impl<S> NetworkHandle<S> {
 #[derive(Debug)]
 struct PacketBuffer {
     range: RangeTo<usize>,
-    buffer: Vec<u8, 4096>,
+    buffer: Vec<u8, { MAX_PAYLOAD_SIZE }>,
 }
 
 impl PacketBuffer {
