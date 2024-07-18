@@ -101,7 +101,7 @@ impl MqttEncode for Connect<'_> {
         encoder.write_str(self.protocol.name())?;
         encoder.write_u8(self.protocol.into())?;
 
-        // TOOD: Change `connect_flags` to bitflags
+        // TODO: Change `connect_flags` to bitflags
         let mut connect_flags = 0;
         connect_flags |= u8::from(self.clean_start) << 1;
         connect_flags |= u8::from(self.username.is_some()) << 7;
@@ -137,7 +137,7 @@ impl MqttEncode for Connect<'_> {
 
         encoder.finalize_fixed_header(self)?;
 
-        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)?)
+        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)
     }
 
     fn max_packet_size(&self) -> usize {

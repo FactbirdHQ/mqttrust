@@ -42,7 +42,7 @@ impl<'a> MqttEncode for Disconnect<'a> {
         }
 
         encoder.finalize_fixed_header(self)?;
-        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)?)
+        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)
     }
 
     fn max_packet_size(&self) -> usize {

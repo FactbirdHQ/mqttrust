@@ -1,20 +1,22 @@
 use core::str::FromStr;
 
-use crate::error::ProtocolError;
+use crate::{crate_config::MAX_CLIENT_ID_LEN, error::Error, QoS};
 use embassy_time::Duration;
 
 pub type BackoffAlgo = fn(u8) -> Duration;
 
 #[derive(Debug)]
 pub struct Config<Broker> {
-    pub broker: Broker,
-    // pub will: Option<SerializedWill<'a>>,
-    pub client_id: heapless::String<64>,
-    pub keepalive_interval: Duration,
-    pub connect_timeout: Duration,
-    pub downgrade_qos: bool,
-    pub backoff_algo: BackoffAlgo,
-    // pub auth: Option<Auth<'a>>,
+    pub(crate) broker: Broker,
+    // pub(crate) will: Option<SerializedWill<'a>>,
+    pub(crate) client_id: heapless::String<MAX_CLIENT_ID_LEN>,
+    pub(crate) keepalive_interval: Duration,
+    pub(crate) connect_timeout: Duration,
+    pub(crate) downgrade_qos: bool,
+    pub(crate) backoff_algo: BackoffAlgo,
+    // TODO: Check `max_qos` in packet handling
+    pub(crate) max_qos: QoS,
+    // pub(crate) auth: Option<Auth<'a>>,
 }
 
 impl<Broker> Config<Broker> {
@@ -35,6 +37,10 @@ impl<Broker> Config<Broker> {
                     Duration::from_millis(backoff.into()),
                 )
             },
+            #[cfg(feature = "qos2")]
+            max_qos: QoS::ExactlyOnce,
+            #[cfg(not(feature = "qos2"))]
+            max_qos: QoS::AtLeastOnce,
             // will: None,
         }
     }
@@ -44,9 +50,9 @@ impl<Broker> Config<Broker> {
     // /// # Args
     // /// * `user_name` - The user name
     // /// * `password` - The password
-    // pub fn set_auth(mut self, user_name: &str, password: &str) -> Result<Self, ProtocolError> {
+    // pub fn set_auth(mut self, user_name: &str, password: &str) -> Result<Self, Error> {
     //     if self.auth.is_some() {
-    //         return Err(ProtocolError::AuthAlreadySpecified);
+    //         return Err(Error::AuthAlreadySpecified);
     //     }
 
     //     let (username_bytes, tail) = self.buffer.split_at_mut(user_name.as_bytes().len());
@@ -67,9 +73,8 @@ impl<Broker> Config<Broker> {
     // }
 
     /// Specify a known client ID to use. If not assigned, the broker will auto assign an ID.
-    pub fn client_id(mut self, id: &str) -> Result<Self, ProtocolError> {
-        self.client_id =
-            heapless::String::try_from(id).map_err(|_| ProtocolError::ProvidedClientIdTooLong)?;
+    pub fn client_id(mut self, id: &str) -> Result<Self, Error> {
+        self.client_id = heapless::String::try_from(id).map_err(|_| Error::Overflow)?;
         Ok(self)
     }
 
@@ -87,6 +92,16 @@ impl<Broker> Config<Broker> {
         self
     }
 
+    pub fn connect_timeout(mut self, duration: Duration) -> Self {
+        self.connect_timeout = duration;
+        self
+    }
+
+    pub fn backoff_algorithm(mut self, algo: BackoffAlgo) -> Self {
+        self.backoff_algo = algo;
+        self
+    }
+
     /// Specify if publication [QoS] should be automatically downgraded to the maximum supported by
     /// the server if they exceed the server [QoS] maximum.
     pub fn autodowngrade_qos(mut self) -> Self {
@@ -98,9 +113,9 @@ impl<Broker> Config<Broker> {
     // ///
     // /// # Args
     // /// * `will` - The will to use.
-    // pub fn will(mut self, will: Will<'_>) -> Result<Self, ProtocolError> {
+    // pub fn will(mut self, will: Will<'_>) -> Result<Self, Error> {
     //     if self.will.is_some() {
-    //         return Err(ProtocolError::WillAlreadySpecified);
+    //         return Err(Error::WillAlreadySpecified);
     //     }
     //     let will_len = will.serialized_len();
     //     let (head, tail) = self.buffer.split_at_mut(will_len);
@@ -108,23 +123,5 @@ impl<Broker> Config<Broker> {
     //     self.will = Some(will.serialize(head)?);
 
     //     Ok(self)
-    // }
-
-    // /// Configure the TLS options on the socket.
-    // ///
-    // /// # Note
-    // /// If a broker is already set, that returns `Some(hostname)` on
-    // /// `Broker::get_hostname()`, then the server_name in the tls config will be
-    // /// automatically set to that hostname.
-    // ///
-    // /// # Args
-    // /// * `tls_config` - The TLS config to be passed on to `embedded-tls` when
-    // ///   doing TLS handshake during TCP connect.
-    // #[cfg(feature = "embedded-tls")]
-    // pub fn tls_config(mut self, mut tls_config: embedded_tls::TlsConfig<'a>) -> Config<'a, Broker> {
-    //     tls_config.server_name = self.broker.get_hostname();
-    //     self.tls_config = tls_config;
-
-    //     self
     // }
 }

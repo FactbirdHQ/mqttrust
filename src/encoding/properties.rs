@@ -318,7 +318,7 @@ impl<'a> PropertiesIter<'a> {
                     Property::SubscriptionIdentifier(self.read_varint()?)
                 }
                 PropertyIdentifier::SessionExpiryInterval => {
-                    Property::SessionExpiryInterval(self.read_varint()?)
+                    Property::SessionExpiryInterval(self.read_u32()?)
                 }
                 PropertyIdentifier::AssignedClientIdentifier => {
                     Property::AssignedClientIdentifier(self.read_str()?)

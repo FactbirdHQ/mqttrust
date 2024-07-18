@@ -22,28 +22,6 @@ impl From<crate::encoding::EncodingError> for Error {
     }
 }
 
-/// Errors that are specific to the MQTT protocol implementation.
-#[non_exhaustive]
-#[derive(Debug, Copy, Clone, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ProtocolError {
-    ProvidedClientIdTooLong,
-    UnexpectedPacket,
-    InvalidProperty,
-    MalformedPacket,
-    BufferSize,
-    BadIdentifier,
-    Unacknowledged,
-    WrongQos,
-    UnsupportedPacket,
-    NoTopic,
-    AuthAlreadySpecified,
-    WillAlreadySpecified,
-    Failed,
-    // Serialization(SerError),
-    // Deserialization(DeError),
-}
-
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

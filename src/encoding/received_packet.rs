@@ -90,7 +90,7 @@ pub(crate) enum ReceivedPacket<'a, R: Read> {
         _properties: Properties<'a>,
     },
     SubAck {
-        /// The identifier that the acknowledge is assocaited with.
+        /// The identifier that the acknowledge is associated with.
         pid: Pid,
 
         /// The optional properties associated with the acknowledgement.

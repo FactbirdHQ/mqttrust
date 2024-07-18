@@ -105,10 +105,7 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> TlsConnection<'d, N, R
         socket: N::Connection<'d>,
         state: &'d TlsState<RX, TX>,
     ) -> Result<Self, TlsError> {
-        let mut bufs = state
-            .pool
-            .alloc()
-            .ok_or_else(|| TlsError::InsufficientSpace)?;
+        let mut bufs = state.pool.alloc().ok_or(TlsError::InsufficientSpace)?;
 
         let socket = unsafe {
             embedded_tls::TlsConnection::new(socket, &mut bufs.as_mut().0, &mut bufs.as_mut().1)
@@ -170,6 +167,12 @@ pub struct TlsState<const RX: usize, const TX: usize> {
     pub(crate) pool: Pool<([u8; RX], [u8; TX]), 1>,
 }
 
+impl<const RX: usize, const TX: usize> Default for TlsState<RX, TX> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const RX: usize, const TX: usize> TlsState<RX, TX> {
     /// Create a new `TlsState`.
     pub const fn new() -> Self {
@@ -183,13 +186,10 @@ pub(crate) struct Pool<T, const N: usize> {
 }
 
 impl<T, const N: usize> Pool<T, N> {
-    const VALUE: Cell<bool> = Cell::new(false);
-    const UNINIT: UnsafeCell<MaybeUninit<T>> = UnsafeCell::new(MaybeUninit::uninit());
-
     pub(crate) const fn new() -> Self {
         Self {
-            used: [Self::VALUE; N],
-            data: [Self::UNINIT; N],
+            used: [const { Cell::new(false) }; N],
+            data: [const { UnsafeCell::new(MaybeUninit::uninit()) }; N],
         }
     }
 }

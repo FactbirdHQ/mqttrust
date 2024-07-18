@@ -22,7 +22,7 @@ use super::{atomic, BufferProvider, Error, PubSubChannel, Result};
 ///       at the end of the ring.
 ///   * If this grant caused a wraparound, the bytes that were "skipped" at the
 ///       end of the ring will not be available until the reader reaches them,
-///       regardless of whether the grant commited any data or not.
+///       regardless of whether the grant committed any data or not.
 ///   * Maximum possible waste due to skipping: `N - 1` bytes
 /// * `grant_max_remaining(N)`
 ///   * User will receive a grant `0 < sz <= N` (or receive an error)
@@ -176,7 +176,7 @@ where
     /// assert_eq!(grant.buf().len(), 4);
     /// grant.commit(4);
     ///
-    /// // Release the four initial commited bytes
+    /// // Release the four initial committed bytes
     /// let mut grant = cons.read().unwrap();
     /// assert_eq!(grant.buf().len(), 4);
     /// grant.release(4);
@@ -318,10 +318,10 @@ where
 /// A structure representing a contiguous region of memory that
 /// may be written to, and potentially "committed" to the queue.
 ///
-/// NOTE: If the grant is dropped without explicitly commiting
+/// NOTE: If the grant is dropped without explicitly committing
 /// the contents, or by setting a the number of bytes to
 /// automatically be committed with `to_commit()`, then no bytes
-/// will be comitted for writing.
+/// will be committed for writing.
 ///
 /// If the `thumbv6` feature is selected, dropping the grant
 /// without committing it takes a short critical section,
@@ -345,7 +345,7 @@ where
     /// the grant.
     ///
     /// If `used` is larger than the given grant, the maximum amount will
-    /// be commited
+    /// be committed
     ///
     /// NOTE:  If the `thumbv6` feature is selected, this function takes a short critical
     /// section while committing.
@@ -450,7 +450,7 @@ where
         inner.subscriber_wakers.wake();
     }
 
-    /// Configures the amount of bytes to be commited on drop.
+    /// Configures the amount of bytes to be committed on drop.
     pub fn to_commit(&mut self, amt: usize) {
         self.to_commit = self.buf.len().min(amt);
     }

@@ -71,7 +71,7 @@ impl core::ops::Sub<u16> for Pid {
     /// Adding a `u16` to a `Pid` will wrap around and avoid 0.
     fn sub(self, u: u16) -> Pid {
         let n = match self.get().overflowing_sub(u) {
-            (0, _) => core::u16::MAX,
+            (0, _) => u16::MAX,
             (n, false) => n,
             (n, true) => n - 1,
         };
@@ -101,7 +101,7 @@ impl TryFrom<u16> for Pid {
 /// Packet delivery [Quality of Service] level.
 ///
 /// [Quality of Service]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718099
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum QoS {
@@ -168,15 +168,15 @@ mod test {
         let t: Vec<(u16, u16, u16, u16)> = vec![
             (2, 1, 1, 3),
             (100, 1, 99, 101),
-            (1, 1, core::u16::MAX, 2),
-            (1, 2, core::u16::MAX - 1, 3),
-            (1, 3, core::u16::MAX - 2, 4),
-            (core::u16::MAX, 1, core::u16::MAX - 1, 1),
-            (core::u16::MAX, 2, core::u16::MAX - 2, 2),
-            (10, core::u16::MAX, 10, 10),
+            (1, 1, u16::MAX, 2),
+            (1, 2, u16::MAX - 1, 3),
+            (1, 3, u16::MAX - 2, 4),
+            (u16::MAX, 1, u16::MAX - 1, 1),
+            (u16::MAX, 2, u16::MAX - 2, 2),
+            (10, u16::MAX, 10, 10),
             (10, 0, 10, 10),
             (1, 0, 1, 1),
-            (core::u16::MAX, 0, core::u16::MAX, core::u16::MAX),
+            (u16::MAX, 0, u16::MAX, u16::MAX),
         ];
         for (cur, d, prev, next) in t {
             let sub = Pid::try_from(cur).unwrap() - d;

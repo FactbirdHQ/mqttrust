@@ -1,6 +1,3 @@
-#[cfg(all(feature = "mqttv3", feature = "mqttv5"))]
-compile_error!("You must enable at most one of the following features: mqttv3, mqttv5");
-
 pub(crate) mod decoder;
 pub(crate) mod encoder;
 mod error;

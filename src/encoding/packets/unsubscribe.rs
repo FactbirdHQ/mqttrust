@@ -58,7 +58,7 @@ impl<'a> MqttEncode for Unsubscribe<'a> {
 
         encoder.finalize_fixed_header(self)?;
 
-        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)?)
+        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)
     }
 
     fn set_pid(&mut self, pid: Pid) {

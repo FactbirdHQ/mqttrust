@@ -26,7 +26,7 @@ if $DAEMONIZE; then
     nohup ./target/release/examples/aws_device_advisor > device_advisor_integration.log &
     PID=$!
 else
-    echo "You can now run 'DEVICE_ADVISOR_PASSWORD=$DEVICE_ADVISOR_PASSWORD AWS_HOSTNAME=$AWS_HOSTNAME ./target/release/examples/aws_device_advisor' in a seperate terminal"
+    echo "You can now run 'DEVICE_ADVISOR_PASSWORD=$DEVICE_ADVISOR_PASSWORD AWS_HOSTNAME=$AWS_HOSTNAME ./target/release/examples/aws_device_advisor' in a separate terminal"
 fi
 
 always() {

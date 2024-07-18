@@ -38,7 +38,7 @@ impl<'a, R: Dns, const T: usize> DomainBroker<'a, R, T> {
         let addr: SocketAddr = broker.parse().unwrap_or_else(|_| {
             let (_, port) = broker
                 .split_once(':')
-                .map(|(b, port)| (b, port.parse().unwrap()))
+                .map(|(b, port)| (b, port.parse().unwrap_or(MQTT_DEFAULT_PORT)))
                 .unwrap_or((broker, MQTT_DEFAULT_PORT));
             SocketAddr::new(
                 IpAddr::V4(broker.parse().unwrap_or(Ipv4Addr::UNSPECIFIED)),
@@ -64,7 +64,7 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
                 .map(|f| f.0)
                 .unwrap_or(self.raw.as_str());
 
-            info!("Tryng to resolve IP of {:?}", hostname);
+            info!("Trying to resolve IP of {:?}", hostname);
 
             match self
                 .resolver

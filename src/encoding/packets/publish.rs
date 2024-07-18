@@ -134,7 +134,7 @@ impl<'a, P: ToPayload> MqttEncode for Publish<'a, P> {
 
         encoder.finalize_fixed_header(self)?;
 
-        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)?)
+        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)
     }
 
     fn set_pid(&mut self, pid: Pid) {
@@ -196,18 +196,13 @@ impl<'a, S: Read> PartialPublish<'a, S> {
         &mut self,
         buf: &mut [u8],
     ) -> Result<(), embedded_io_async::ReadExactError<S::Error>> {
-        trace!("Starting multipart copy of publish packet...");
-        trace!("Part 1: {} bytes", self.buf.len());
-        buf[..self.buf.len()].copy_from_slice(&self.buf);
+        buf[..self.buf.len()].copy_from_slice(self.buf);
 
         if self.buf.len() < self.len() {
-            trace!("Part 2: {} bytes", self.len() - self.buf.len());
-
             self.reader
                 .read_exact(&mut buf[self.buf.len()..self.len()])
                 .await?;
         }
-        trace!("Finished multipart copy of {} bytes!", self.len());
 
         Ok(())
     }

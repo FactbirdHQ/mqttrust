@@ -171,7 +171,7 @@ where
         // there are 0 bytes available.
 
         // The header consists of a single usize, encoded in native
-        // endianess order
+        // endianness order
         let frame_len = decode_usize(&grant_r);
         let hdr_len = decoded_len(grant_r[0]);
         let total_len = frame_len + hdr_len;
@@ -197,7 +197,7 @@ where
         // there are 0 bytes available.
 
         // The header consists of a single usize, encoded in native
-        // endianess order
+        // endianness order
         let frame_len = decode_usize(&grant_r);
         let hdr_len = decoded_len(grant_r[0]);
         let total_len = frame_len + hdr_len;
@@ -214,9 +214,9 @@ where
 
 /// A write grant for a single frame
 ///
-/// NOTE: If the grant is dropped without explicitly commiting
+/// NOTE: If the grant is dropped without explicitly committing
 /// the contents without first calling `to_commit()`, then no
-/// frame will be comitted for writing.
+/// frame will be committed for writing.
 pub struct FrameGrantW<'a, B, const SUBS: usize>
 where
     B: BufferProvider,
@@ -306,7 +306,7 @@ where
         total_len
     }
 
-    /// Configures the amount of bytes to be commited on drop.
+    /// Configures the amount of bytes to be committed on drop.
     pub fn to_commit(&mut self, amt: usize) {
         if amt == 0 {
             self.grant_w.to_commit(0);
@@ -331,7 +331,7 @@ where
         self.grant_r.release_inner(len);
     }
 
-    /// Set whether the read fram should be automatically released
+    /// Set whether the read frame should be automatically released
     pub fn auto_release(&mut self, is_auto: bool) {
         self.grant_r
             .to_release(if is_auto { self.grant_r.len() } else { 0 });

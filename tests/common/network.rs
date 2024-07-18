@@ -19,10 +19,10 @@ impl TcpConnect for Network {
 	    where
 		    Self: 'a;
 
-    async fn connect<'a>(
-        &'a self,
+    async fn connect(
+        &self,
         remote: embedded_nal_async::SocketAddr,
-    ) -> Result<Self::Connection<'a>, Self::Error> {
+    ) -> Result<Self::Connection<'_>, Self::Error> {
         let stream = tokio::net::TcpStream::connect(format!("{}", remote)).await?;
         Ok(FromTokio::new(stream))
     }

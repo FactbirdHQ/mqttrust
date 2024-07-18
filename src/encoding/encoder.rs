@@ -172,7 +172,7 @@ impl<'a> MqttEncoder<'a> {
             Property::ResponseTopic(v) => self.write_str(v)?,
             Property::CorrelationData(v) => self.write_slice(v)?,
             Property::SubscriptionIdentifier(v) => self.write_varint(*v)?,
-            Property::SessionExpiryInterval(v) => self.write_varint(*v)?,
+            Property::SessionExpiryInterval(v) => self.write_u32(*v)?,
             Property::AssignedClientIdentifier(v) => self.write_str(v)?,
             Property::ServerKeepAlive(v) => self.write_u16(*v)?,
             Property::AuthenticationMethod(v) => self.write_str(v)?,

@@ -3,7 +3,7 @@
 /// The memory can be statically allocated, on the heap or on the stack
 pub trait BufferProvider: PartialEq {
     /// Returns a reference to the provided buffer
-    /// The buffer **HAS NO GARANTEE** on it's state or initialization
+    /// The buffer **HAS NO GUARANTEE** on it's state or initialization
     fn buf(&mut self) -> &mut [u8];
 }
 
@@ -11,6 +11,12 @@ pub trait BufferProvider: PartialEq {
 #[derive(Debug, PartialEq)]
 pub struct StaticBufferProvider<const N: usize> {
     buf: [u8; N],
+}
+
+impl<const N: usize> Default for StaticBufferProvider<N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<const N: usize> StaticBufferProvider<N> {
@@ -33,7 +39,7 @@ pub struct SliceBufferProvider<'a> {
 }
 
 impl<'a> SliceBufferProvider<'a> {
-    /// Creates a new BufferProvided from a userspace memory
+    /// Creates a new BufferProvider from a userspace memory
     pub fn new(buf: &'a mut [u8]) -> Self {
         Self { buf }
     }

@@ -1,3 +1,5 @@
+mod credentials;
+
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{

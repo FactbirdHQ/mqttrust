@@ -26,6 +26,11 @@ impl<const N: usize> PacketBuffer<N> {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.read_bytes = 0;
+        self.packet_len = None;
+    }
+
     pub async fn write_packet(
         &mut self,
         transport: &mut impl Transport,
@@ -56,10 +61,10 @@ impl<const N: usize> PacketBuffer<N> {
         &'a mut self,
         transport: &'a mut T,
     ) -> Result<ReceivedPacket<'a, T::Socket>, StateError> {
-        while !self.packet_len.is_some() {
+        while self.packet_len.is_none() {
             self.receive(transport.socket()?).await.map_err(|kind| {
                 error!("DISCONNECTING {:?}", kind);
-                transport.disconnect();
+                transport.disconnect().ok();
                 StateError::Io(kind)
             })?;
         }
@@ -76,13 +81,10 @@ impl<const N: usize> PacketBuffer<N> {
             }
         }
 
-        let end = if let Some(packet_length) = self.packet_len {
-            packet_length
-        } else {
-            self.read_bytes + 1
-        };
-
-        let end = core::cmp::min(end, self.buf.len());
+        let end = core::cmp::min(
+            self.packet_len.unwrap_or(self.read_bytes + 1),
+            self.buf.len(),
+        );
 
         Ok(&mut self.buf[self.read_bytes..end])
     }
@@ -102,7 +104,6 @@ impl<const N: usize> PacketBuffer<N> {
 
         // Reset the buffer now. Once the user drops the `ReceivedPacket`, this reader will then be
         // immediately ready to begin receiving a new packet.
-
         self.read_bytes = 0;
         self.packet_len = None;
 
@@ -138,9 +139,8 @@ impl<const N: usize> PacketBuffer<N> {
         }
 
         let received_bytes = socket.read(buffer).await.map_err(|e| e.kind())?;
-        self.read_bytes += received_bytes;
-
         if received_bytes > 0 {
+            self.read_bytes += received_bytes;
             Ok(())
         } else {
             Err(ErrorKind::NotConnected)

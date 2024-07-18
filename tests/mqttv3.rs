@@ -83,4 +83,6 @@ async fn main() {
     )
     .await
     .unwrap();
+
+    stack.disconnect(&mut transport).await.unwrap();
 }

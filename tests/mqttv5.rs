@@ -113,4 +113,6 @@ async fn mqttv5() {
     )
     .await
     .unwrap();
+
+    stack.disconnect(&mut transport).await.unwrap();
 }

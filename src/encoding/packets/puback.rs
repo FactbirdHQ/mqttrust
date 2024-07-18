@@ -22,7 +22,7 @@ impl MqttEncode for PubAck {
     fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
         encoder.write_u16(self.pid.get())?;
         encoder.finalize_fixed_header(self)?;
-        Ok(encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), Some(self.pid))?)
+        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), Some(self.pid))
     }
 
     fn max_packet_size(&self) -> usize {

@@ -6,6 +6,9 @@ pub mod transport;
 #[cfg(all(feature = "mqttv3", feature = "mqttv5"))]
 compile_error!("You must enable at most one of the following features: mqttv3, mqttv5");
 
+#[cfg(not(any(feature = "mqttv3", feature = "mqttv5")))]
+compile_error!("You must enable one of the following features: mqttv3, mqttv5");
+
 mod broker;
 mod client;
 mod config;
@@ -17,7 +20,7 @@ pub mod pubsub;
 mod stack;
 mod state;
 
-use core::{cell::RefCell, mem::MaybeUninit};
+use core::mem::MaybeUninit;
 
 pub use client::{Message, MqttClient, Subscription};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
@@ -34,26 +37,18 @@ pub use error::Error;
 #[cfg(feature = "mqttv5")]
 pub use encoding::{Properties, Property, RetainHandling};
 
-#[cfg(feature = "max_topic_len_64")]
-pub const MAX_TOPIC_LEN: usize = 64;
-
-#[cfg(any(
-    not(any(
-        feature = "max_topic_len_64",
-        feature = "max_topic_len_128",
-        feature = "max_topic_len_256"
-    )),
-    feature = "max_topic_len_128"
-))]
-pub const MAX_TOPIC_LEN: usize = 128;
-
-#[cfg(feature = "max_topic_len_256")]
-pub const MAX_TOPIC_LEN: usize = 256;
-
 pub struct State<M: RawMutex, const TX: usize, const RX: usize, const SUBS: usize> {
     tx: [u8; TX],
     rx: [u8; RX],
     inner: MaybeUninit<StateInner<'static, M, SUBS>>,
+}
+
+impl<M: RawMutex, const TX: usize, const RX: usize, const SUBS: usize> Default
+    for State<M, TX, RX, SUBS>
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<M: RawMutex, const TX: usize, const RX: usize, const SUBS: usize> State<M, TX, RX, SUBS> {
@@ -69,7 +64,7 @@ impl<M: RawMutex, const TX: usize, const RX: usize, const SUBS: usize> State<M, 
 struct StateInner<'a, M: RawMutex, const SUBS: usize> {
     pub(crate) tx: PubSubChannel<SliceBufferProvider<'a>, 1>,
     pub(crate) rx_pubsub: PubSubChannel<SliceBufferProvider<'a>, SUBS>,
-    pub(crate) shared: Mutex<M, RefCell<Shared<SUBS>>>,
+    pub(crate) shared: Mutex<M, Shared<SUBS>>,
 }
 
 pub fn new<'d, M: RawMutex, B: Broker, const TX: usize, const RX: usize, const SUBS: usize>(
@@ -85,7 +80,7 @@ pub fn new<'d, M: RawMutex, B: Broker, const TX: usize, const RX: usize, const S
     let state = unsafe { &mut *state_uninit }.write(StateInner {
         tx: PubSubChannel::new(SliceBufferProvider::new(&mut state.tx[..])),
         rx_pubsub: PubSubChannel::new(SliceBufferProvider::new(&mut state.rx[..])),
-        shared: Mutex::new(RefCell::new(Shared::new())),
+        shared: Mutex::new(Shared::new()),
     });
 
     let client_id = config.client_id.clone();
@@ -104,4 +99,19 @@ pub fn new<'d, M: RawMutex, B: Broker, const TX: usize, const RX: usize, const S
             client_id,
         ),
     )
+}
+
+#[cfg(not(test))]
+pub mod crate_config {
+    #![allow(unused)]
+    include!(concat!(env!("OUT_DIR"), "/config.rs"));
+}
+
+#[cfg(test)]
+pub mod crate_config {
+    #![allow(unused)]
+    pub const MAX_CLIENT_ID_LEN: usize = 128;
+    pub const MAX_TOPIC_LEN: usize = 128;
+    pub const MAX_SUB_TOPICS_PER_MSG: usize = 8;
+    pub const MAX_INFLIGHT: usize = 8;
 }

@@ -1,15 +1,13 @@
-use core::{
-    cell::RefCell,
-    ops::{Deref, DerefMut},
-};
+use core::ops::{Deref, DerefMut};
 
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
+use embassy_time::Duration;
 use embassy_time::{Instant, Timer};
-use embedded_io_async::Error as _;
-use embedded_io_async::Write as _;
-use futures::pin_mut;
+use embedded_io_async::{Error as _, ReadExactError};
+use embedded_io_async::{ErrorKind, Write as _};
 
+use crate::Property;
 use crate::{
     config::Config,
     encoder::TxHeader,
@@ -23,16 +21,16 @@ use crate::{
         framed::{FramePublisher, FrameSubscriber},
         SliceBufferProvider,
     },
-    state::{AckStatus, Inflight, Shared},
+    state::{AckStatus, Shared},
     transport::Transport,
-    Broker, Disconnect, Property,
+    Broker, Disconnect,
 };
 
 #[cfg(feature = "qos2")]
 use crate::encoding::{PubComp, PubRec, PubRel};
 
 pub struct MqttStack<'a, M: RawMutex, B, const SUBS: usize> {
-    shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
+    shared: &'a Mutex<M, Shared<SUBS>>,
     tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
     rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
 
@@ -44,13 +42,12 @@ pub struct MqttStack<'a, M: RawMutex, B, const SUBS: usize> {
 
     clean_start: bool,
     connect_attempts: u8,
-    should_connect: bool,
 }
 
 impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
     pub(crate) fn new(
         config: Config<B>,
-        shared: &'a Mutex<M, RefCell<Shared<SUBS>>>,
+        shared: &'a Mutex<M, Shared<SUBS>>,
         tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
         rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
     ) -> Self {
@@ -64,37 +61,32 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
 
             clean_start: true,
             connect_attempts: 0,
-            should_connect: true,
 
             last_network_action: Instant::now(),
             await_pingresp: None,
         }
     }
 
-    // FIXME: This is currently not able to change between `Broker` types at
-    // runtime, meaning if `Stack` is insatantiated with a `DomainBroker` it is
-    // only possible to update the config to a new `DomainBroker` implementation
-    // with the same `Dns` resolver.
-    pub fn update_config<F: FnOnce(&mut Config<B>)>(&mut self, f: F) {
-        f(&mut self.config);
-    }
-
     pub async fn run(&mut self, transport: &mut impl Transport) {
-        self.should_connect = true;
-        info!("Running stack!");
-        while self.should_connect {
+        loop {
             if !transport.is_connected() {
+                self.shared.lock().await.set_connected(None);
+
                 match embassy_time::with_timeout(self.config.connect_timeout, async {
                     transport.connect(&mut self.config.broker).await?;
 
-                    self.connect_mqtt(transport).await?;
-                    Ok::<_, ConnectionError>(())
+                    self.connect_mqtt(transport).await
                 })
                 .await
                 {
-                    Ok(_) => {}
-                    Err(_) => {
-                        transport.disconnect();
+                    Ok(Ok(session_present)) => {
+                        self.shared
+                            .lock()
+                            .await
+                            .set_connected(Some(session_present));
+                    }
+                    _ => {
+                        transport.disconnect().ok();
                         embassy_time::Timer::after((self.config.backoff_algo)(
                             self.connect_attempts,
                         ))
@@ -108,28 +100,35 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             if let Err(e) = self.select(transport).await {
                 error!("Stack error {}", e);
                 // Clean state
+                transport.disconnect().ok();
+                self.await_pingresp = None;
+                self.connect_attempts = 0;
+                self.packet_buf.reset();
             }
         }
+    }
 
+    pub async fn disconnect(
+        &mut self,
+        transport: &mut impl Transport,
+    ) -> Result<(), ConnectionError> {
         let disconnect = Disconnect {
             reason_code: Default::default(),
             #[cfg(feature = "mqttv5")]
-            properties: crate::Properties::Slice(&[]),
+            properties: crate::Properties::Slice(&[Property::SessionExpiryInterval(0)]),
 
             #[cfg(feature = "mqttv3")]
             _marker: core::marker::PhantomData,
         };
 
+        debug!("Disconnecting from MQTT");
         self.packet_buf
             .write_packet(transport, disconnect)
             .await
-            .ok();
+            .map_err(ConnectionError::MqttState)?;
 
-        self.last_network_action = Instant::now();
-    }
-
-    pub async fn disconnect(&mut self) -> Result<(), ConnectionError> {
-        self.should_connect = false;
+        transport.disconnect()?;
+        self.shared.lock().await.set_connected(None);
         Ok(())
     }
 
@@ -150,7 +149,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             Either3::First(Ok(mut packet)) => {
                 // ### RX future:
                 //
-                // Handle to all incoming packet types by sending ack & waking
+                // Handle all incoming packet types by sending ack & waking
                 // `tx_wakers`.
                 self.last_network_action = Instant::now();
 
@@ -177,8 +176,15 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         // matches their topic_filter.
                         match self.rx_publisher.grant_async(publish.len()).await {
                             Ok(mut grant) => {
-                                // FIXME: Properly handle error instead of `unwrap`
-                                publish.copy_all(grant.deref_mut()).await.unwrap();
+                                publish
+                                    .copy_all(grant.deref_mut())
+                                    .await
+                                    .map_err(|e| match e {
+                                        ReadExactError::UnexpectedEof => {
+                                            StateError::Io(ErrorKind::BrokenPipe)
+                                        }
+                                        ReadExactError::Other(i) => StateError::Io(i.kind()),
+                                    })?;
 
                                 // calling `commit` will wake all subscribers
                                 grant.commit(publish.len());
@@ -214,10 +220,9 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         }
                     }
                     ReceivedPacket::PubAck { pid, .. } => {
-                        let shared_ref = self.shared.lock().await;
-                        let mut shared = shared_ref.borrow_mut();
+                        let mut shared = self.shared.lock().await;
                         debug!("Removing PID {:?} from inflight_pub", pid.get());
-                        if shared.inflight_pub.remove(&pid.get()).is_none() {
+                        if !shared.inflight_pub.remove(&pid.get()) {
                             warn!("Unexpected Puback, PID: {:?}", pid.get());
                         }
                         // TODO: Handle collisions (See rumqttc state.rs)
@@ -225,8 +230,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRel { pid, .. } => {
-                        let shared_ref = self.shared.lock().await;
-                        let mut shared = shared_ref.borrow_mut();
+                        let mut shared = self.shared.lock().await;
                         match shared.incoming_pub.remove(&pid.get()) {
                             true => {
                                 let pubcomp = PubComp { pid };
@@ -240,8 +244,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRec { pid, .. } => {
-                        let shared_ref = self.shared.lock().await;
-                        let mut shared = shared_ref.borrow_mut();
+                        let mut shared = self.shared.lock().await;
                         match shared.inflight_pub.remove(&pid.get()) {
                             Some(_) => {
                                 shared.outgoing_rel.insert(pid.get());
@@ -259,8 +262,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     ReceivedPacket::PubComp { pid, .. } => {
                         // TODO: Handle collisions (See rumqttc state.rs)
 
-                        let shared_ref = self.shared.lock().await;
-                        let mut shared = shared_ref.borrow_mut();
+                        let mut shared = self.shared.lock().await;
                         match shared.outgoing_rel.remove(&pid.get()) {
                             true => {
                                 // self.inflight -= 1;
@@ -272,8 +274,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         }
                     }
                     ReceivedPacket::SubAck { pid, codes, .. } => {
-                        let shared_ref = self.shared.lock().await;
-                        let mut shared = shared_ref.borrow_mut();
+                        let mut shared = self.shared.lock().await;
                         // Pop pid from pending_ack
                         debug!("Received suback: {:?}, {:?}", pid, codes);
 
@@ -291,8 +292,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         shared.wake_tx();
                     }
                     ReceivedPacket::UnsubAck { pid, codes, .. } => {
-                        let shared_ref = self.shared.lock().await;
-                        let mut shared = shared_ref.borrow_mut();
+                        let mut shared = self.shared.lock().await;
 
                         // Pop pid from pending_ack
                         match shared.ack_status.get_mut(&pid.get()) {
@@ -317,8 +317,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                 // retry buffer, before writing the packet to network
                 let (tx_header, packet_bytes) = TxHeader::from_bytes(tx_grant.deref());
 
-                let shared_ref = self.shared.lock().await;
-                let mut shared = shared_ref.borrow_mut();
+                let mut shared = self.shared.lock().await;
 
                 match tx_header.typ {
                     PacketType::Publish => {
@@ -327,7 +326,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                             // FIXME: Properly handle error instead of `unwrap`
                             shared
                                 .inflight_pub
-                                .insert(tx_header.pid.unwrap().get(), Inflight::new(packet_bytes))
+                                .insert(tx_header.pid.unwrap().get())
                                 .unwrap();
                         }
                     }
@@ -359,10 +358,6 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     }
                 };
 
-                if let Some(pid) = tx_header.pid {
-                    shared.outgoing_pid.remove(&pid.get());
-                }
-
                 transport
                     .socket()?
                     .write_all(packet_bytes)
@@ -374,6 +369,10 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     .flush()
                     .await
                     .map_err(|e| StateError::Io(e.kind()))?;
+
+                if let Some(pid) = tx_header.pid {
+                    shared.outgoing_pid.remove(&pid.get());
+                }
 
                 shared.wake_tx();
 
@@ -424,7 +423,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             username: None,
             password: None,
             #[cfg(feature = "mqttv5")]
-            properties: crate::encoding::Properties::Slice(&[]),
+            properties: crate::encoding::Properties::Slice(&[Property::SessionExpiryInterval(600)]),
         };
 
         if self.clean_start {
@@ -437,7 +436,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
         self.packet_buf
             .write_packet(transport, connect)
             .await
-            .map_err(|e| ConnectionError::MqttState(e))?;
+            .map_err(ConnectionError::MqttState)?;
 
         self.last_network_action = Instant::now();
 
@@ -453,7 +452,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                 reason_code,
                 session_present,
                 #[cfg(feature = "mqttv5")]
-                    properties: _,
+                properties,
             } if reason_code.success() => {
                 if self.clean_start {
                     debug!("Connected! Reusing existing session: {}", session_present);
@@ -461,16 +460,46 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     debug!("Reconnected! Reusing existing session: {}", session_present);
                 }
 
-                // TODO: If the Server returns a Server Keep Alive on the
-                // CONNACK packet, the Client MUST use that value instead of the
-                // value it sent as the Keep Alive
                 self.clean_start = false;
                 self.connect_attempts = 0;
 
+                #[cfg(feature = "mqttv5")]
+                for prop in properties.iter() {
+                    match prop {
+                        Ok(Property::ServerKeepAlive(keep_alive)) => {
+                            self.config.keepalive_interval = self
+                                .config
+                                .keepalive_interval
+                                .min(Duration::from_secs(keep_alive as u64));
+                        }
+                        Ok(Property::MaximumQoS(qos)) => {
+                            self.config.max_qos = self
+                                .config
+                                .max_qos
+                                .max(QoS::try_from(qos).unwrap_or(QoS::AtLeastOnce));
+                        }
+                        _ => (),
+                    }
+                }
+
                 Ok(session_present)
             }
-            ReceivedPacket::ConnAck { reason_code, .. } => {
-                debug!("Connection refused! reason: {:?}", reason_code);
+            ReceivedPacket::ConnAck {
+                reason_code,
+                properties,
+                ..
+            } => {
+                error!("Connection refused! reason code: {:?}", reason_code);
+
+                #[cfg(feature = "mqttv5")]
+                for prop in properties.iter() {
+                    match prop {
+                        Ok(Property::ReasonString(reason)) => {
+                            error!(" => {}", reason);
+                        }
+                        _ => (),
+                    }
+                }
                 Err(ConnectionError::ConnectionRefused)
             }
             _ => Err(ConnectionError::NotConnAck),
@@ -502,10 +531,10 @@ mod tests {
         type Connection<'a>
 	         = MockSocket where Self: 'a;
 
-        async fn connect<'a>(
-            &'a self,
+        async fn connect(
+            &self,
             _remote: embedded_nal_async::SocketAddr,
-        ) -> Result<Self::Connection<'a>, Self::Error> {
+        ) -> Result<Self::Connection<'_>, Self::Error> {
             Ok(MockSocket)
         }
     }
@@ -566,23 +595,20 @@ mod tests {
                 .unwrap();
 
             while let Some(message) = subscription.next().await {
-                match message.topic_name() {
-                    "ABC" => {
-                        client
-                            .publish(Publish {
-                                dup: false,
-                                qos: QoS::AtLeastOnce,
-                                pid: None,
-                                retain: false,
-                                topic_name: "ABC",
-                                payload: b"",
-                                properties: crate::encoding::Properties::Slice(&[]),
-                            })
-                            .await
-                            .unwrap();
-                        break;
-                    }
-                    _ => {}
+                if let "ABC" = message.topic_name() {
+                    client
+                        .publish(Publish {
+                            dup: false,
+                            qos: QoS::AtLeastOnce,
+                            pid: None,
+                            retain: false,
+                            topic_name: "ABC",
+                            payload: b"",
+                            properties: crate::encoding::Properties::Slice(&[]),
+                        })
+                        .await
+                        .unwrap();
+                    break;
                 }
             }
         };
@@ -628,23 +654,20 @@ mod tests {
 
             let mut subscription_a = client.subscribe::<1>(subscribe_a).await.unwrap();
             while let Some(message) = subscription_a.next().await {
-                match message.topic_name() {
-                    "ABC" => {
-                        client
-                            .publish(Publish {
-                                dup: false,
-                                qos: QoS::AtLeastOnce,
-                                pid: None,
-                                retain: false,
-                                topic_name: "CDE",
-                                payload: b"",
-                                properties: crate::encoding::Properties::Slice(&[]),
-                            })
-                            .await
-                            .unwrap();
-                        break;
-                    }
-                    _ => {}
+                if let "ABC" = message.topic_name() {
+                    client
+                        .publish(Publish {
+                            dup: false,
+                            qos: QoS::AtLeastOnce,
+                            pid: None,
+                            retain: false,
+                            topic_name: "CDE",
+                            payload: b"",
+                            properties: crate::encoding::Properties::Slice(&[]),
+                        })
+                        .await
+                        .unwrap();
+                    break;
                 }
             }
         };
@@ -661,23 +684,20 @@ mod tests {
             let mut subscription_b = client.subscribe::<1>(subscribe_b).await.unwrap();
 
             while let Some(message) = subscription_b.next().await {
-                match message.topic_name() {
-                    "CDE" => {
-                        client
-                            .publish(Publish {
-                                dup: false,
-                                qos: QoS::AtLeastOnce,
-                                pid: None,
-                                retain: false,
-                                topic_name: "ABC",
-                                payload: b"",
-                                properties: crate::encoding::Properties::Slice(&[]),
-                            })
-                            .await
-                            .unwrap();
-                        break;
-                    }
-                    _ => {}
+                if let "CDE" = message.topic_name() {
+                    client
+                        .publish(Publish {
+                            dup: false,
+                            qos: QoS::AtLeastOnce,
+                            pid: None,
+                            retain: false,
+                            topic_name: "ABC",
+                            payload: b"",
+                            properties: crate::encoding::Properties::Slice(&[]),
+                        })
+                        .await
+                        .unwrap();
+                    break;
                 }
             }
         };

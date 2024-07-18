@@ -11,7 +11,7 @@ pub enum Error {
     MalformedPacket,
     /// Not enough space in the write buffer.
     ///
-    /// It is the caller's responsiblity to pass a big enough buffer to `encode()`.
+    /// It is the caller's responsibility to pass a big enough buffer to `encode()`.
     BufferSize,
     BadIdentifier(u16),
     Unacknowledged,
@@ -69,7 +69,7 @@ impl core::fmt::Display for StateError {
             Self::CollisionTimeout => write!(f, "Timeout while waiting to resolve collision"),
             Self::EmptySubscription => write!(f, "A Subscribe packet must contain atleast one filter"),
             Self::Deserialization => write!(f, "Mqtt serialization/deserialization error"),
-            Self::OutgoingPacketTooLarge { pkt_size, max} => write!(f, "Cannot recieve packet of size '{pkt_size:?}'. It's greater than the client's maximum packet size of: '{max:?}'"),
+            Self::OutgoingPacketTooLarge { pkt_size, max} => write!(f, "Cannot receive packet of size '{pkt_size:?}'. It's greater than the client's maximum packet size of: '{max:?}'"),
         }
     }
 }
@@ -86,7 +86,7 @@ impl defmt::Format for StateError {
             Self::CollisionTimeout => defmt::write!(f, "Timeout while waiting to resolve collision"),
             Self::EmptySubscription => defmt::write!(f, "A Subscribe packet must contain atleast one filter"),
             Self::Deserialization => defmt::write!(f, "Mqtt serialization/deserialization error"),
-            Self::OutgoingPacketTooLarge { pkt_size, max} => defmt::write!(f, "Cannot recieve packet of size '{:?}'. It's greater than the client's maximum packet size of: '{:?}'", pkt_size, max),
+            Self::OutgoingPacketTooLarge { pkt_size, max} => defmt::write!(f, "Cannot receive packet of size '{:?}'. It's greater than the client's maximum packet size of: '{:?}'", pkt_size, max),
         }
     }
 }

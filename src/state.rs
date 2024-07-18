@@ -1,18 +1,16 @@
 use core::task::Context;
 
-use embassy_sync::waitqueue::MultiWakerRegistration;
-use embassy_time::Instant;
+use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
 use heapless::{FnvIndexMap, IndexMap};
 
+use crate::crate_config::{MAX_INFLIGHT, MAX_SUB_TOPICS_PER_MSG};
 use crate::encoding::Pid;
-
-const MAX_INFLIGHT: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum AckStatus {
     AwaitingSubAck,
     AwaitingUnsubAck,
-    Acked(heapless::Vec<u8, 10>),
+    Acked(heapless::Vec<u8, MAX_SUB_TOPICS_PER_MSG>),
 }
 
 pub struct Shared<const SUBS: usize> {
@@ -21,8 +19,17 @@ pub struct Shared<const SUBS: usize> {
 
     tx_waker: MultiWakerRegistration<MAX_INFLIGHT>,
 
+    pub(crate) connection_waker: WakerRegistration,
+
+    /// Whether we are currently connected to the broker.
+    ///
+    /// - `Some(true)` if using an existing session
+    /// - `Some(false)` if using an clean session
+    /// - `None` if disconnected
+    pub(crate) connected: Option<bool>,
+
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) inflight_pub: FnvIndexMap<u16, Inflight<4>, MAX_INFLIGHT>,
+    pub(crate) inflight_pub: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
     pub(crate) ack_status: FnvIndexMap<u16, AckStatus, SUBS>,
     pub(crate) outgoing_pid: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
 
@@ -42,7 +49,10 @@ impl<const SUBS: usize> Shared<SUBS> {
 
             tx_waker: MultiWakerRegistration::new(),
 
-            inflight_pub: IndexMap::new(),
+            connection_waker: WakerRegistration::new(),
+            connected: None,
+
+            inflight_pub: heapless::IndexSet::new(),
             ack_status: IndexMap::new(),
             outgoing_pid: heapless::IndexSet::new(),
 
@@ -65,43 +75,9 @@ impl<const SUBS: usize> Shared<SUBS> {
     pub fn wake_tx(&mut self) {
         self.tx_waker.wake()
     }
-}
 
-/// Client publication message data.
-#[derive(Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub(crate) struct Inflight<const L: usize> {
-    /// A publish of non-zero QoS.
-    publish: heapless::Vec<u8, L>,
-    /// A timestmap used for retry and expiry.
-    last_touch: Instant,
-}
-
-impl<const L: usize> Inflight<L> {
-    pub(crate) fn new(publish: &[u8]) -> Self {
-        // assert!(
-        //     !matches!(
-        //         decoder::Header::new(publish[0]).unwrap().qos,
-        //         crate::QoS::AtMostOnce
-        //     ),
-        //     "Only non-zero QoSs are allowed."
-        // );
-        Self {
-            publish: heapless::Vec::from_slice(&[]).unwrap(),
-            last_touch: Instant::now(),
-        }
+    pub fn set_connected(&mut self, connected: Option<bool>) {
+        self.connected = connected;
+        self.connection_waker.wake();
     }
-
-    pub(crate) fn update_last_touch(&mut self) {
-        self.last_touch = Instant::now();
-    }
-}
-
-impl<const L: usize> Inflight<L> {
-    // pub(crate) fn packet<'b>(&'b mut self, pid: u16) -> Result<&'b [u8], StateError> {
-    //     let pid = pid.try_into().map_err(|_| StateError::PayloadEncoding)?;
-    //     let mut packet = SerializedPacket(self.publish.as_mut());
-    //     packet.set_pid(pid)?;
-    //     Ok(packet.to_inner())
-    // }
 }

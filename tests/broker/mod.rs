@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use rumqttd::{Broker, Config, ConnectionSettings, RouterConfig, ServerSettings};
 
+#[allow(dead_code)]
 pub enum MqttVersion {
     V4,
     V5,
@@ -65,11 +66,13 @@ pub fn start_broker(version: MqttVersion) {
         }
     };
 
-    let mut router = RouterConfig::default();
-    router.max_connections = 10010;
-    router.max_outgoing_packet_count = 200;
-    router.max_segment_size = 104857600;
-    router.max_segment_count = 10;
+    let router = RouterConfig {
+        max_connections: 10010,
+        max_outgoing_packet_count: 200,
+        max_segment_size: 104857600,
+        max_segment_count: 10,
+        ..Default::default()
+    };
 
     let config = Config {
         id: 0,

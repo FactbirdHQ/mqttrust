@@ -20,7 +20,7 @@ impl<const N: usize> MultiWakerRegistration<N> {
     }
 
     /// Register a waker.
-    pub fn register<'a>(&self, w: &'a Waker) {
+    pub fn register(&self, w: &Waker) {
         self.wakers.lock(|inner| {
             let mut wakers = inner.borrow_mut();
 

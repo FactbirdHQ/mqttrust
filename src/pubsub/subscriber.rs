@@ -124,7 +124,7 @@ where
     }
 
     /// Obtains two disjoint slices, which are each contiguous of committed bytes.
-    /// Combined these contain all previously commited data.
+    /// Combined these contain all previously committed data.
     pub fn split_read(&mut self) -> Result<SplitGrantR<'a, B, SUBS>> {
         self.split_read_with_context(None)
     }

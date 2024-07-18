@@ -11,15 +11,16 @@ TODO:
 - [x] `embedded-tls` support
 - [x] Plug-able transport layer
 - [x] Deferred publish payload
+- [x] Allow client to await connected state
 - [ ] Automatically drop packet if all subscribers touched it in `PubSub`
-- [ ] Check subscribe reason code in SubAck packets
+- [x] Check subscribe reason code in SubAck packets
 - [ ] Framed inflight buffer
 - [ ] Republish
 - [ ] Plug-able persistence layer
 - [x] MQTTv5 Properties
 - [ ] Packet builders?
 - [ ] Error handling
-- [ ] Setup integration tests & CI
+- [x] Setup integration tests & CI
 - [ ] Logging
 - [ ] Docs
 - [ ] TEST & Evaluate!

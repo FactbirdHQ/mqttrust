@@ -162,7 +162,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
         // there are 0 bytes available.
 
         // The header consists of a single usize, encoded in native
-        // endianess order
+        // endianness order
         let frame_len = decode_usize(&grant_r);
         let hdr_len = decoded_len(grant_r[0]);
         let total_len = frame_len + hdr_len;
@@ -184,7 +184,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
             Err(Error::MaximumSubscribersReached)
         } else {
             atomic::fetch_add(&self.subscriber_count, 1, AcqRel);
-            Ok(Subscriber::new(&self))
+            Ok(Subscriber::new(self))
         }
     }
 
@@ -196,7 +196,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
             Err(Error::MaximumSubscribersReached)
         } else {
             atomic::fetch_add(&self.subscriber_count, 1, AcqRel);
-            Ok(FrameSubscriber::new(&self))
+            Ok(FrameSubscriber::new(self))
         }
     }
 
@@ -216,7 +216,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
             core::ptr::write_bytes(mu_ptr.as_mut_ptr(), 0, mu_ptr.len());
         }
 
-        Ok(Publisher::new(&self))
+        Ok(Publisher::new(self))
     }
 
     /// Create a new `Publisher`.
@@ -235,7 +235,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
             core::ptr::write_bytes(mu_ptr.as_mut_ptr(), 0, mu_ptr.len());
         }
 
-        Ok(FramePublisher::new(&self))
+        Ok(FramePublisher::new(self))
     }
 }
 
@@ -245,7 +245,7 @@ impl<'a, const SUBS: usize> PubSubChannel<SliceBufferProvider<'a>, SUBS> {
     }
 }
 
-impl<'a, const N: usize, const SUBS: usize> PubSubChannel<StaticBufferProvider<N>, SUBS> {
+impl<const N: usize, const SUBS: usize> PubSubChannel<StaticBufferProvider<N>, SUBS> {
     pub const fn new_static() -> Self {
         Self {
             capacity: N,
@@ -366,10 +366,10 @@ mod tests {
         let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
 
         let mut last_tx = Instant::now();
-        let mut last_rx = last_tx.clone();
-        let start_time = last_tx.clone();
+        let mut last_rx = last_tx;
+        let start_time = last_tx;
 
-        let tx_thr = spawn(move || {
+        let tx_thread = spawn(move || {
             let mut txd_ct = 0;
             let mut txd_ivl = 0;
 
@@ -406,11 +406,11 @@ mod tests {
             }
         });
 
-        let rx_thr = spawn(move || {
+        let rx_thread = spawn(move || {
             let mut rxd_ct = 0;
             let mut rxd_ivl = 0;
 
-            for (_idx, i) in data_rx.drain(..).enumerate() {
+            for i in data_rx.drain(..) {
                 'inner: loop {
                     if last_rx.elapsed() > TIMEOUT_NODATA {
                         panic!("rx timeout, iter {}", i);
@@ -447,8 +447,8 @@ mod tests {
             }
         });
 
-        tx_thr.join().unwrap();
-        rx_thr.join().unwrap();
+        tx_thread.join().unwrap();
+        rx_thread.join().unwrap();
     }
 
     #[test]
@@ -459,10 +459,10 @@ mod tests {
         let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
 
         let mut last_tx = Instant::now();
-        let mut last_rx = last_tx.clone();
-        let start_time = last_tx.clone();
+        let mut last_rx = last_tx;
+        let start_time = last_tx;
 
-        let tx_thr = spawn(move || {
+        let tx_thread = spawn(move || {
             let mut txd_ct = 0;
             let mut txd_ivl = 0;
 
@@ -471,29 +471,26 @@ mod tests {
                     if last_tx.elapsed() > TIMEOUT_NODATA {
                         panic!("tx timeout, iter {}", i);
                     }
-                    match tx.grant_exact(1) {
-                        Ok(mut gr) => {
-                            gr[0] = (i & 0xFF) as u8;
-                            gr.commit(1);
+                    if let Ok(mut gr) = tx.grant_exact(1) {
+                        gr[0] = (i & 0xFF) as u8;
+                        gr.commit(1);
 
-                            // Update tracking
-                            last_tx = Instant::now();
-                            txd_ct += 1;
-                            if (txd_ct / RPT_IVAL) > txd_ivl {
-                                txd_ivl = txd_ct / RPT_IVAL;
+                        // Update tracking
+                        last_tx = Instant::now();
+                        txd_ct += 1;
+                        if (txd_ct / RPT_IVAL) > txd_ivl {
+                            txd_ivl = txd_ct / RPT_IVAL;
 
-                                println!("{:?} - sctx: {}", start_time.elapsed(), txd_ct);
-                            }
-
-                            break 'inner;
+                            println!("{:?} - sctx: {}", start_time.elapsed(), txd_ct);
                         }
-                        Err(_) => {}
+
+                        break 'inner;
                     }
                 }
             }
         });
 
-        let rx_thr = spawn(move || {
+        let rx_thread = spawn(move || {
             let mut rxd_ct = 0;
             let mut rxd_ivl = 0;
 
@@ -543,8 +540,8 @@ mod tests {
             }
         });
 
-        tx_thr.join().unwrap();
-        rx_thr.join().unwrap();
+        tx_thread.join().unwrap();
+        rx_thread.join().unwrap();
     }
 
     #[test]
@@ -565,10 +562,10 @@ mod tests {
         println!("SCGM: Starting Test...");
 
         let mut last_tx = Instant::now();
-        let mut last_rx = last_tx.clone();
-        let start_time = last_tx.clone();
+        let mut last_rx = last_tx;
+        let start_time = last_tx;
 
-        let tx_thr = spawn(move || {
+        let tx_thread = spawn(move || {
             let mut txd_ct = 0;
             let mut txd_ivl = 0;
 
@@ -579,35 +576,32 @@ mod tests {
                     if last_tx.elapsed() > TIMEOUT_NODATA {
                         panic!("tx timeout");
                     }
-                    match tx.grant_max_remaining(
+                    if let Ok(mut gr) = tx.grant_max_remaining(
                         trng.gen_range((QUEUE_SIZE / 3)..((2 * QUEUE_SIZE) / 3)),
                     ) {
-                        Ok(mut gr) => {
-                            let sz = ::std::cmp::min(data_tx.len(), gr.len());
-                            for i in 0..sz {
-                                gr[i] = data_tx.pop().unwrap();
-                            }
-
-                            // Update tracking
-                            last_tx = Instant::now();
-                            txd_ct += sz;
-                            if (txd_ct / RPT_IVAL) > txd_ivl {
-                                txd_ivl = txd_ct / RPT_IVAL;
-
-                                println!("{:?} - scgmtx: {}", start_time.elapsed(), txd_ct);
-                            }
-
-                            let len = gr.len();
-                            gr.commit(len);
-                            break 'inner;
+                        let sz = ::std::cmp::min(data_tx.len(), gr.len());
+                        for i in 0..sz {
+                            gr[i] = data_tx.pop().unwrap();
                         }
-                        Err(_) => {}
+
+                        // Update tracking
+                        last_tx = Instant::now();
+                        txd_ct += sz;
+                        if (txd_ct / RPT_IVAL) > txd_ivl {
+                            txd_ivl = txd_ct / RPT_IVAL;
+
+                            println!("{:?} - scgmtx: {}", start_time.elapsed(), txd_ct);
+                        }
+
+                        let len = gr.len();
+                        gr.commit(len);
+                        break 'inner;
                     }
                 }
             }
         });
 
-        let rx_thr = spawn(move || {
+        let rx_thread = spawn(move || {
             let mut rxd_ct = 0;
             let mut rxd_ivl = 0;
 
@@ -650,7 +644,7 @@ mod tests {
             }
         });
 
-        tx_thr.join().unwrap();
-        rx_thr.join().unwrap();
+        tx_thread.join().unwrap();
+        rx_thread.join().unwrap();
     }
 }
