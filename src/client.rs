@@ -122,6 +122,30 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             packet.to_buffer(&mut encoder).ok();
             let used = encoder.used_size();
             grant.commit(used);
+
+            match packet.packet_type() {
+                0x30 => {
+                    //Publish
+                    if packet.get_qos() != Some(QoS::AtMostOnce) {
+                        debug!("[Publish] Inserting {:?} into inflight_pub", pid);
+                        // FIXME: Properly handle error instead of `unwrap`
+                        shared.inflight_pub.insert(pid.into()).unwrap();
+                    }
+                }
+                0x80 => {
+                    //Subscribe
+                    debug!("[Subscribe] Inserting {:?} into pending_ack", pid);
+                    // FIXME: Properly handle error instead of `unwrap`
+                    shared
+                        .ack_status
+                        .insert(pid.into(), AckStatus::AwaitingSubAck)
+                        .unwrap();
+                }
+                pt => {
+                    debug!("GOT PACKET TYPE = {}", pt);
+                }
+            }
+
             shared
                 .outgoing_pid
                 .insert(pid.get())
@@ -271,7 +295,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
 ///     '#' - Matches all subsequent fields (must be last field in filter)
 ///
 /// It can be used to match against topics.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TopicFilter {
     filter: heapless::String<{ MAX_TOPIC_LEN }>,
@@ -420,6 +444,25 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
                 .iter()
                 .map(|f| f.filter())
                 .collect::<heapless::Vec<_, MAX_TOPICS>>();
+
+            // FIXME: Properly handle error instead of `unwrap`
+            if let Ok(mut shared) = self.client.shared.try_lock() {
+                debug!("[Unsubscribe] Inserting {:?} into pending_ack", pid);
+
+                shared
+                    .ack_status
+                    .insert(
+                        pid.into(),
+                        AckStatus::AwaitingUnsubAck(
+                            // This is "safe" to unwrap as this is checked before subscribing:
+                            // const { core::assert!(MAX_TOPICS <= crate::crate_config::MAX_SUB_TOPICS_PER_MSG) };
+                            heapless::Vec::try_from(self.topic_filters.as_slice()).unwrap(),
+                        ),
+                    )
+                    .unwrap();
+            } else {
+                error!("Could not lock client shared to insert AwaitingUnSubAck");
+            }
 
             let packet = Unsubscribe {
                 pid: Some(pid),

@@ -7,6 +7,7 @@ use embassy_time::{Instant, Timer};
 use embedded_io_async::{Error as _, ReadExactError};
 use embedded_io_async::{ErrorKind, Write as _};
 
+use crate::client::TopicFilter;
 use crate::Property;
 use crate::{
     config::Config,
@@ -72,13 +73,14 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
             if !transport.is_connected() {
                 self.shared.lock().await.set_connected(None);
 
-                match embassy_time::with_timeout(self.config.connect_timeout, async {
+                let result = embassy_time::with_timeout(self.config.connect_timeout, async {
                     transport.connect(&mut self.config.broker).await?;
 
                     self.connect_mqtt(transport).await
                 })
-                .await
-                {
+                .await;
+
+                match result {
                     Ok(Ok(session_present)) => {
                         self.shared
                             .lock()
@@ -169,30 +171,59 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                     }
                     ReceivedPacket::Publish {
                         qos_pid,
+                        topic_name,
                         ref mut publish,
                     } => {
                         // Handle incoming `Publish` type packets by copying the full
                         // packet to any `shared.rx_publisher` buffers where topic
                         // matches their topic_filter.
-                        match self.rx_publisher.grant_async(publish.len()).await {
-                            Ok(mut grant) => {
-                                publish
-                                    .copy_all(grant.deref_mut())
-                                    .await
-                                    .map_err(|e| match e {
-                                        ReadExactError::UnexpectedEof => {
-                                            StateError::Io(ErrorKind::BrokenPipe)
-                                        }
-                                        ReadExactError::Other(i) => StateError::Io(i.kind()),
-                                    })?;
 
-                                // calling `commit` will wake all subscribers
-                                grant.commit(publish.len());
+                        // If the incomming topic mathces any of the topicfilters in AwaitingUnsubAck
+                        // ignore them, as there will be no subscribers to remove them from the queue again
+                        // The topic filters will be added to AwaitingUnSubAck when drop is called on Subscription
+
+                        let mut ignore_message = false;
+
+                        let shared = self.shared.lock().await;
+                        let iter = shared.ack_status.iter();
+
+                        for (_, status) in iter {
+                            let AckStatus::AwaitingUnsubAck(filters) = status else {
+                                continue;
+                            };
+
+                            for filter in filters {
+                                if filter.is_match(topic_name) {
+                                    error!("Got MSG on Publish but the topic: {} matched a topic in AwaitingUnSubAck: {}", topic_name, filter.filter());
+                                    ignore_message = true;
+                                }
                             }
-                            Err(_) => {
-                                error!(
-                                    "Packet is larger than the storage allocated in `rx_publisher`"
-                                );
+                        }
+
+                        // Shared is dropped as we don't want to hold on to the lock while awaiting below.
+                        // Not dropping shared caused
+                        drop(shared);
+
+                        if !ignore_message {
+                            match self.rx_publisher.grant_async(publish.len()).await {
+                                Ok(mut grant) => {
+                                    publish.copy_all(grant.deref_mut()).await.map_err(
+                                        |e| match e {
+                                            ReadExactError::UnexpectedEof => {
+                                                StateError::Io(ErrorKind::BrokenPipe)
+                                            }
+                                            ReadExactError::Other(i) => StateError::Io(i.kind()),
+                                        },
+                                    )?;
+
+                                    // calling `commit` will wake all subscribers
+                                    grant.commit(publish.len());
+                                }
+                                Err(_) => {
+                                    error!(
+                                        "Packet is larger than the storage allocated in `rx_publisher`"
+                                    );
+                                }
                             }
                         }
 
@@ -296,7 +327,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
 
                         // Pop pid from pending_ack
                         match shared.ack_status.get_mut(&pid.get()) {
-                            Some(status) if *status == AckStatus::AwaitingUnsubAck => {
+                            Some(status) if matches!(*status, AckStatus::AwaitingUnsubAck(_)) => {
                                 *status =
                                     AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap())
                             }
@@ -318,45 +349,6 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                 let (tx_header, packet_bytes) = TxHeader::from_bytes(tx_grant.deref());
 
                 let mut shared = self.shared.lock().await;
-
-                match tx_header.typ {
-                    PacketType::Publish => {
-                        if tx_header.qos != Some(QoS::AtMostOnce) {
-                            debug!("[Publish] Inserting {:?} into inflight_pub", tx_header.pid);
-                            // FIXME: Properly handle error instead of `unwrap`
-                            shared
-                                .inflight_pub
-                                .insert(tx_header.pid.unwrap().get())
-                                .unwrap();
-                        }
-                    }
-                    PacketType::Subscribe => {
-                        debug!("[Subscribe] Inserting {:?} into pending_ack", tx_header.pid);
-                        // FIXME: Properly handle error instead of `unwrap`
-                        shared
-                            .ack_status
-                            .insert(tx_header.pid.unwrap().get(), AckStatus::AwaitingSubAck)
-                            .unwrap();
-                    }
-                    PacketType::Unsubscribe => {
-                        debug!(
-                            "[Unsubscribe] Inserting {:?} into pending_ack",
-                            tx_header.pid
-                        );
-                        // FIXME: Properly handle error instead of `unwrap`
-                        shared
-                            .ack_status
-                            .insert(tx_header.pid.unwrap().get(), AckStatus::AwaitingUnsubAck)
-                            .unwrap();
-                    }
-                    e => {
-                        // Request has invalid header? This should never be possible!
-                        // Just log an error, drop the full request packet, and continue handling next packet
-
-                        error!("TX Packet has invalid header?! Dropping packet {:?}", e);
-                        return Ok(());
-                    }
-                };
 
                 transport
                     .socket()?

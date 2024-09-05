@@ -3,13 +3,17 @@ use core::task::Context;
 use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
 use heapless::{FnvIndexMap, IndexMap};
 
+use crate::client::TopicFilter;
 use crate::crate_config::{MAX_INFLIGHT, MAX_SUB_TOPICS_PER_MSG};
 use crate::encoding::Pid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// Fixme: The Vec in AwaitingUnsubAck is used to hold a list of topics that we are about to unsubcribe to.
+// If we receive any msg on those topics while in AwaitingUnsubAck state we have to discard the message.
+// This could be handled differently and save MAX_SUB_TOPICS_PER_MSG * Topicfilter in RAM
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AckStatus {
     AwaitingSubAck,
-    AwaitingUnsubAck,
+    AwaitingUnsubAck(heapless::Vec<TopicFilter, MAX_SUB_TOPICS_PER_MSG>),
     Acked(heapless::Vec<u8, MAX_SUB_TOPICS_PER_MSG>),
 }
 

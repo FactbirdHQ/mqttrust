@@ -36,6 +36,7 @@ pub(crate) enum ReceivedPacket<'a, R: Read> {
     },
     Publish {
         qos_pid: QosPid,
+        topic_name: &'a str,
         publish: PartialPublish<'a, R>,
     },
     PubAck {
@@ -172,7 +173,7 @@ impl<'a, R: Read> ReceivedPacket<'a, R> {
                 }
             }
             PacketType::Publish => {
-                let _topic_name = decoder.read_str()?;
+                let topic_name = decoder.read_str()?;
 
                 let qos_pid = match header.qos {
                     QoS::AtMostOnce => QosPid::AtMostOnce,
@@ -185,13 +186,14 @@ impl<'a, R: Read> ReceivedPacket<'a, R> {
                     "{:?}: {} bytes [{:?}]",
                     qos_pid,
                     decoder.packet_len(),
-                    _topic_name
+                    topic_name
                 );
 
                 let buf_len = core::cmp::min(decoder.packet_len(), buf.len());
 
                 Self::Publish {
                     qos_pid,
+                    topic_name,
                     publish: PartialPublish::new(&buf[..buf_len], decoder.packet_len(), reader),
                 }
             }
