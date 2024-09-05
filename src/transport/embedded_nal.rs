@@ -6,25 +6,28 @@ use super::Transport;
 use crate::{error::ConnectionError, Broker, StateError};
 
 // embedded-nal-async Transport
-pub struct NalTransport<'a, N: TcpConnect> {
+pub struct NalTransport<'a, N: TcpConnect, B: Broker> {
     network: &'a N,
+    broker: B,
     socket: Option<N::Connection<'a>>,
 }
 
-impl<'a, N: TcpConnect> NalTransport<'a, N> {
-    pub fn new(network: &'a N) -> Self {
+impl<'a, N: TcpConnect, B: Broker> NalTransport<'a, N, B> {
+    pub fn new(network: &'a N, broker: B) -> Self {
         Self {
             network,
+            broker,
             socket: None,
         }
     }
 }
 
-impl<'a, N: TcpConnect> Transport for NalTransport<'a, N> {
+impl<'a, N: TcpConnect, B: Broker> Transport for NalTransport<'a, N, B> {
     type Socket = N::Connection<'a>;
 
-    async fn connect(&mut self, broker: &mut impl Broker) -> Result<(), ConnectionError> {
-        let addr = broker
+    async fn connect(&mut self) -> Result<(), ConnectionError> {
+        let addr = self
+            .broker
             .get_address()
             .await
             .ok_or(ConnectionError::InvalidAddress)?;

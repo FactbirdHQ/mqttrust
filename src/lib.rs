@@ -67,10 +67,10 @@ struct StateInner<'a, M: RawMutex, const SUBS: usize> {
     pub(crate) shared: Mutex<M, Shared<SUBS>>,
 }
 
-pub fn new<'d, M: RawMutex, B: Broker, const TX: usize, const RX: usize, const SUBS: usize>(
+pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize, const SUBS: usize>(
     state: &'d mut State<M, TX, RX, SUBS>,
-    config: Config<B>,
-) -> (MqttStack<'d, M, B, SUBS>, MqttClient<'d, M, SUBS>) {
+    config: Config,
+) -> (MqttStack<'d, M, SUBS>, MqttClient<'d, M, SUBS>) {
     // safety: this is a self-referential struct, however:
     // - it can't move while the `'d` borrow is active.
     // - when the borrow ends, the dangling references inside the MaybeUninit will never be used again.

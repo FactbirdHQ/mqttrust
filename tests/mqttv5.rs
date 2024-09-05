@@ -29,8 +29,7 @@ async fn mqttv5() {
 
     // Create the MQTT stack
     let broker = IpBroker::new(Ipv4Addr::new(0, 0, 0, 0), 1883);
-    let config =
-        Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
+    let config = Config::new(client_id).keepalive_interval(embassy_time::Duration::from_secs(50));
 
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 2>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 1024, 1024, 2>::new());
@@ -105,7 +104,7 @@ async fn mqttv5() {
         }
     };
 
-    let mut transport = NalTransport::new(network);
+    let mut transport = NalTransport::new(network, broker);
 
     embassy_time::with_timeout(
         embassy_time::Duration::from_secs(55),

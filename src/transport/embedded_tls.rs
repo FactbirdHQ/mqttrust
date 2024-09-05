@@ -12,23 +12,28 @@ use super::Transport;
 
 use crate::{error::ConnectionError, Broker, StateError};
 
-pub struct TlsNalTransport<'a, N: TcpConnect, P, const RX: usize, const TX: usize> {
+pub struct TlsNalTransport<'a, N: TcpConnect, B: Broker, P, const RX: usize, const TX: usize> {
     network: &'a N,
+    broker: B,
     socket: Option<TlsConnection<'a, N, RX, TX>>,
     provider: P,
     tls_state: &'a TlsState<RX, TX>,
     tls_config: &'a TlsConfig<'a>,
 }
 
-impl<'a, N: TcpConnect, P, const RX: usize, const TX: usize> TlsNalTransport<'a, N, P, RX, TX> {
+impl<'a, N: TcpConnect, B: Broker, P, const RX: usize, const TX: usize>
+    TlsNalTransport<'a, N, B, P, RX, TX>
+{
     pub fn new(
         network: &'a N,
+        broker: B,
         tls_state: &'a TlsState<RX, TX>,
         tls_config: &'a TlsConfig<'a>,
         provider: P,
     ) -> Self {
         Self {
             network,
+            broker,
             socket: None,
             provider,
             tls_config,
@@ -40,15 +45,17 @@ impl<'a, N: TcpConnect, P, const RX: usize, const TX: usize> TlsNalTransport<'a,
 impl<
         'a,
         N: TcpConnect,
+        B: Broker,
         P: CryptoProvider<CipherSuite = embedded_tls::Aes128GcmSha256>,
         const RX: usize,
         const TX: usize,
-    > Transport for TlsNalTransport<'a, N, P, RX, TX>
+    > Transport for TlsNalTransport<'a, N, B, P, RX, TX>
 {
     type Socket = TlsConnection<'a, N, RX, TX>;
 
-    async fn connect(&mut self, broker: &mut impl Broker) -> Result<(), ConnectionError> {
-        let addr = broker
+    async fn connect(&mut self) -> Result<(), ConnectionError> {
+        let addr = self
+            .broker
             .get_address()
             .await
             .ok_or(ConnectionError::InvalidAddress)?;
@@ -59,7 +66,7 @@ impl<
             .await
             .map_err(|e| ConnectionError::Io(e.kind()))?;
 
-        debug!("Connected socket to {:?}", broker.get_hostname());
+        debug!("Connected socket to {:?}", self.broker.get_hostname());
 
         let mut socket = TlsConnection::new(socket, self.tls_state).map_err(|e| {
             warn!("Failed tls connection: {:?}", e);

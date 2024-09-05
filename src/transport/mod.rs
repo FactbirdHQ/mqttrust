@@ -6,12 +6,12 @@ pub mod embedded_tls;
 
 use embedded_io_async::{Read, Write};
 
-use crate::{error::ConnectionError, Broker, StateError};
+use crate::{error::ConnectionError, StateError};
 
 pub trait Transport {
     type Socket: Read + Write;
 
-    async fn connect(&mut self, broker: &mut impl Broker) -> Result<(), ConnectionError>;
+    async fn connect(&mut self) -> Result<(), ConnectionError>;
 
     fn disconnect(&mut self) -> Result<(), ConnectionError>;
 
@@ -24,8 +24,8 @@ pub trait Transport {
 impl<T: Transport> Transport for &mut T {
     type Socket = T::Socket;
 
-    async fn connect(&mut self, broker: &mut impl Broker) -> Result<(), ConnectionError> {
-        T::connect(self, broker).await
+    async fn connect(&mut self) -> Result<(), ConnectionError> {
+        T::connect(self).await
     }
 
     fn disconnect(&mut self) -> Result<(), ConnectionError> {

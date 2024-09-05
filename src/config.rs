@@ -6,8 +6,8 @@ use embassy_time::Duration;
 pub type BackoffAlgo = fn(u8) -> Duration;
 
 #[derive(Debug)]
-pub struct Config<Broker> {
-    pub(crate) broker: Broker,
+pub struct Config {
+    // pub(crate) broker: Broker,
     // pub(crate) will: Option<SerializedWill<'a>>,
     pub(crate) client_id: heapless::String<MAX_CLIENT_ID_LEN>,
     pub(crate) keepalive_interval: Duration,
@@ -19,11 +19,10 @@ pub struct Config<Broker> {
     // pub(crate) auth: Option<Auth<'a>>,
 }
 
-impl<Broker> Config<Broker> {
+impl Config {
     /// Construct configuration for the MQTT client.
-    pub fn new(client_id: &str, broker: Broker) -> Self {
+    pub fn new(client_id: &str) -> Self {
         Self {
-            broker,
             client_id: heapless::String::from_str(client_id).unwrap(),
             // auth: None,
             keepalive_interval: Duration::from_secs(59),

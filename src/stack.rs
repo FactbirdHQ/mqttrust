@@ -7,14 +7,13 @@ use embassy_time::{Instant, Timer};
 use embedded_io_async::{Error as _, ReadExactError};
 use embedded_io_async::{ErrorKind, Write as _};
 
-use crate::client::TopicFilter;
 use crate::Property;
 use crate::{
     config::Config,
     encoder::TxHeader,
     encoding::{
-        received_packet::ReceivedPacket, Connect, PacketType, PingReq, Protocol, PubAck, QoS,
-        QosPid, StateError,
+        received_packet::ReceivedPacket, Connect, PingReq, Protocol, PubAck, QoS, QosPid,
+        StateError,
     },
     error::ConnectionError,
     packet::PacketBuffer,
@@ -24,18 +23,18 @@ use crate::{
     },
     state::{AckStatus, Shared},
     transport::Transport,
-    Broker, Disconnect,
+    Disconnect,
 };
 
 #[cfg(feature = "qos2")]
 use crate::encoding::{PubComp, PubRec, PubRel};
 
-pub struct MqttStack<'a, M: RawMutex, B, const SUBS: usize> {
+pub struct MqttStack<'a, M: RawMutex, const SUBS: usize> {
     shared: &'a Mutex<M, Shared<SUBS>>,
     tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
     rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
 
-    config: Config<B>,
+    config: Config,
     packet_buf: PacketBuffer<128>,
 
     last_network_action: Instant,
@@ -45,9 +44,9 @@ pub struct MqttStack<'a, M: RawMutex, B, const SUBS: usize> {
     connect_attempts: u8,
 }
 
-impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
+impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
     pub(crate) fn new(
-        config: Config<B>,
+        config: Config,
         shared: &'a Mutex<M, Shared<SUBS>>,
         tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
         rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
@@ -74,7 +73,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                 self.shared.lock().await.set_connected(None);
 
                 let result = embassy_time::with_timeout(self.config.connect_timeout, async {
-                    transport.connect(&mut self.config.broker).await?;
+                    transport.connect().await?;
 
                     self.connect_mqtt(transport).await
                 })
@@ -178,7 +177,7 @@ impl<'a, M: RawMutex, B: Broker, const SUBS: usize> MqttStack<'a, M, B, SUBS> {
                         // packet to any `shared.rx_publisher` buffers where topic
                         // matches their topic_filter.
 
-                        // If the incomming topic mathces any of the topicfilters in AwaitingUnsubAck
+                        // If the incoming topic matches any of the topicfilters in AwaitingUnsubAck
                         // ignore them, as there will be no subscribers to remove them from the queue again
                         // The topic filters will be added to AwaitingUnSubAck when drop is called on Subscription
 
@@ -553,12 +552,15 @@ mod tests {
     #[tokio::test]
     #[ignore = "Skipped for now"]
     async fn subscribe_publish() {
-        let mut network = crate::transport::embedded_nal::NalTransport::new(&MockNetwork);
+        let mut network = crate::transport::embedded_nal::NalTransport::new(
+            &MockNetwork,
+            IpBroker::new(Ipv4Addr::LOCALHOST, 1883),
+        );
 
         // Create the MQTT stack
         static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
         let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
-        let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
+        let config = Config::new("client_id");
         let (mut stack, client) = crate::new(state, config);
 
         let fut = async {
@@ -612,12 +614,15 @@ mod tests {
     #[tokio::test]
     #[ignore = "Skipped for now"]
     async fn multiple_subscribe() {
-        let mut network = crate::transport::embedded_nal::NalTransport::new(&MockNetwork);
+        let mut network = crate::transport::embedded_nal::NalTransport::new(
+            &MockNetwork,
+            IpBroker::new(Ipv4Addr::LOCALHOST, 1883),
+        );
 
         // Create the MQTT stack
         static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
         let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
-        let config = Config::new("client_id", IpBroker::new(Ipv4Addr::LOCALHOST, 1883));
+        let config = Config::new("client_id");
         let (mut stack, client) = crate::new(state, config);
 
         // Use the MQTT client to subscribe

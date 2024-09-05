@@ -24,7 +24,7 @@ use crate::{
         PubSubChannel, SliceBufferProvider,
     },
     state::{AckStatus, Shared},
-    Properties, ToPayload, Unsubscribe,
+    PacketType, Properties, ToPayload, Unsubscribe,
 };
 
 pub struct MqttClient<'a, M: RawMutex, const SUBS: usize> {
@@ -123,17 +123,15 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             let used = encoder.used_size();
             grant.commit(used);
 
-            match packet.packet_type() {
-                0x30 => {
-                    //Publish
+            match P::PACKET_TYPE {
+                PacketType::Publish => {
                     if packet.get_qos() != Some(QoS::AtMostOnce) {
                         debug!("[Publish] Inserting {:?} into inflight_pub", pid);
                         // FIXME: Properly handle error instead of `unwrap`
                         shared.inflight_pub.insert(pid.into()).unwrap();
                     }
                 }
-                0x80 => {
-                    //Subscribe
+                PacketType::Subscribe => {
                     debug!("[Subscribe] Inserting {:?} into pending_ack", pid);
                     // FIXME: Properly handle error instead of `unwrap`
                     shared
@@ -141,9 +139,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                         .insert(pid.into(), AckStatus::AwaitingSubAck)
                         .unwrap();
                 }
-                pt => {
-                    debug!("GOT PACKET TYPE = {}", pt);
-                }
+                _ => {}
             }
 
             shared
@@ -371,6 +367,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
     Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
 {
     pub async fn next_message(&mut self) -> Option<Message<'a, SUBS>> {
+        // FIXME: Handle unsubscribed from broker by returning `None`
         loop {
             match select(self.subscriber.read_async(), self.client.clean_session()).await {
                 Either::First(grant) => {
@@ -401,12 +398,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures::S
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        // FIXME:
-        // - Handle unsubscribed from broker by returning `Poll::Ready(None)`
-        // let fut = self.next_message();
-        // pin_mut!(fut);
-        // futures::Future::poll(fut, cx)
-
+        // FIXME: Handle unsubscribed from broker by returning `Poll::Ready(None)`
         if let Some(grant) = self.subscriber.read_with_context(Some(cx)) {
             if let Some(mut msg) = Message::try_new(grant) {
                 if self
@@ -436,8 +428,6 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
             Pid::new()
         };
 
-        // FIXME: Error handling and unsubscribe guarantee & unsuback? basically
-        // async drop? Might be possible to handle using persistence layer?
         if let Ok(mut tx_prod) = self.client.tx_publisher.try_lock() {
             let topics = self
                 .topic_filters
@@ -454,8 +444,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
                     .insert(
                         pid.into(),
                         AckStatus::AwaitingUnsubAck(
-                            // This is "safe" to unwrap as this is checked before subscribing:
-                            // const { core::assert!(MAX_TOPICS <= crate::crate_config::MAX_SUB_TOPICS_PER_MSG) };
+                            // # Safety: Checked before subscribing (Assert: MAX_TOPICS <= crate::crate_config::MAX_SUB_TOPICS_PER_MSG)
                             heapless::Vec::try_from(self.topic_filters.as_slice()).unwrap(),
                         ),
                     )

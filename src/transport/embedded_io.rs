@@ -1,6 +1,6 @@
 use embedded_io_async::{Read, Write};
 
-use crate::{error::ConnectionError, Broker};
+use crate::error::ConnectionError;
 
 use super::Transport;
 
@@ -9,7 +9,7 @@ pub struct ConnectedSocketTransport<S>(S);
 impl<S: Read + Write> Transport for ConnectedSocketTransport<S> {
     type Socket = S;
 
-    async fn connect(&mut self, _broker: &mut impl Broker) -> Result<(), ConnectionError> {
+    async fn connect(&mut self) -> Result<(), ConnectionError> {
         Ok(())
     }
 
