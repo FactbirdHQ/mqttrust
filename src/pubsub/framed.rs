@@ -1,50 +1,16 @@
-//! A Framed flavor of BBQueue, useful for variable length packets
+//! A Framed flavor of [`PubSubChannel`], useful for variable length packets
 //!
 //! This module allows for a `Framed` mode of operation,
 //! where a size header is included in each grant, allowing for
-//! "chunks" of data to be passed through a BBQueue, rather than
+//! "chunks" of data to be passed through a [`PubSubChannel`], rather than
 //! just a stream of bytes. This is convenient when receiving
 //! packets of variable sizes.
-//!
-//! ## Example
-//!
-//! ```rust
-//! # // bbqueue test shim!
-//! # fn bbqtest() {
-//! use bbqueue::{BBQueue, StaticBufferProvider};
-//!
-//! let mut bb: BBQueue<StaticBufferProvider<1000>> = BBQueue::new_static();
-//! let mut publisher = pubsub.framed_publisher().unwrap();
-//! let mut subscriber = pubsub.framed_subscriber().unwrap();
-//!
-//! // One frame in, one frame out
-//! let mut wgrant = publisher.grant(128).unwrap();
-//! assert_eq!(wgrant.len(), 128);
-//! for (idx, i) in wgrant.iter_mut().enumerate() {
-//!     *i = idx as u8;
-//! }
-//! wgrant.commit(128);
-//!
-//! let rgrant = subscriber.read().unwrap();
-//! assert_eq!(rgrant.len(), 128);
-//! for (idx, i) in rgrant.iter().enumerate() {
-//!     assert_eq!(*i, idx as u8);
-//! }
-//! rgrant.release();
-//! # // bbqueue test shim!
-//! # }
-//! #
-//! # fn main() {
-//! # #[cfg(not(feature = "thumbv6"))]
-//! # bbqtest();
-//! # }
-//! ```
 //!
 //! ## Frame header
 //!
 //! An internal header is required for each frame stored
-//! inside of the `BBQueue`. This header is never exposed to end
-//! users of the bbqueue library.
+//! inside of the [`PubSubChannel`]. This header is never exposed to end
+//! users of the pubsub library.
 //!
 //! A variable sized integer is used for the header size, and the
 //! size of this header is based on the max size requested for the grant.

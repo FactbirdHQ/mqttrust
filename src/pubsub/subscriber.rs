@@ -3,16 +3,14 @@ use core::mem::{forget, transmute};
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::slice::from_raw_parts_mut;
-use core::sync::atomic::Ordering::{AcqRel, Acquire, Release};
 use core::task::{Context, Poll};
+use portable_atomic::Ordering::{AcqRel, Acquire, Release};
 
 use futures::Future;
 
-use crate::pubsub::atomic;
-
 use super::{BufferProvider, Error, PubSubChannel, Result};
 
-/// `Subscriber` is the primary interface for reading data from a `PubSubState`.
+/// [`Subscriber`] is the primary interface for reading data from a [`PubSubChannel`].
 pub struct Subscriber<'a, B, const SUBS: usize>
 where
     B: BufferProvider,
@@ -34,32 +32,6 @@ where
     /// contain ALL available bytes, if the writer has wrapped around. The
     /// remaining bytes will be available after all readable bytes are
     /// released
-    ///
-    /// ```rust
-    /// # // PubSubState test shim!
-    /// # fn bbqtest() {
-    /// use PubSubState::{PubSubState, StaticBufferProvider};
-    ///
-    /// // Create and split a new buffer of 6 elements
-    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
-    /// let (mut prod, mut cons) = buffer.try_split().unwrap();
-    ///
-    /// // Successfully obtain and commit a grant of four bytes
-    /// let mut grant = prod.grant_max_remaining(4).unwrap();
-    /// assert_eq!(grant.buf().len(), 4);
-    /// grant.commit(4);
-    ///
-    /// // Obtain a read grant
-    /// let mut grant = cons.read().unwrap();
-    /// assert_eq!(grant.buf().len(), 4);
-    /// # // PubSubState test shim!
-    /// # }
-    /// #
-    /// # fn main() {
-    /// # #[cfg(not(feature = "thumbv6"))]
-    /// # bbqtest();
-    /// # }
-    /// ```
     pub fn read(&mut self) -> Result<GrantR<'a, B, SUBS>> {
         self.read_with_context(None)
     }
@@ -70,7 +42,7 @@ where
     ) -> Result<GrantR<'a, B, SUBS>> {
         let inner = self.channel;
 
-        if atomic::swap(&inner.read_in_progress, true, AcqRel) {
+        if inner.read_in_progress.swap(true, AcqRel) {
             if let Some(cx) = cx {
                 inner.subscriber_wakers.register(cx.waker());
             }
@@ -135,7 +107,7 @@ where
     ) -> Result<SplitGrantR<'a, B, SUBS>> {
         let inner = self.channel;
 
-        if atomic::swap(&inner.read_in_progress, true, AcqRel) {
+        if inner.read_in_progress.swap(true, AcqRel) {
             if let Some(cx) = cx {
                 inner.subscriber_wakers.register(cx.waker());
             }
@@ -209,7 +181,7 @@ where
 {
     fn drop(&mut self) {
         let inner = self.channel;
-        atomic::fetch_sub(&inner.subscriber_count, 1, AcqRel);
+        inner.subscriber_count.fetch_sub(1, AcqRel);
     }
 }
 
@@ -327,34 +299,6 @@ where
     }
 
     /// Obtain access to the inner buffer for reading
-    ///
-    /// ```
-    /// # // PubSubState test shim!
-    /// # fn bbqtest() {
-    /// use PubSubState::{PubSubState, StaticBufferProvider};
-    ///
-    /// // Create and split a new buffer of 6 elements
-    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
-    /// let (mut prod, mut cons) = buffer.try_split().unwrap();
-    ///
-    /// // Successfully obtain and commit a grant of four bytes
-    /// let mut grant = prod.grant_max_remaining(4).unwrap();
-    /// grant.buf().copy_from_slice(&[1, 2, 3, 4]);
-    /// grant.commit(4);
-    ///
-    /// // Obtain a read grant, and copy to a buffer
-    /// let mut grant = cons.read().unwrap();
-    /// let mut buf = [0u8; 4];
-    /// buf.copy_from_slice(grant.buf());
-    /// assert_eq!(&buf, &[1, 2, 3, 4]);
-    /// # // PubSubState test shim!
-    /// # }
-    /// #
-    /// # fn main() {
-    /// # #[cfg(not(feature = "thumbv6"))]
-    /// # bbqtest();
-    /// # }
-    /// ```
     pub fn buf(&self) -> &[u8] {
         self.buf
     }
@@ -397,7 +341,7 @@ where
         debug_assert!(used <= self.buf.len());
 
         // This should be fine, purely incrementing
-        let _ = atomic::fetch_add(&inner.read, used, Release);
+        let _ = inner.read.fetch_add(used, Release);
 
         inner.read_in_progress.store(false, Release);
 
@@ -431,34 +375,6 @@ where
     }
 
     /// Obtain access to both inner buffers for reading
-    ///
-    /// ```
-    /// # // PubSubState test shim!
-    /// # fn bbqtest() {
-    /// use PubSubState::{PubSubState, StaticBufferProvider};
-    ///
-    /// // Create and split a new buffer of 6 elements
-    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
-    /// let (mut prod, mut cons) = buffer.try_split().unwrap();
-    ///
-    /// // Successfully obtain and commit a grant of four bytes
-    /// let mut grant = prod.grant_max_remaining(4).unwrap();
-    /// grant.buf().copy_from_slice(&[1, 2, 3, 4]);
-    /// grant.commit(4);
-    ///
-    /// // Obtain a read grant, and copy to a buffer
-    /// let mut grant = cons.read().unwrap();
-    /// let mut buf = [0u8; 4];
-    /// buf.copy_from_slice(grant.buf());
-    /// assert_eq!(&buf, &[1, 2, 3, 4]);
-    /// # // PubSubState test shim!
-    /// # }
-    /// #
-    /// # fn main() {
-    /// # #[cfg(not(feature = "thumbv6"))]
-    /// # bbqtest();
-    /// # }
-    /// ```
     pub fn bufs(&self) -> (&[u8], &[u8]) {
         (self.buf1, self.buf2)
     }
@@ -487,7 +403,7 @@ where
 
         if used <= self.buf1.len() {
             // This should be fine, purely incrementing
-            let _ = atomic::fetch_add(&inner.read, used, Release);
+            let _ = inner.read.fetch_add(used, Release);
         } else {
             // Also release parts of the second buffer
             inner.read.store(used - self.buf1.len(), Release);

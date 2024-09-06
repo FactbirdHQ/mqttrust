@@ -2,13 +2,13 @@ use core::cmp::min;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::slice::from_raw_parts_mut;
-use core::sync::atomic::Ordering::{AcqRel, Acquire, Release};
 use core::task::{Context, Poll};
 use futures::Future;
+use portable_atomic::Ordering::{AcqRel, Acquire, Release};
 
-use super::{atomic, BufferProvider, Error, PubSubChannel, Result};
+use super::{BufferProvider, Error, PubSubChannel, Result};
 
-/// `Publisher` is the primary interface for pushing data into a `PubSubState`.
+/// [`Publisher`] is the primary interface for pushing data into a [`PubSubChannel`].
 /// There are various methods for obtaining a grant to write to the buffer, with
 /// different potential tradeoffs. As all grants are required to be a contiguous
 /// range of data, different strategies are sometimes useful when making the decision
@@ -29,9 +29,6 @@ use super::{atomic, BufferProvider, Error, PubSubChannel, Result};
 ///   * This will only cause a wrap to the beginning of the ring if exactly
 ///       zero bytes are available at the end of the ring.
 ///   * Maximum possible waste due to skipping: 0 bytes
-///
-/// See [this github issue](https://github.com/jamesmunns/PubSubState/issues/38) for a
-/// discussion of grant methods that could be added in the future.
 pub struct Publisher<'a, B, const SUBS: usize>
 where
     B: BufferProvider,
@@ -56,31 +53,6 @@ where
     /// This method may cause the buffer to wrap around early if the
     /// requested space is not available at the end of the buffer, but
     /// is available at the beginning
-    ///
-    /// ```rust
-    /// # // PubSubState test shim!
-    /// # fn channeltest() {
-    /// use PubSubState::{PubSubState, StaticBufferProvider};
-    ///
-    /// // Create and split a new buffer of 6 elements
-    /// let buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
-    /// let (mut prod, cons) = buffer.try_split().unwrap();
-    ///
-    /// // Successfully obtain and commit a grant of four bytes
-    /// let mut grant = prod.grant_exact(4).unwrap();
-    /// assert_eq!(grant.buf().len(), 4);
-    /// grant.commit(4);
-    ///
-    /// // Try to obtain a grant of three bytes
-    /// assert!(prod.grant_exact(3).is_err());
-    /// # // PubSubState test shim!
-    /// # }
-    /// #
-    /// # fn main() {
-    /// # #[cfg(not(feature = "thumbv6"))]
-    /// # channeltest();
-    /// # }
-    /// ```
     pub fn grant_exact(&mut self, sz: usize) -> Result<GrantW<'a, B, SUBS>> {
         self.grant_exact_with_context(sz, None)
     }
@@ -92,7 +64,7 @@ where
     ) -> Result<GrantW<'a, B, SUBS>> {
         let inner = self.channel;
 
-        if atomic::swap(&inner.write_in_progress, true, AcqRel) {
+        if inner.write_in_progress.swap(true, AcqRel) {
             if let Some(cx) = cx {
                 inner.publisher_waker.register(cx.waker());
             }
@@ -161,38 +133,6 @@ where
     /// wrapping, then a grant will be given for the remaining size at the
     /// end of the buffer. If no space is available for writing, an error
     /// will be returned.
-    ///
-    /// ```
-    /// # // PubSubState test shim!
-    /// # fn channeltest() {
-    /// use PubSubState::{PubSubState, StaticBufferProvider};
-    ///
-    /// // Create and split a new buffer of 6 elements
-    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
-    /// let (mut prod, mut cons) = buffer.try_split().unwrap();
-    ///
-    /// // Successfully obtain and commit a grant of four bytes
-    /// let mut grant = prod.grant_max_remaining(4).unwrap();
-    /// assert_eq!(grant.buf().len(), 4);
-    /// grant.commit(4);
-    ///
-    /// // Release the four initial committed bytes
-    /// let mut grant = cons.read().unwrap();
-    /// assert_eq!(grant.buf().len(), 4);
-    /// grant.release(4);
-    ///
-    /// // Try to obtain a grant of three bytes, get two bytes
-    /// let mut grant = prod.grant_max_remaining(3).unwrap();
-    /// assert_eq!(grant.buf().len(), 2);
-    /// grant.commit(2);
-    /// # // PubSubState test shim!
-    /// # }
-    /// #
-    /// # fn main() {
-    /// # #[cfg(not(feature = "thumbv6"))]
-    /// # channeltest();
-    /// # }
-    /// ```
     pub fn grant_max_remaining(&mut self, sz: usize) -> Result<GrantW<'a, B, SUBS>> {
         self.grant_max_remaining_with_context(sz, None)
     }
@@ -204,7 +144,7 @@ where
     ) -> Result<GrantW<'a, B, SUBS>> {
         let inner = self.channel;
 
-        if atomic::swap(&inner.write_in_progress, true, AcqRel) {
+        if inner.write_in_progress.swap(true, AcqRel) {
             if let Some(cx) = cx {
                 inner.publisher_waker.register(cx.waker());
             }
@@ -355,28 +295,6 @@ where
     }
 
     /// Obtain access to the inner buffer for writing
-    ///
-    /// ```rust
-    /// # // PubSubState test shim!
-    /// # fn channeltest() {
-    /// use PubSubState::{PubSubState, StaticBufferProvider};
-    ///
-    /// // Create and split a new buffer of 6 elements
-    /// let mut buffer: PubSubState<StaticBufferProvider<6>> = PubSubState::new_static();
-    /// let (mut prod, mut cons) = buffer.try_split().unwrap();
-    ///
-    /// // Successfully obtain and commit a grant of four bytes
-    /// let mut grant = prod.grant_max_remaining(4).unwrap();
-    /// grant.buf().copy_from_slice(&[1, 2, 3, 4]);
-    /// grant.commit(4);
-    /// # // PubSubState test shim!
-    /// # }
-    /// #
-    /// # fn main() {
-    /// # #[cfg(not(feature = "thumbv6"))]
-    /// # channeltest();
-    /// # }
-    /// ```
     pub fn buf(&mut self) -> &mut [u8] {
         self.buf
     }
@@ -414,7 +332,7 @@ where
         let used = min(len, used);
 
         let write = inner.write.load(Acquire);
-        atomic::fetch_sub(&inner.reserve, len - used, AcqRel);
+        inner.reserve.fetch_sub(len - used, AcqRel);
 
         let max = inner.capacity;
         let last = inner.last.load(Acquire);

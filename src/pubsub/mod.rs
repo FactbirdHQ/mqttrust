@@ -4,9 +4,10 @@ mod subscriber;
 
 use core::cell::UnsafeCell;
 use core::slice::from_raw_parts_mut;
-use core::sync::atomic::Ordering::Release;
-use core::sync::atomic::Ordering::{AcqRel, Acquire};
-use core::sync::atomic::{AtomicBool, AtomicUsize};
+use portable_atomic::{
+    AtomicBool, AtomicUsize,
+    Ordering::{AcqRel, Acquire, Release},
+};
 
 use embassy_sync::waitqueue::AtomicWaker;
 pub use publisher::*;
@@ -73,7 +74,7 @@ pub struct PubSubChannel<B: BufferProvider, const SUBS: usize> {
     /// Is there an active write grant?
     pub(crate) write_in_progress: AtomicBool,
 
-    /// Collection of wakers for Subscribers that are waiting.  
+    /// Collection of wakers for [`Subscriber`]'s that are waiting.  
     pub(crate) subscriber_wakers: atomic_multiwakers::MultiWakerRegistration<SUBS>,
 
     pub(crate) subscriber_count: AtomicUsize,
@@ -103,7 +104,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
     }
 
     pub fn read(&mut self) -> Result<GrantR<'_, B, SUBS>> {
-        if atomic::swap(&self.write_in_progress, true, AcqRel) {
+        if self.write_in_progress.swap(true, AcqRel) {
             return Err(Error::GrantInProgress);
         }
 
@@ -176,14 +177,14 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
         Some(FrameGrantR { grant_r, hdr_len })
     }
 
-    /// Create a new `Subscriber`. It will only receive messages that are published after its creation.
+    /// Create a new [`Subscriber`]. It will only receive messages that are published after its creation.
     ///
     /// If there are no subscriber slots left, an error will be returned.
     pub fn subscriber(&self) -> Result<Subscriber<'_, B, SUBS>> {
         if self.subscriber_count.load(Acquire) >= SUBS {
             Err(Error::MaximumSubscribersReached)
         } else {
-            atomic::fetch_add(&self.subscriber_count, 1, AcqRel);
+            self.subscriber_count.fetch_add(1, AcqRel);
             Ok(Subscriber::new(self))
         }
     }
@@ -195,7 +196,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
         if self.subscriber_count.load(Acquire) >= SUBS {
             Err(Error::MaximumSubscribersReached)
         } else {
-            atomic::fetch_add(&self.subscriber_count, 1, AcqRel);
+            self.subscriber_count.fetch_add(1, AcqRel);
             Ok(FrameSubscriber::new(self))
         }
     }
@@ -204,7 +205,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
     ///
     /// If a publisher has already been taken, an error will be returned.
     pub fn publisher(&self) -> Result<Publisher<'_, B, SUBS>> {
-        if atomic::swap(&self.publisher_taken, true, AcqRel) {
+        if self.publisher_taken.swap(true, AcqRel) {
             return Err(Error::PublisherAlreadyTaken);
         }
 
@@ -223,7 +224,7 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
     ///
     /// If a publisher has already been taken, an error will be returned.
     pub fn framed_publisher(&self) -> Result<FramePublisher<'_, B, SUBS>> {
-        if atomic::swap(&self.publisher_taken, true, AcqRel) {
+        if self.publisher_taken.swap(true, AcqRel) {
             return Err(Error::PublisherAlreadyTaken);
         }
 
@@ -261,62 +262,6 @@ impl<const N: usize, const SUBS: usize> PubSubChannel<StaticBufferProvider<N>, S
             subscriber_count: AtomicUsize::new(0),
             subscriber_wakers: atomic_multiwakers::MultiWakerRegistration::new(),
         }
-    }
-}
-
-#[cfg(feature = "thumbv6")]
-mod atomic {
-    use core::sync::atomic::{
-        AtomicBool, AtomicUsize,
-        Ordering::{self, Acquire, Release},
-    };
-    use cortex_m::interrupt::free;
-
-    #[inline(always)]
-    pub fn fetch_add(atomic: &AtomicUsize, val: usize, _order: Ordering) -> usize {
-        free(|_| {
-            let prev = atomic.load(Acquire);
-            atomic.store(prev.wrapping_add(val), Release);
-            prev
-        })
-    }
-
-    #[inline(always)]
-    pub fn fetch_sub(atomic: &AtomicUsize, val: usize, _order: Ordering) -> usize {
-        free(|_| {
-            let prev = atomic.load(Acquire);
-            atomic.store(prev.wrapping_sub(val), Release);
-            prev
-        })
-    }
-
-    #[inline(always)]
-    pub fn swap(atomic: &AtomicBool, val: bool, _order: Ordering) -> bool {
-        free(|_| {
-            let prev = atomic.load(Acquire);
-            atomic.store(val, Release);
-            prev
-        })
-    }
-}
-
-#[cfg(not(feature = "thumbv6"))]
-mod atomic {
-    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    #[inline(always)]
-    pub fn fetch_add(atomic: &AtomicUsize, val: usize, order: Ordering) -> usize {
-        atomic.fetch_add(val, order)
-    }
-
-    #[inline(always)]
-    pub fn fetch_sub(atomic: &AtomicUsize, val: usize, order: Ordering) -> usize {
-        atomic.fetch_sub(val, order)
-    }
-
-    #[inline(always)]
-    pub fn swap(atomic: &AtomicBool, val: bool, order: Ordering) -> bool {
-        atomic.swap(val, order)
     }
 }
 

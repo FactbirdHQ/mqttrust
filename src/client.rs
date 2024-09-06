@@ -380,6 +380,8 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
                             msg.auto_release();
 
                             return Some(msg);
+                        } else {
+                            warn!("No match for {:?}", self.topic_filters);
                         }
                     }
                 }
@@ -409,6 +411,8 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures::S
                     msg.auto_release();
 
                     return Poll::Ready(Some(msg));
+                } else {
+                    warn!("No match for {:?}", self.topic_filters);
                 }
             }
         }
