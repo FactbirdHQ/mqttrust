@@ -1,12 +1,11 @@
 use core::cmp::min;
+use core::future::Future;
 use core::mem::{forget, transmute};
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::slice::from_raw_parts_mut;
 use core::task::{Context, Poll};
 use portable_atomic::Ordering::{AcqRel, Acquire, Release};
-
-use futures::Future;
 
 use super::{BufferProvider, Error, PubSubChannel, Result};
 
@@ -99,6 +98,12 @@ where
     /// Combined these contain all previously committed data.
     pub fn split_read(&mut self) -> Result<SplitGrantR<'a, B, SUBS>> {
         self.split_read_with_context(None)
+    }
+
+    // FIXME: Temp API to fix subscriptions
+    pub(crate) fn reg_waker(&mut self, cx: &mut Context<'_>) {
+        let inner = self.channel;
+        inner.subscriber_wakers.register(cx.waker());
     }
 
     pub fn split_read_with_context(

@@ -1,9 +1,9 @@
 use core::cmp::min;
+use core::future::Future;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::slice::from_raw_parts_mut;
 use core::task::{Context, Poll};
-use futures::Future;
 use portable_atomic::Ordering::{AcqRel, Acquire, Release};
 
 use super::{BufferProvider, Error, PubSubChannel, Result};

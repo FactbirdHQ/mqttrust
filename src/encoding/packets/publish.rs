@@ -1,3 +1,4 @@
+use bon::Builder;
 use core::fmt::Debug;
 
 use crate::{
@@ -81,15 +82,24 @@ impl<F: Fn(&mut [u8]) -> Result<usize, Error>> ToPayload for DeferredPayload<F> 
 /// Publish packet ([MQTT 3.3]).
 ///
 /// [MQTT 3.3]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901100
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Builder)]
 pub struct Publish<'a, P: ToPayload> {
+    #[builder(default = false)]
     pub dup: bool,
+
+    #[builder(default = QoS::AtLeastOnce)]
     pub qos: QoS,
+
+    #[builder(default = false)]
     pub retain: bool,
+
+    #[builder(skip)]
     pub pid: Option<Pid>,
     pub topic_name: &'a str,
     pub payload: P,
+
     #[cfg(feature = "mqttv5")]
+    #[builder(default = Properties::Slice(&[]))]
     pub properties: Properties<'a>,
 }
 

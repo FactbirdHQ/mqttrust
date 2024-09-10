@@ -1,4 +1,5 @@
 TODO:
+
 - [x] Ping handling
 - [x] Connect/Disconnect/Reconnect
 - [x] Sending ACK
@@ -7,20 +8,19 @@ TODO:
 - [x] Publish before connect handling
 - [x] MQTTv5 handling
 - [x] Reconnect backoff
-- [x] Update config on-the-fly
 - [x] `embedded-tls` support
 - [x] Plug-able transport layer
 - [x] Deferred publish payload
 - [x] Allow client to await connected state
-- [ ] Automatically drop packet if all subscribers touched it in `PubSub`
 - [x] Check subscribe reason code in SubAck packets
-- [ ] Framed inflight buffer
-- [ ] Republish
-- [ ] Plug-able persistence layer
 - [x] MQTTv5 Properties
-- [ ] Packet builders?
-- [ ] Error handling
 - [x] Setup integration tests & CI
+- [x] Packet builders
+- [ ] Lass Will support
+- [ ] Username/password broker auth support
+- [ ] Automatically drop packet if all subscribers touched it in `PubSub`
+- [ ] Framed inflight buffer + Republish
+- [ ] Error handling
 - [ ] Logging
 - [ ] Docs
 - [ ] TEST & Evaluate!

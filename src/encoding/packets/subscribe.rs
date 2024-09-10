@@ -1,3 +1,4 @@
+use bon::{builder, Builder};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
@@ -27,15 +28,22 @@ pub enum RetainHandling {
 /// [Subscribe] packets contain a `Vec` of those.
 ///
 /// [Subscribe]: struct.Subscribe.html
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Builder)]
 pub struct SubscribeTopic<'a> {
     pub topic_path: &'a str,
+
+    #[builder(default = QoS::AtLeastOnce)]
     pub maximum_qos: QoS,
+
     #[cfg(feature = "mqttv5")]
+    #[builder(default = false)]
     pub no_local: bool,
     #[cfg(feature = "mqttv5")]
+    #[builder(default = false)]
     pub retain_as_published: bool,
+
     #[cfg(feature = "mqttv5")]
+    #[builder(default = RetainHandling::SendAtSubscribeTime)]
     pub retain_handling: RetainHandling,
 }
 
@@ -45,14 +53,22 @@ impl<'a> From<SubscribeTopic<'a>> for &'a str {
     }
 }
 
+impl<'a> From<&'a str> for SubscribeTopic<'a> {
+    fn from(val: &'a str) -> Self {
+        SubscribeTopic::builder().topic_path(val).build()
+    }
+}
+
 /// Subscribe packet ([MQTT 3.8]).
 ///
 /// [MQTT 3.8]: http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718063
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Builder)]
 pub struct Subscribe<'a> {
+    #[builder(skip)]
     pub pid: Option<Pid>,
 
     #[cfg(feature = "mqttv5")]
+    #[builder(default = Properties::Slice(&[]))]
     pub properties: Properties<'a>,
 
     pub topics: &'a [SubscribeTopic<'a>],

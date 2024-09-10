@@ -7,7 +7,7 @@ use embedded_mqtt::{
     Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic,
 };
 use embedded_tls::{Certificate, TlsConfig};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use rand::rngs::OsRng;
 use static_cell::StaticCell;
 

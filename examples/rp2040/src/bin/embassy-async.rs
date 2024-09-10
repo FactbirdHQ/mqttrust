@@ -9,7 +9,7 @@ use embedded_mqtt::exp::{MqttClient, MqttStack, State};
 use embedded_mqtt::packets;
 use embedded_mqtt::publication::Publication;
 use embedded_mqtt::types::Properties;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use static_cell::make_static;
 use {defmt_rtt as _, panic_probe as _};
 

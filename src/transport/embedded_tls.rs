@@ -4,6 +4,7 @@ use core::{
     ptr::NonNull,
 };
 
+use embassy_time::Duration;
 use embedded_io_async::{Error as _, ErrorKind};
 use embedded_nal_async::TcpConnect;
 use embedded_tls::{CryptoProvider, TlsConfig, TlsContext, TlsError};
@@ -73,9 +74,11 @@ impl<
             ConnectionError::Io(e.kind())
         })?;
 
-        socket
-            .open(TlsContext::new(self.tls_config, &mut self.provider))
+        let open_fut = socket.open(TlsContext::new(self.tls_config, &mut self.provider));
+
+        embassy_time::with_timeout(Duration::from_secs(5), open_fut)
             .await
+            .map_err(|_| ConnectionError::NetworkTimeout)?
             .map_err(|e| ConnectionError::Io(e.kind()))?;
 
         debug!("Socket opened!");

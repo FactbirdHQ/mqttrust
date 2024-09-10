@@ -11,7 +11,7 @@ use embedded_mqtt::{
     SubscribeTopic,
 };
 use embedded_nal_async::Ipv4Addr;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use static_cell::StaticCell;
 
 const ROUND_TRIP_COUNT: usize = 15;

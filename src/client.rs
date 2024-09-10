@@ -1,5 +1,6 @@
 use core::{
     future::poll_fn,
+    mem::MaybeUninit,
     ops::{Deref, DerefMut, Range},
     str::FromStr,
     task::Poll,
@@ -121,23 +122,21 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             let mut encoder = MqttEncoder::new(grant.deref_mut());
             packet.to_buffer(&mut encoder).ok();
             let used = encoder.used_size();
-            grant.commit(used);
 
             match P::PACKET_TYPE {
                 PacketType::Publish => {
                     if packet.get_qos() != Some(QoS::AtMostOnce) {
                         debug!("[Publish] Inserting {:?} into inflight_pub", pid);
-                        // FIXME: Properly handle error instead of `unwrap`
-                        shared.inflight_pub.insert(pid.into()).unwrap();
+                        // # Safety: Capacity checked above by returning `Error::MaxInflight` if full
+                        unwrap!(shared.inflight_pub.insert(pid.into()));
                     }
                 }
                 PacketType::Subscribe => {
                     debug!("[Subscribe] Inserting {:?} into pending_ack", pid);
-                    // FIXME: Properly handle error instead of `unwrap`
                     shared
                         .ack_status
                         .insert(pid.into(), AckStatus::AwaitingSubAck)
-                        .unwrap();
+                        .map_err(|_| Error::MaxInflight)?;
                 }
                 _ => {}
             }
@@ -146,6 +145,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 .outgoing_pid
                 .insert(pid.get())
                 .map_err(|_| Error::MaxInflight)?;
+
+            // Wait with committing the packet until we have added the PID to
+            // state successfully
+            grant.commit(used);
 
             pid
         };
@@ -184,6 +187,14 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         let should_wait_ack = !matches!(pub_pkg.qos, QoS::AtMostOnce);
         let pid = self.send(pub_pkg, should_wait_ack).await?;
 
+        // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
+        let drop = OnDrop::new(|| {
+            if let Ok(mut shared) = self.shared.try_lock() {
+                let _ = shared.inflight_pub.remove(&pid.into());
+                let _ = shared.outgoing_pid.remove(&pid.into());
+            }
+        });
+
         debug!("[Publish] Sent pid {:?}", pid);
 
         if should_wait_ack {
@@ -207,6 +218,8 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 .await
                 .map_err(|_| Error::Timeout)?;
         }
+
+        drop.defuse();
 
         debug!("[Publish] Success pid {:?}", pid);
 
@@ -235,6 +248,14 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
 
         let pid = self.send(subscribe, true).await?;
 
+        // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
+        let drop = OnDrop::new(|| {
+            if let Ok(mut shared) = self.shared.try_lock() {
+                let _ = shared.ack_status.remove(&pid.into());
+                let _ = shared.outgoing_pid.remove(&pid.into());
+            }
+        });
+
         debug!("[Subscribe] Sent pid {:?}", pid);
 
         // Wait until `pid` has been ack'd (known by it being removed from the state)
@@ -244,7 +265,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 if let Some(&AckStatus::Acked(_)) = shared.ack_status.get(&pid.get()) {
                     match shared.ack_status.remove(&pid.get()) {
                         Some(AckStatus::Acked(codes)) => return Poll::Ready(codes),
-                        // Should be checked above!
+                        // # Safety: Should be checked above!
                         _ => panic!(),
                     }
                 }
@@ -265,13 +286,11 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 }
             }
             Err(TimeoutError) => {
-                let mut shared = self.shared.lock().await;
-                // Pop pid from pending_ack
-                shared.ack_status.remove(&pid.get());
-
                 return Err(Error::Timeout);
             }
         }
+
+        drop.defuse();
 
         debug!("[Subscribe] Success pid {:?}", pid);
 
@@ -280,6 +299,28 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             topic_filters,
             client: self,
         })
+    }
+}
+
+struct OnDrop<F: FnOnce()> {
+    f: MaybeUninit<F>,
+}
+
+impl<F: FnOnce()> OnDrop<F> {
+    pub fn new(f: F) -> Self {
+        Self {
+            f: MaybeUninit::new(f),
+        }
+    }
+
+    pub fn defuse(self) {
+        core::mem::forget(self)
+    }
+}
+
+impl<F: FnOnce()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        unsafe { self.f.as_ptr().read()() }
     }
 }
 
@@ -391,7 +432,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize>
     }
 }
 
-impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures::Stream
+impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures_util::Stream
     for Subscription<'a, 'b, M, SUBS, MAX_TOPICS>
 {
     type Item = Message<'a, SUBS>;
@@ -401,21 +442,25 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> futures::S
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         // FIXME: Handle unsubscribed from broker by returning `Poll::Ready(None)`
-        if let Some(grant) = self.subscriber.read_with_context(Some(cx)) {
-            if let Some(mut msg) = Message::try_new(grant) {
-                if self
-                    .topic_filters
-                    .iter()
-                    .any(|filter| filter.is_match(msg.topic_name()))
-                {
-                    msg.auto_release();
+        let Some(grant) = self.subscriber.read_with_context(Some(cx)) else {
+            return Poll::Pending;
+        };
 
-                    return Poll::Ready(Some(msg));
-                } else {
-                    warn!("No match for {:?}", self.topic_filters);
-                }
+        if let Some(mut msg) = Message::try_new(grant) {
+            if self
+                .topic_filters
+                .iter()
+                .any(|filter| filter.is_match(msg.topic_name()))
+            {
+                msg.auto_release();
+
+                return Poll::Ready(Some(msg));
+            } else {
+                warn!("No match for {:?}", self.topic_filters);
             }
         }
+
+        self.subscriber.subscriber.reg_waker(cx);
         Poll::Pending
     }
 }
@@ -449,7 +494,7 @@ impl<'a, 'b, M: RawMutex, const SUBS: usize, const MAX_TOPICS: usize> Drop
                         pid.into(),
                         AckStatus::AwaitingUnsubAck(
                             // # Safety: Checked before subscribing (Assert: MAX_TOPICS <= crate::crate_config::MAX_SUB_TOPICS_PER_MSG)
-                            heapless::Vec::try_from(self.topic_filters.as_slice()).unwrap(),
+                            unwrap!(heapless::Vec::try_from(self.topic_filters.as_slice())),
                         ),
                     )
                     .unwrap();

@@ -134,11 +134,14 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
     }
 
     async fn select(&mut self, transport: &mut impl Transport) -> Result<(), StateError> {
-        let keep_alive_sleep = if let Some(instant) = self.await_pingresp {
-            Timer::after(instant + self.config.keepalive_interval - Instant::now())
-        } else {
-            Timer::after(self.last_network_action + self.config.keepalive_interval - Instant::now())
-        };
+        let last_action_instant = self.await_pingresp.unwrap_or(self.last_network_action);
+        let network_activity_deadline = last_action_instant + self.config.keepalive_interval;
+
+        let keep_alive_sleep = Timer::after(
+            network_activity_deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default(),
+        );
 
         match select3(
             self.packet_buf.get_received_packet(transport),
@@ -347,8 +350,6 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                 // retry buffer, before writing the packet to network
                 let (tx_header, packet_bytes) = TxHeader::from_bytes(tx_grant.deref());
 
-                let mut shared = self.shared.lock().await;
-
                 transport
                     .socket()?
                     .write_all(packet_bytes)
@@ -361,10 +362,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                     .await
                     .map_err(|e| StateError::Io(e.kind()))?;
 
+                let mut shared = self.shared.lock().await;
                 if let Some(pid) = tx_header.pid {
                     shared.outgoing_pid.remove(&pid.get());
                 }
-
                 shared.wake_tx();
 
                 self.last_network_action = Instant::now();
@@ -504,7 +505,7 @@ mod tests {
 
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use embedded_nal_async::{Ipv4Addr, TcpConnect};
-    use futures::StreamExt;
+    use futures_util::StreamExt;
     use static_cell::StaticCell;
 
     use crate::{

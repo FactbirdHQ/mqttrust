@@ -15,7 +15,6 @@ mod config;
 mod encoding;
 mod error;
 mod packet;
-// mod persistence;
 pub mod pubsub;
 mod stack;
 mod state;
