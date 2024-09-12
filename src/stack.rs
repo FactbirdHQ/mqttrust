@@ -268,10 +268,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                             true => {
                                 let pubcomp = PubComp { pid };
                                 self.packet_buf.write_packet(transport, pubcomp).await?;
+                                shared.wake_tx();
                             }
                             false => {
                                 error!("Unsolicited pubrel packet: {:?}", pid);
-                                return Err(StateError::Unsolicited(pid.get()));
                             }
                         }
                     }
@@ -284,10 +284,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
 
                                 let pubrel = PubRel { pid };
                                 self.packet_buf.write_packet(transport, pubrel).await?;
+                                shared.wake_tx();
                             }
                             None => {
                                 error!("Unsolicited pubrec packet: {:?}", pid);
-                                return Err(StateError::Unsolicited(pid.get()));
                             }
                         }
                     }
@@ -299,10 +299,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                         match shared.outgoing_rel.remove(&pid.get()) {
                             true => {
                                 // self.inflight -= 1;
+                                shared.wake_tx();
                             }
                             false => {
                                 error!("Unsolicited pubcomp packet: {:?}", pid);
-                                return Err(StateError::Unsolicited(pid.get()));
                             }
                         }
                     }
@@ -314,15 +314,13 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                         match shared.ack_status.get_mut(&pid.get()) {
                             Some(status) if *status == AckStatus::AwaitingSubAck => {
                                 *status =
-                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap())
+                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
+                                shared.wake_tx();
                             }
                             None | Some(_) => {
                                 error!("Unsolicited suback packet: {:?}", pid);
-                                return Err(StateError::Unsolicited(pid.get()));
                             }
                         }
-
-                        shared.wake_tx();
                     }
                     ReceivedPacket::UnsubAck { pid, codes, .. } => {
                         let mut shared = self.shared.lock().await;
@@ -331,15 +329,13 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                         match shared.ack_status.get_mut(&pid.get()) {
                             Some(status) if matches!(*status, AckStatus::AwaitingUnsubAck(_)) => {
                                 *status =
-                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap())
+                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
+                                shared.wake_tx();
                             }
                             None | Some(_) => {
                                 error!("Unsolicited suback packet: {:?}", pid);
-                                return Err(StateError::Unsolicited(pid.get()));
                             }
                         }
-
-                        shared.wake_tx();
                     }
                 }
             }
@@ -511,7 +507,7 @@ mod tests {
     use crate::{
         broker::IpBroker,
         config::Config,
-        encoding::{Publish, QoS, Subscribe, SubscribeTopic},
+        encoding::{Publish, QoS, Subscribe},
         State,
     };
 
@@ -566,41 +562,20 @@ mod tests {
 
         let fut = async {
             // Use the MQTT client to subscribe
-            let subscribe = Subscribe::new(&[SubscribeTopic {
-                topic_path: "ABC",
-                maximum_qos: QoS::AtLeastOnce,
-                no_local: false,
-                retain_as_published: false,
-                retain_handling: crate::RetainHandling::SendAtSubscribeTimeIfNonexistent,
-            }]);
+            let topics = ["ABC".into()];
+            let subscribe = Subscribe::builder().topics(&topics).build();
 
             let mut subscription = client.subscribe::<1>(subscribe).await.unwrap();
 
             client
-                .publish(Publish {
-                    dup: false,
-                    qos: QoS::AtLeastOnce,
-                    pid: None,
-                    retain: false,
-                    topic_name: "ABC",
-                    payload: b"",
-                    properties: crate::encoding::Properties::Slice(&[]),
-                })
+                .publish(Publish::builder().topic_name("ABC").payload(&[]).build())
                 .await
                 .unwrap();
 
             while let Some(message) = subscription.next().await {
                 if let "ABC" = message.topic_name() {
                     client
-                        .publish(Publish {
-                            dup: false,
-                            qos: QoS::AtLeastOnce,
-                            pid: None,
-                            retain: false,
-                            topic_name: "ABC",
-                            payload: b"",
-                            properties: crate::encoding::Properties::Slice(&[]),
-                        })
+                        .publish(Publish::builder().topic_name("ABC").payload(&[]).build())
                         .await
                         .unwrap();
                     break;
@@ -629,26 +604,13 @@ mod tests {
         // Use the MQTT client to subscribe
 
         client
-            .publish(Publish {
-                dup: false,
-                qos: QoS::AtLeastOnce,
-                pid: None,
-                retain: false,
-                topic_name: "ABC",
-                payload: b"",
-                properties: crate::encoding::Properties::Slice(&[]),
-            })
+            .publish(Publish::builder().topic_name("ABC").payload(&[]).build())
             .await
             .unwrap();
 
         let fut_a = async {
-            let subscribe_a = Subscribe::new(&[SubscribeTopic {
-                topic_path: "ABC",
-                maximum_qos: QoS::AtLeastOnce,
-                no_local: false,
-                retain_as_published: false,
-                retain_handling: crate::RetainHandling::SendAtSubscribeTimeIfNonexistent,
-            }]);
+            let topics = ["ABC".into()];
+            let subscribe_a = Subscribe::builder().topics(&topics).build();
 
             let mut subscription_a = client.subscribe::<1>(subscribe_a).await.unwrap();
             while let Some(message) = subscription_a.next().await {
@@ -671,28 +633,15 @@ mod tests {
         };
 
         let fut_b = async {
-            let subscribe_b = Subscribe::new(&[SubscribeTopic {
-                topic_path: "CDE",
-                maximum_qos: QoS::AtLeastOnce,
-                no_local: false,
-                retain_as_published: false,
-                retain_handling: crate::RetainHandling::SendAtSubscribeTimeIfNonexistent,
-            }]);
+            let topics = ["CDE".into()];
+            let subscribe_b = Subscribe::builder().topics(&topics).build();
 
             let mut subscription_b = client.subscribe::<1>(subscribe_b).await.unwrap();
 
             while let Some(message) = subscription_b.next().await {
                 if let "CDE" = message.topic_name() {
                     client
-                        .publish(Publish {
-                            dup: false,
-                            qos: QoS::AtLeastOnce,
-                            pid: None,
-                            retain: false,
-                            topic_name: "ABC",
-                            payload: b"",
-                            properties: crate::encoding::Properties::Slice(&[]),
-                        })
+                        .publish(Publish::builder().topic_name("ABC").payload(&[]).build())
                         .await
                         .unwrap();
                     break;

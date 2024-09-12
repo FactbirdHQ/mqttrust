@@ -8,7 +8,7 @@ use core::{
 
 use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
-use embassy_time::{with_timeout, Duration, TimeoutError};
+use embassy_time::{with_timeout, Duration};
 use itertools::EitherOrBoth;
 use itertools::Itertools;
 
@@ -96,110 +96,99 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         .await;
     }
 
-    async fn send<P: MqttEncode>(&self, mut packet: P, should_await: bool) -> Result<Pid, Error> {
-        let pid = {
-            let mut shared = self.shared.lock().await;
+    async fn send<P: MqttEncode>(&self, packet: &mut P) -> Result<Pid, Error> {
+        let mut shared = self.shared.lock().await;
 
-            // Check if we can send, based on `MAX_INFLIGHT` & packet.qos()
-            match packet.get_qos() {
-                Some(QoS::AtMostOnce) => {}
-                Some(_) if shared.inflight_pub.len() == shared.inflight_pub.capacity() => {
-                    return Err(Error::MaxInflight)
-                }
-                _ => {}
+        // Check if we can send, based on `MAX_INFLIGHT` & packet.qos()
+        match packet.get_qos() {
+            Some(QoS::AtMostOnce) => {}
+            Some(_) if shared.inflight_pub.len() == shared.inflight_pub.capacity() => {
+                return Err(Error::MaxInflight)
             }
-
-            let pid = shared.next_pid();
-            let mut tx_prod = self.tx_publisher.lock().await;
-
-            packet.set_pid(pid);
-
-            let mut grant = tx_prod
-                .grant_async(packet.max_packet_size())
-                .await
-                .map_err(|_| Error::Overflow)?;
-
-            let mut encoder = MqttEncoder::new(grant.deref_mut());
-            packet.to_buffer(&mut encoder).ok();
-            let used = encoder.used_size();
-
-            match P::PACKET_TYPE {
-                PacketType::Publish => {
-                    if packet.get_qos() != Some(QoS::AtMostOnce) {
-                        debug!("[Publish] Inserting {:?} into inflight_pub", pid);
-                        // # Safety: Capacity checked above by returning `Error::MaxInflight` if full
-                        unwrap!(shared.inflight_pub.insert(pid.into()));
-                    }
-                }
-                PacketType::Subscribe => {
-                    debug!("[Subscribe] Inserting {:?} into pending_ack", pid);
-                    shared
-                        .ack_status
-                        .insert(pid.into(), AckStatus::AwaitingSubAck)
-                        .map_err(|_| Error::MaxInflight)?;
-                }
-                _ => {}
-            }
-
-            shared
-                .outgoing_pid
-                .insert(pid.get())
-                .map_err(|_| Error::MaxInflight)?;
-
-            // Wait with committing the packet until we have added the PID to
-            // state successfully
-            grant.commit(used);
-
-            pid
-        };
-
-        if should_await {
-            let transmit_fut = poll_fn(|cx| {
-                if let Ok(mut shared) = self.shared.try_lock() {
-                    if shared.outgoing_pid.contains(&pid.get()) {
-                        shared.register_tx_waker(cx);
-                        return Poll::Pending;
-                    }
-
-                    return Poll::Ready(());
-                }
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            });
-
-            let _ = with_timeout(Duration::from_millis(100), transmit_fut).await;
+            _ => {}
         }
+
+        let pid = shared.next_pid();
+        let mut tx_prod = self.tx_publisher.lock().await;
+
+        packet.set_pid(pid);
+
+        let mut grant = tx_prod
+            .grant_async(packet.max_packet_size())
+            .await
+            .map_err(|_| Error::Overflow)?;
+
+        let mut encoder = MqttEncoder::new(grant.deref_mut());
+        packet.to_buffer(&mut encoder).ok();
+        let used = encoder.used_size();
+
+        shared
+            .outgoing_pid
+            .insert(pid.get())
+            .map_err(|_| Error::MaxInflight)?;
+
+        match P::PACKET_TYPE {
+            PacketType::Publish => {
+                if packet.get_qos() != Some(QoS::AtMostOnce) {
+                    debug!("[Publish] Inserting {:?} into inflight_pub", pid);
+                    // # Safety: Capacity checked above by returning `Error::MaxInflight` if full
+                    unwrap!(shared.inflight_pub.insert(pid.get()));
+                }
+            }
+            PacketType::Subscribe => {
+                debug!("[Subscribe] Inserting {:?} into pending_ack", pid);
+                shared
+                    .ack_status
+                    .insert(pid.get(), AckStatus::AwaitingSubAck)
+                    .map_err(|_| Error::MaxInflight)?;
+            }
+            _ => {}
+        }
+
+        // Wait with committing the packet until we have added the PID to
+        // state successfully
+        grant.commit(used);
 
         Ok(pid)
     }
 
-    /// Publish a message to the broker.
-    ///
-    /// If `QoS` is set to `QoS1` or `QoS2`, this function will wait until the
-    /// corresponding `PubAck` message has been received.
-    pub async fn publish<P: ToPayload>(
-        &self,
-        packet: impl Into<Publish<'_, P>>,
-    ) -> Result<(), Error> {
-        let pub_pkg: Publish<'_, P> = packet.into();
-        debug!("[Publish] Sending to {:?}", pub_pkg.topic_name);
+    async fn wait_tx(&self, pid: &Pid) {
+        poll_fn(|cx| {
+            if let Ok(mut shared) = self.shared.try_lock() {
+                if shared.outgoing_pid.contains(&pid.get()) {
+                    shared.register_tx_waker(cx);
+                    return Poll::Pending;
+                }
 
+                return Poll::Ready(());
+            }
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await
+    }
+
+    async fn publish_inner<P: ToPayload>(&self, pub_pkg: &mut Publish<'_, P>) -> Result<(), Error> {
         let should_wait_ack = !matches!(pub_pkg.qos, QoS::AtMostOnce);
-        let pid = self.send(pub_pkg, should_wait_ack).await?;
+
+        let pid = self.send(pub_pkg).await?;
 
         // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
-                let _ = shared.inflight_pub.remove(&pid.into());
-                let _ = shared.outgoing_pid.remove(&pid.into());
+                warn!("[DROP] Removing {} from inflight_pub & outgoing_pid!", pid);
+                let _ = shared.inflight_pub.remove(&pid.get());
+                let _ = shared.outgoing_pid.remove(&pid.get());
             }
         });
+
+        self.wait_tx(&pid).await;
 
         debug!("[Publish] Sent pid {:?}", pid);
 
         if should_wait_ack {
             // Wait until `pid` has been ack'd (known by it being removed from the state)
-            let ack_fut = poll_fn(|cx| {
+            poll_fn(|cx| {
                 if let Ok(mut shared) = self.shared.try_lock() {
                     // Check if `pid` has been acked by the broker
                     if !shared.inflight_pub.contains(&pid.get()) {
@@ -212,11 +201,8 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
                 }
                 cx.waker().wake_by_ref();
                 Poll::Pending
-            });
-
-            with_timeout(Duration::from_secs(10), ack_fut)
-                .await
-                .map_err(|_| Error::Timeout)?;
+            })
+            .await;
         }
 
         drop.defuse();
@@ -226,40 +212,24 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         Ok(())
     }
 
-    pub async fn subscribe<'b, const MAX_TOPICS: usize>(
-        &'b self,
-        packet: impl Into<Subscribe<'_>>,
-    ) -> Result<Subscription<'a, 'b, M, SUBS, MAX_TOPICS>, Error> {
-        const { core::assert!(MAX_TOPICS <= crate::crate_config::MAX_SUB_TOPICS_PER_MSG) };
+    async fn subscribe_inner(&self, sub_pkg: &mut Subscribe<'_>) -> Result<(), Error> {
+        let pid = self.send(sub_pkg).await?;
 
-        let subscriber = self
-            .rx_pubsub
-            .framed_subscriber()
-            .map_err(|_| Error::StateMismatch)?;
-
-        let subscribe: Subscribe = packet.into();
-        let topic_filters = subscribe
-            .topics
-            .iter()
-            .map(|sub| TopicFilter::new(sub.topic_path))
-            .collect::<Result<_, _>>()?;
-
-        debug!("[Subscribe] Subscribing to {:?}", topic_filters);
-
-        let pid = self.send(subscribe, true).await?;
-
-        // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
+        // Cleanup `ack_status` & `outgoing_pid` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
-                let _ = shared.ack_status.remove(&pid.into());
-                let _ = shared.outgoing_pid.remove(&pid.into());
+                warn!("[DROP] Removing {} from ack_status & outgoing_pid!", pid);
+                let _ = shared.ack_status.remove(&pid.get());
+                let _ = shared.outgoing_pid.remove(&pid.get());
             }
         });
+
+        self.wait_tx(&pid).await;
 
         debug!("[Subscribe] Sent pid {:?}", pid);
 
         // Wait until `pid` has been ack'd (known by it being removed from the state)
-        let ack_fut = poll_fn(|cx| {
+        let status = poll_fn(|cx| {
             if let Ok(mut shared) = self.shared.try_lock() {
                 // Check if `pid` has been acked by the broker
                 if let Some(&AckStatus::Acked(_)) = shared.ack_status.get(&pid.get()) {
@@ -275,30 +245,117 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
             }
             cx.waker().wake_by_ref();
             Poll::Pending
-        });
+        })
+        .await;
 
-        // TODO: Proper timeout duration?
-        match with_timeout(Duration::from_secs(5), ack_fut).await {
-            Ok(status) => {
-                debug!("[Subscribe] Status codes: {:?}", status);
-                if status.iter().any(|&c| c >= 0x80) {
-                    return Err(Error::BadTopicFilter);
-                }
-            }
-            Err(TimeoutError) => {
-                return Err(Error::Timeout);
-            }
+        debug!("[Subscribe] Status codes: {:?}", status);
+        if status.iter().any(|&c| c >= 0x80) {
+            return Err(Error::BadTopicFilter);
         }
 
         drop.defuse();
 
         debug!("[Subscribe] Success pid {:?}", pid);
 
-        Ok(Subscription {
-            subscriber,
-            topic_filters,
-            client: self,
-        })
+        Ok(())
+    }
+
+    /// Publish a message to the broker.
+    ///
+    /// If `QoS` is set to `QoS1` or `QoS2`, this function will wait until the
+    /// corresponding `PubAck` message has been received.
+    pub async fn publish<P: ToPayload>(
+        &self,
+        packet: impl Into<Publish<'_, P>>,
+    ) -> Result<(), Error> {
+        let mut pub_pkg: Publish<'_, P> = packet.into();
+
+        const MAX_ATTEMPTS: u8 = 3;
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            self.wait_connected().await;
+
+            if attempt > 1 {
+                debug!(
+                    "[Publish] Attempt: {}. Sending to {:?}",
+                    attempt - 1,
+                    pub_pkg.topic_name
+                );
+            } else {
+                debug!("[Publish] Sending to {:?}", pub_pkg.topic_name);
+            }
+
+            match with_timeout(
+                Duration::from_secs(3 * attempt as u64),
+                self.publish_inner(&mut pub_pkg),
+            )
+            .await
+            {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
+                _ => {
+                    continue;
+                }
+            }
+        }
+
+        Err(Error::Timeout)
+    }
+
+    pub async fn subscribe<'b, const MAX_TOPICS: usize>(
+        &'b self,
+        packet: impl Into<Subscribe<'_>>,
+    ) -> Result<Subscription<'a, 'b, M, SUBS, MAX_TOPICS>, Error> {
+        const { core::assert!(MAX_TOPICS <= crate::crate_config::MAX_SUB_TOPICS_PER_MSG) };
+
+        let subscriber = self
+            .rx_pubsub
+            .framed_subscriber()
+            .map_err(|_| Error::StateMismatch)?;
+
+        let mut subscribe: Subscribe = packet.into();
+        let topic_filters = subscribe
+            .topics
+            .iter()
+            .map(|sub| TopicFilter::new(sub.topic_path))
+            .collect::<Result<_, _>>()?;
+
+        const MAX_ATTEMPTS: u8 = 3;
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            self.wait_connected().await;
+
+            if attempt > 1 {
+                debug!(
+                    "[Subscribe] Attempt: {}. Subscribing to {:?}",
+                    attempt - 1,
+                    topic_filters
+                );
+            } else {
+                debug!("[Subscribe] Subscribing to {:?}", topic_filters);
+            }
+
+            match with_timeout(
+                Duration::from_secs(3 * attempt as u64),
+                self.subscribe_inner(&mut subscribe),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    return Ok(Subscription {
+                        subscriber,
+                        topic_filters,
+                        client: self,
+                    })
+                }
+                Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
+                _ => {
+                    continue;
+                }
+            }
+        }
+
+        Err(Error::Timeout)
     }
 }
 

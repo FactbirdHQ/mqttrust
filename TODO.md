@@ -16,10 +16,10 @@ TODO:
 - [x] MQTTv5 Properties
 - [x] Setup integration tests & CI
 - [x] Packet builders
-- [ ] Lass Will support
+- [x] Retry on publish & subscribe
+- [ ] Support "Lass Will"
 - [ ] Username/password broker auth support
 - [ ] Automatically drop packet if all subscribers touched it in `PubSub`
-- [ ] Framed inflight buffer + Republish
 - [ ] Error handling
 - [ ] Logging
 - [ ] Docs

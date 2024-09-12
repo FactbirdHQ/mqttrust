@@ -39,41 +39,32 @@ async fn mqttv5() {
         log::debug!("Starting publish!");
         for i in 0..ROUND_TRIP_COUNT {
             client
-                .publish(Publish {
-                    dup: false,
-                    qos: embedded_mqtt::QoS::AtLeastOnce,
-                    pid: None,
-                    retain: false,
-                    topic_name: "embedded_mqtt/embassy_async/hello",
-                    payload: format!("This is my super secret payload {i}").as_bytes(),
-                    properties: embedded_mqtt::Properties::Slice(&[]),
-                })
+                .publish(
+                    Publish::builder()
+                        .topic_name("embedded_mqtt/embassy_async/hello")
+                        .payload(format!("This is my super secret payload {i}").as_bytes())
+                        .build(),
+                )
                 .await
                 .unwrap();
 
             client
-                .publish(Publish {
-                    dup: false,
-                    qos: embedded_mqtt::QoS::AtLeastOnce,
-                    pid: None,
-                    retain: false,
-                    topic_name: "embedded_mqtt/embassy_async/other_topic",
-                    payload: format!("This is my super secret payload {i}").as_bytes(),
-                    properties: embedded_mqtt::Properties::Slice(&[]),
-                })
+                .publish(
+                    Publish::builder()
+                        .topic_name("embedded_mqtt/embassy_async/other_topic")
+                        .payload(format!("This is my super secret payload {i}").as_bytes())
+                        .build(),
+                )
                 .await
                 .unwrap();
 
             client
-                .publish(Publish {
-                    dup: false,
-                    qos: embedded_mqtt::QoS::AtLeastOnce,
-                    pid: None,
-                    retain: false,
-                    topic_name: "embedded_mqtt/embassy_async_no_subs/hello",
-                    payload: format!("This is my super secret payload {i}").as_bytes(),
-                    properties: embedded_mqtt::Properties::Slice(&[]),
-                })
+                .publish(
+                    Publish::builder()
+                        .topic_name("embedded_mqtt/embassy_async_no_subs/hello")
+                        .payload(format!("This is my super secret payload {i}").as_bytes())
+                        .build(),
+                )
                 .await
                 .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -81,13 +72,11 @@ async fn mqttv5() {
     };
 
     let sub = async {
-        let subscribe = Subscribe::new(&[SubscribeTopic {
-            topic_path: "embedded_mqtt/embassy_async/#",
-            maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
-            no_local: false,
-            retain_as_published: false,
-            retain_handling: embedded_mqtt::RetainHandling::SendAtSubscribeTime,
-        }]);
+        let topic_paths = [SubscribeTopic::builder()
+            .topic_path("embedded_mqtt/embassy_async/#")
+            .build()];
+
+        let subscribe = Subscribe::builder().topics(&topic_paths).build();
 
         let mut msg_cnt = 0;
         let mut subscription = client.subscribe::<1>(subscribe).await.unwrap();

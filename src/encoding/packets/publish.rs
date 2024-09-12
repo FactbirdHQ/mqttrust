@@ -85,22 +85,22 @@ impl<F: Fn(&mut [u8]) -> Result<usize, Error>> ToPayload for DeferredPayload<F> 
 #[derive(Debug, Clone, PartialEq, Builder)]
 pub struct Publish<'a, P: ToPayload> {
     #[builder(default = false)]
-    pub dup: bool,
+    pub(crate) dup: bool,
 
     #[builder(default = QoS::AtLeastOnce)]
-    pub qos: QoS,
+    pub(crate) qos: QoS,
 
     #[builder(default = false)]
-    pub retain: bool,
+    pub(crate) retain: bool,
 
     #[builder(skip)]
-    pub pid: Option<Pid>,
-    pub topic_name: &'a str,
-    pub payload: P,
+    pub(crate) pid: Option<Pid>,
+    pub(crate) topic_name: &'a str,
+    pub(crate) payload: P,
 
     #[cfg(feature = "mqttv5")]
     #[builder(default = Properties::Slice(&[]))]
-    pub properties: Properties<'a>,
+    pub(crate) properties: Properties<'a>,
 }
 
 impl<'a, P: ToPayload> FixedHeader for Publish<'a, P> {

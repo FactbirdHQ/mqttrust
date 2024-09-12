@@ -30,21 +30,21 @@ pub enum RetainHandling {
 /// [Subscribe]: struct.Subscribe.html
 #[derive(Debug, Clone, PartialEq, Builder)]
 pub struct SubscribeTopic<'a> {
-    pub topic_path: &'a str,
+    pub(crate) topic_path: &'a str,
 
     #[builder(default = QoS::AtLeastOnce)]
-    pub maximum_qos: QoS,
+    pub(crate) maximum_qos: QoS,
 
     #[cfg(feature = "mqttv5")]
     #[builder(default = false)]
-    pub no_local: bool,
+    pub(crate) no_local: bool,
     #[cfg(feature = "mqttv5")]
     #[builder(default = false)]
-    pub retain_as_published: bool,
+    pub(crate) retain_as_published: bool,
 
     #[cfg(feature = "mqttv5")]
     #[builder(default = RetainHandling::SendAtSubscribeTime)]
-    pub retain_handling: RetainHandling,
+    pub(crate) retain_handling: RetainHandling,
 }
 
 impl<'a> From<SubscribeTopic<'a>> for &'a str {
@@ -65,13 +65,13 @@ impl<'a> From<&'a str> for SubscribeTopic<'a> {
 #[derive(Debug, Clone, PartialEq, Builder)]
 pub struct Subscribe<'a> {
     #[builder(skip)]
-    pub pid: Option<Pid>,
+    pub(crate) pid: Option<Pid>,
 
     #[cfg(feature = "mqttv5")]
     #[builder(default = Properties::Slice(&[]))]
-    pub properties: Properties<'a>,
+    pub(crate) properties: Properties<'a>,
 
-    pub topics: &'a [SubscribeTopic<'a>],
+    pub(crate) topics: &'a [SubscribeTopic<'a>],
 }
 
 impl<'a> FixedHeader for Subscribe<'a> {
@@ -80,17 +80,6 @@ impl<'a> FixedHeader for Subscribe<'a> {
     fn flags(&self) -> u8 {
         // Bits 3,2,1 and 0 of the fixed header of the SUBSCRIBE Control Packet are reserved and MUST be set to 0,0,1 and 0 respectively
         0b0010
-    }
-}
-
-impl<'a> Subscribe<'a> {
-    pub fn new(topics: &'a [SubscribeTopic<'a>]) -> Self {
-        Self {
-            pid: None,
-            #[cfg(feature = "mqttv5")]
-            properties: Properties::Slice(&[]),
-            topics,
-        }
     }
 }
 
