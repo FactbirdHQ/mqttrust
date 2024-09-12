@@ -176,7 +176,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
-                warn!("[DROP] Removing {} from inflight_pub & outgoing_pid!", pid);
+                warn!(
+                    "[DROP] Removing {:?} from inflight_pub & outgoing_pid!",
+                    pid
+                );
                 let _ = shared.inflight_pub.remove(&pid.get());
                 let _ = shared.outgoing_pid.remove(&pid.get());
             }
@@ -218,7 +221,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttClient<'a, M, SUBS> {
         // Cleanup `ack_status` & `outgoing_pid` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
-                warn!("[DROP] Removing {} from ack_status & outgoing_pid!", pid);
+                warn!("[DROP] Removing {:?} from ack_status & outgoing_pid!", pid);
                 let _ = shared.ack_status.remove(&pid.get());
                 let _ = shared.outgoing_pid.remove(&pid.get());
             }
