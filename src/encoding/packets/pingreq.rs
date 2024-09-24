@@ -1,5 +1,5 @@
 use crate::{
-    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
+    encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -16,12 +16,12 @@ impl FixedHeader for PingReq {
 }
 
 impl MqttEncode for PingReq {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         encoder.finalize_fixed_header(self)?;
-        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)
+        Ok(())
     }
 
     fn max_packet_size(&self) -> usize {
-        MAX_MQTT_HEADER_LEN + TX_HEADER_LEN
+        MAX_MQTT_HEADER_LEN
     }
 }

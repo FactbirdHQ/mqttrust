@@ -20,9 +20,9 @@ impl FixedHeader for PubRel {
 }
 
 impl MqttEncode for PubRel {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
         encoder.write_u16(self.pid.get())?;
         encoder.finalize_fixed_header(self)?;
-        Ok(())
+        Ok(encoder.write_tx_header(Some(self.pid))?)
     }
 }

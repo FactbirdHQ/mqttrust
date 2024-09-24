@@ -50,3 +50,18 @@ pub enum PacketType {
     Disconnect = 0xE0,
     Auth = 0xF0,
 }
+
+impl PacketType {
+    pub fn has_pid(&self) -> bool {
+        match self {
+            PacketType::Publish
+            | PacketType::PubAck
+            | PacketType::Subscribe
+            | PacketType::SubAck
+            | PacketType::Unsubscribe
+            | PacketType::UnsubAck => true,
+
+            _ => false,
+        }
+    }
+}

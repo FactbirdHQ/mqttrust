@@ -3,9 +3,9 @@ use core::task::Context;
 use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
 use heapless::{FnvIndexMap, IndexMap};
 
-use crate::client::TopicFilter;
 use crate::crate_config::{MAX_INFLIGHT, MAX_SUB_TOPICS_PER_MSG};
 use crate::encoding::Pid;
+use crate::topic_filter::TopicFilter;
 
 // Fixme: The Vec in AwaitingUnsubAck is used to hold a list of topics that we are about to unsubcribe to.
 // If we receive any msg on those topics while in AwaitingUnsubAck state we have to discard the message.
@@ -65,6 +65,20 @@ impl<const SUBS: usize> Shared<SUBS> {
             #[cfg(feature = "qos2")]
             incoming_pub: heapless::IndexSet::new(),
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.connected = None;
+
+        self.inflight_pub.clear();
+        self.ack_status.clear();
+        self.outgoing_pid.clear();
+
+        #[cfg(feature = "qos2")]
+        self.outgoing_rel.clear();
+
+        #[cfg(feature = "qos2")]
+        self.incoming_pub.clear();
     }
 
     pub fn next_pid(&mut self) -> Pid {

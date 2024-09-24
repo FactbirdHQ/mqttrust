@@ -1,5 +1,5 @@
 use crate::{
-    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
+    encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -28,7 +28,7 @@ impl<'a> FixedHeader for Disconnect<'a> {
 }
 
 impl<'a> MqttEncode for Disconnect<'a> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         if self.reason_code != DisconnectReasonCode::Normal {
             encoder.write_u8(self.reason_code as u8)?;
         }
@@ -42,7 +42,7 @@ impl<'a> MqttEncode for Disconnect<'a> {
         }
 
         encoder.finalize_fixed_header(self)?;
-        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)
+        Ok(())
     }
 
     fn max_packet_size(&self) -> usize {
@@ -61,6 +61,6 @@ impl<'a> MqttEncode for Disconnect<'a> {
             length += self.properties.size();
         }
 
-        length + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN
+        length + MAX_MQTT_HEADER_LEN
     }
 }

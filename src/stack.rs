@@ -1,5 +1,6 @@
-use core::ops::{Deref, DerefMut};
+use core::ops::DerefMut;
 
+use bitmaps::{Bits, BitsImpl};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use embassy_time::Duration;
@@ -7,20 +8,17 @@ use embassy_time::{Instant, Timer};
 use embedded_io_async::{Error as _, ReadExactError};
 use embedded_io_async::{ErrorKind, Write as _};
 
+use crate::decoder::MqttDecoder;
 use crate::Property;
 use crate::{
     config::Config,
-    encoder::TxHeader,
     encoding::{
         received_packet::ReceivedPacket, Connect, PingReq, Protocol, PubAck, QoS, QosPid,
         StateError,
     },
     error::ConnectionError,
     packet::PacketBuffer,
-    pubsub::{
-        framed::{FramePublisher, FrameSubscriber},
-        SliceBufferProvider,
-    },
+    pubsub::{FramePublisher, FrameSubscriber, SliceBufferProvider},
     state::{AckStatus, Shared},
     transport::Transport,
     Disconnect,
@@ -29,7 +27,10 @@ use crate::{
 #[cfg(feature = "qos2")]
 use crate::encoding::{PubComp, PubRec, PubRel};
 
-pub struct MqttStack<'a, M: RawMutex, const SUBS: usize> {
+pub struct MqttStack<'a, M: RawMutex, const SUBS: usize>
+where
+    BitsImpl<{ SUBS }>: Bits,
+{
     shared: &'a Mutex<M, Shared<SUBS>>,
     tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
     rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
@@ -44,7 +45,10 @@ pub struct MqttStack<'a, M: RawMutex, const SUBS: usize> {
     connect_attempts: u8,
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
+impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS>
+where
+    BitsImpl<{ SUBS }>: Bits,
+{
     pub(crate) fn new(
         config: Config,
         shared: &'a Mutex<M, Shared<SUBS>>,
@@ -104,6 +108,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                 transport.disconnect().ok();
                 self.await_pingresp = None;
                 self.connect_attempts = 0;
+                self.shared.lock().await.reset();
                 self.packet_buf.reset();
             }
         }
@@ -129,7 +134,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
             .map_err(ConnectionError::MqttState)?;
 
         transport.disconnect()?;
-        self.shared.lock().await.set_connected(None);
+        self.shared.lock().await.reset();
         Ok(())
     }
 
@@ -145,7 +150,7 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
 
         match select3(
             self.packet_buf.get_received_packet(transport),
-            self.tx_subscriber.read_async(),
+            self.tx_subscriber.read_any_async(),
             keep_alive_sleep,
         )
         .await
@@ -342,13 +347,10 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
             Either3::Second(Ok(mut tx_grant)) => {
                 tx_grant.auto_release(true);
                 // ### TX future:
-                // Based on packet QoS, add PID to state & full packet to
-                // retry buffer, before writing the packet to network
-                let (tx_header, packet_bytes) = TxHeader::from_bytes(tx_grant.deref());
 
                 transport
                     .socket()?
-                    .write_all(packet_bytes)
+                    .write_all(&tx_grant)
                     .await
                     .map_err(|e| StateError::Io(e.kind()))?;
 
@@ -359,7 +361,9 @@ impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS> {
                     .map_err(|e| StateError::Io(e.kind()))?;
 
                 let mut shared = self.shared.lock().await;
-                if let Some(pid) = tx_header.pid {
+
+                let mut decoder = MqttDecoder::try_new(&tx_grant).unwrap();
+                if let Some(pid) = decoder.read_pid() {
                     shared.outgoing_pid.remove(&pid.get());
                 }
                 shared.wake_tx();

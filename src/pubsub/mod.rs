@@ -1,27 +1,29 @@
+//! Publish/Subscribe queue directly target towards internal usage in an MQTT
+//! client implementation.
+//!
+//! This implementation is highly inspired by both `embassy_sync::Channel`, and
+//! `bbqueue`. Full credit to those projects for the complex internals.
+
 mod atomic_multiwakers;
+mod header;
+mod message;
 mod publisher;
 mod subscriber;
 
-use core::cell::UnsafeCell;
-use core::slice::from_raw_parts_mut;
-use portable_atomic::{
-    AtomicBool, AtomicUsize,
-    Ordering::{AcqRel, Acquire, Release},
-};
+use bitmaps::{Bitmap, Bits, BitsImpl};
+use core::cell::{RefCell, UnsafeCell};
+use portable_atomic::{AtomicBool, AtomicUsize, Ordering::AcqRel};
 
-use embassy_sync::waitqueue::AtomicWaker;
+use embassy_sync::{
+    blocking_mutex::{raw::CriticalSectionRawMutex, Mutex},
+    waitqueue::AtomicWaker,
+};
+pub use message::*;
 pub use publisher::*;
 pub use subscriber::*;
 
 mod buffer_provider;
 pub use buffer_provider::*;
-
-use crate::pubsub::vusize::{decode_usize, decoded_len};
-
-use self::framed::{FrameGrantR, FramePublisher, FrameSubscriber};
-
-pub mod framed;
-pub(crate) mod vusize;
 
 /// Result type used by the `BBQueue` interfaces
 pub type Result<T> = core::result::Result<T, Error>;
@@ -37,12 +39,17 @@ pub enum Error {
     /// progress
     GrantInProgress,
 
+    MismatchedTopicFilter,
+
     PublisherAlreadyTaken,
 
     MaximumSubscribersReached,
 }
 
-pub struct PubSubChannel<B: BufferProvider, const SUBS: usize> {
+pub struct PubSubChannel<B: BufferProvider, const SUBS: usize>
+where
+    BitsImpl<{ SUBS }>: Bits,
+{
     /// The buffer provider
     pub(crate) buf: UnsafeCell<B>,
 
@@ -77,7 +84,7 @@ pub struct PubSubChannel<B: BufferProvider, const SUBS: usize> {
     /// Collection of wakers for [`Subscriber`]'s that are waiting.  
     pub(crate) subscriber_wakers: atomic_multiwakers::MultiWakerRegistration<SUBS>,
 
-    pub(crate) subscriber_count: AtomicUsize,
+    pub(crate) subscribers_taken: Mutex<CriticalSectionRawMutex, RefCell<Bitmap<SUBS>>>,
     pub(crate) publisher_taken: AtomicBool,
 
     /// Write waker for async support
@@ -85,7 +92,10 @@ pub struct PubSubChannel<B: BufferProvider, const SUBS: usize> {
     pub(crate) publisher_waker: AtomicWaker,
 }
 
-impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
+impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS>
+where
+    BitsImpl<{ SUBS }>: Bits,
+{
     pub fn new(mut buf: B) -> Self {
         Self {
             capacity: buf.buf().len(),
@@ -98,132 +108,30 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
             write_in_progress: AtomicBool::new(false),
             publisher_taken: AtomicBool::new(false),
             publisher_waker: AtomicWaker::new(),
-            subscriber_count: AtomicUsize::new(0),
+            subscribers_taken: Mutex::new(RefCell::new(Bitmap::new())),
             subscriber_wakers: atomic_multiwakers::MultiWakerRegistration::new(),
-        }
-    }
-
-    pub fn read(&mut self) -> Result<GrantR<'_, B, SUBS>> {
-        if self.write_in_progress.swap(true, AcqRel) {
-            return Err(Error::GrantInProgress);
-        }
-
-        let write = self.write.load(Acquire);
-        let last = self.last.load(Acquire);
-        let mut read = self.read.load(Acquire);
-
-        // Resolve the inverted case or end of read
-        if (read == last) && (write < read) {
-            read = 0;
-            // This has some room for error, the other thread reads this
-            // Impact to Grant:
-            //   Grant checks if read < write to see if inverted. If not inverted, but
-            //     no space left, Grant will initiate an inversion, but will not trigger it
-            // Impact to Commit:
-            //   Commit does not check read, but if Grant has started an inversion,
-            //   grant could move Last to the prior write position
-            // MOVING READ BACKWARDS!
-            self.read.store(0, Release);
-        }
-
-        let sz = if write < read {
-            // Inverted, only believe last
-            last
-        } else {
-            // Not inverted, only believe write
-            write
-        } - read;
-
-        if sz == 0 {
-            self.read_in_progress.store(false, Release);
-            return Err(Error::InsufficientSize);
-        }
-
-        // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
-        // are all `#[repr(Transparent)]
-        let start_of_buf_ptr = unsafe { (*self.buf.get()).buf().as_mut_ptr().cast::<u8>() };
-        let grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(read), sz) };
-
-        Ok(GrantR {
-            buf: grant_slice,
-            channel: self,
-            to_release: 0,
-        })
-    }
-
-    /// Obtain the next available frame, if any
-    pub fn read_framed(&mut self) -> Option<FrameGrantR<'_, B, SUBS>> {
-        // Get all available bytes. We never wrap a frame around,
-        // so if a header is available, the whole frame will be.
-        let mut grant_r = self.read().ok()?;
-
-        // Additionally, we never commit less than a full frame with
-        // a header, so if we have ANY data, we'll have a full header
-        // and frame. `Subscriber::read` will return an Error when
-        // there are 0 bytes available.
-
-        // The header consists of a single usize, encoded in native
-        // endianness order
-        let frame_len = decode_usize(&grant_r);
-        let hdr_len = decoded_len(grant_r[0]);
-        let total_len = frame_len + hdr_len;
-        let hdr_len = hdr_len as u8;
-
-        debug_assert!(grant_r.len() >= total_len);
-
-        // Reduce the grant down to the size of the frame with a header
-        grant_r.shrink(total_len);
-
-        Some(FrameGrantR { grant_r, hdr_len })
-    }
-
-    /// Create a new [`Subscriber`]. It will only receive messages that are published after its creation.
-    ///
-    /// If there are no subscriber slots left, an error will be returned.
-    pub fn subscriber(&self) -> Result<Subscriber<'_, B, SUBS>> {
-        if self.subscriber_count.load(Acquire) >= SUBS {
-            Err(Error::MaximumSubscribersReached)
-        } else {
-            self.subscriber_count.fetch_add(1, AcqRel);
-            Ok(Subscriber::new(self))
         }
     }
 
     /// Create a new `FrameSubscriber`. It will only receive messages that are published after its creation.
     ///
     /// If there are no subscriber slots left, an error will be returned.
-    pub fn framed_subscriber(&self) -> Result<FrameSubscriber<'_, B, SUBS>> {
-        if self.subscriber_count.load(Acquire) >= SUBS {
-            Err(Error::MaximumSubscribersReached)
-        } else {
-            self.subscriber_count.fetch_add(1, AcqRel);
-            Ok(FrameSubscriber::new(self))
-        }
+    pub fn subscriber(&self) -> Result<FrameSubscriber<'_, B, SUBS>> {
+        self.subscribers_taken.lock(|f| {
+            let mut map = f.borrow_mut();
+            if let Some(id) = map.first_false_index() {
+                map.set(id, true);
+                Ok(FrameSubscriber::new(self, id))
+            } else {
+                Err(Error::MaximumSubscribersReached)
+            }
+        })
     }
 
-    /// Create a new `Publisher`.
+    /// Create a new `FramePublisher`.
     ///
     /// If a publisher has already been taken, an error will be returned.
-    pub fn publisher(&self) -> Result<Publisher<'_, B, SUBS>> {
-        if self.publisher_taken.swap(true, AcqRel) {
-            return Err(Error::PublisherAlreadyTaken);
-        }
-
-        unsafe {
-            // Explicitly zero the data to avoid undefined behavior.
-            // This is required, because we hand out references to the buffers,
-            // which mean that creating them as references is technically UB for now
-            let mu_ptr = (*self.buf.get()).buf();
-            core::ptr::write_bytes(mu_ptr.as_mut_ptr(), 0, mu_ptr.len());
-        }
-
-        Ok(Publisher::new(self))
-    }
-
-    /// Create a new `Publisher`.
-    ///
-    /// If a publisher has already been taken, an error will be returned.
-    pub fn framed_publisher(&self) -> Result<FramePublisher<'_, B, SUBS>> {
+    pub fn publisher(&self) -> Result<FramePublisher<'_, B, SUBS>> {
         if self.publisher_taken.swap(true, AcqRel) {
             return Err(Error::PublisherAlreadyTaken);
         }
@@ -240,356 +148,400 @@ impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS> {
     }
 }
 
-impl<'a, const SUBS: usize> PubSubChannel<SliceBufferProvider<'a>, SUBS> {
+impl<'a, const SUBS: usize> PubSubChannel<SliceBufferProvider<'a>, SUBS>
+where
+    BitsImpl<{ SUBS }>: Bits,
+{
     pub fn new_from_slice(buf: &'a mut [u8]) -> Self {
         Self::new(SliceBufferProvider::new(buf))
     }
 }
 
-impl<const N: usize, const SUBS: usize> PubSubChannel<StaticBufferProvider<N>, SUBS> {
-    pub const fn new_static() -> Self {
-        Self {
-            capacity: N,
-            buf: UnsafeCell::new(StaticBufferProvider::new()),
-            write: AtomicUsize::new(0),
-            read: AtomicUsize::new(0),
-            last: AtomicUsize::new(0),
-            reserve: AtomicUsize::new(0),
-            read_in_progress: AtomicBool::new(false),
-            write_in_progress: AtomicBool::new(false),
-            publisher_taken: AtomicBool::new(false),
-            publisher_waker: AtomicWaker::new(),
-            subscriber_count: AtomicUsize::new(0),
-            subscriber_wakers: atomic_multiwakers::MultiWakerRegistration::new(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Error, PubSubChannel, StaticBufferProvider};
-    use rand::prelude::*;
-    use std::thread::spawn;
-    use std::time::{Duration, Instant};
-
-    const ITERS: usize = 10_000;
-
-    const RPT_IVAL: usize = ITERS / 100;
-
-    const QUEUE_SIZE: usize = 1024;
-
-    const TIMEOUT_NODATA: Duration = Duration::from_millis(10_000);
+    use super::{PubSubChannel, StaticBufferProvider};
+    use embassy_futures::block_on;
 
     #[test]
-    fn randomize_tx() {
-        println!("RTX: Generating Test Data...");
-        let gen_start = Instant::now();
-        let mut data = Vec::with_capacity(ITERS);
-        (0..ITERS).for_each(|_| data.push(rand::random::<u8>()));
-        let mut data_rx = data.clone();
+    fn frame_wrong_size() {
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
 
-        let mut trng = thread_rng();
-        let mut chunks = vec![];
-        while !data.is_empty() {
-            let chunk_sz = trng.gen_range(1..(1024 - 1) / 2);
-            if chunk_sz > data.len() {
-                continue;
-            }
+        // Create largeish grants
+        let mut wgr = publisher.grant(127).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        // Note: In debug mode, this hits a debug_assert
+        wgr.commit(256);
 
-            // Note: This gives back data in chunks in reverse order.
-            // We later .rev()` this to fix it
-            chunks.push(data.split_off(data.len() - chunk_sz));
+        let rgr = subscriber.read_any().unwrap();
+        assert_eq!(rgr.len(), 127);
+        for (i, by) in rgr.iter().enumerate() {
+            assert_eq!((i as u8), *by);
+        }
+        rgr.release();
+    }
+
+    #[test]
+    fn full_size() {
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+        let mut ctr = 0;
+
+        for _ in 0..100 {
+            // Create largeish grants
+            if let Ok(mut wgr) = publisher.grant(127) {
+                ctr += 1;
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
+                }
+                wgr.commit(127);
+
+                let rgr = subscriber.read_any().unwrap();
+                assert_eq!(rgr.len(), 127);
+                for (i, by) in rgr.iter().enumerate() {
+                    assert_eq!((i as u8), *by);
+                }
+                rgr.release();
+            } else {
+                // Create smallish grants
+                let mut wgr = publisher.grant(1).unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
+                }
+                wgr.commit(1);
+
+                let rgr = subscriber.read_any().unwrap();
+                assert_eq!(rgr.len(), 1);
+                for (i, by) in rgr.iter().enumerate() {
+                    assert_eq!((i as u8), *by);
+                }
+                rgr.release();
+            };
         }
 
-        println!("RTX: Generation complete: {:?}", gen_start.elapsed());
-
-        println!("RTX: Running test...");
-
-        static mut PUBSUB: PubSubChannel<StaticBufferProvider<QUEUE_SIZE>, 1> =
-            PubSubChannel::new_static();
-        let mut tx = unsafe { PUBSUB.publisher().unwrap() };
-        let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
-
-        let mut last_tx = Instant::now();
-        let mut last_rx = last_tx;
-        let start_time = last_tx;
-
-        let tx_thread = spawn(move || {
-            let mut txd_ct = 0;
-            let mut txd_ivl = 0;
-
-            for (i, ch) in chunks.iter().rev().enumerate() {
-                let mut semichunk = ch.to_owned();
-                // println!("semi: {:?}", semichunk);
-
-                while !semichunk.is_empty() {
-                    if last_tx.elapsed() > TIMEOUT_NODATA {
-                        panic!("tx timeout, iter {}", i);
-                    }
-
-                    'sizer: for sz in (1..(semichunk.len() + 1)).rev() {
-                        if let Ok(mut gr) = tx.grant_exact(sz) {
-                            // how do you do this idiomatically?
-                            (0..sz).for_each(|idx| {
-                                gr[idx] = semichunk.remove(0);
-                            });
-                            gr.commit(sz);
-
-                            // Update tracking
-                            last_tx = Instant::now();
-                            txd_ct += sz;
-                            if (txd_ct / RPT_IVAL) > txd_ivl {
-                                txd_ivl = txd_ct / RPT_IVAL;
-
-                                println!("{:?} - rtxtx: {}", start_time.elapsed(), txd_ct);
-                            }
-
-                            break 'sizer;
-                        }
-                    }
-                }
-            }
-        });
-
-        let rx_thread = spawn(move || {
-            let mut rxd_ct = 0;
-            let mut rxd_ivl = 0;
-
-            for i in data_rx.drain(..) {
-                'inner: loop {
-                    if last_rx.elapsed() > TIMEOUT_NODATA {
-                        panic!("rx timeout, iter {}", i);
-                    }
-                    let gr = match rx.read() {
-                        Ok(gr) => gr,
-                        Err(Error::InsufficientSize) => continue 'inner,
-                        Err(_) => panic!(),
-                    };
-
-                    let act = gr[0] as u8;
-                    let exp = i;
-                    if act != exp {
-                        println!("act: {:?}, exp: {:?}", act, exp);
-
-                        println!("len: {:?}", gr.len());
-
-                        // println!("{:?}", gr);
-                        panic!("RX Iter: {}, mod: {}", i, i % 6);
-                    }
-                    gr.release(1);
-
-                    // Update tracking
-                    last_rx = Instant::now();
-                    rxd_ct += 1;
-                    if (rxd_ct / RPT_IVAL) > rxd_ivl {
-                        rxd_ivl = rxd_ct / RPT_IVAL;
-
-                        println!("{:?} - rtxrx: {}", start_time.elapsed(), rxd_ct);
-                    }
-
-                    break 'inner;
-                }
-            }
-        });
-
-        tx_thread.join().unwrap();
-        rx_thread.join().unwrap();
+        assert!(ctr > 1);
     }
 
     #[test]
-    fn sanity_check() {
-        static mut PUBSUB: PubSubChannel<StaticBufferProvider<QUEUE_SIZE>, 1> =
-            PubSubChannel::new_static();
-        let mut tx = unsafe { PUBSUB.publisher().unwrap() };
-        let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
+    fn frame_overcommit() {
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 3> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
 
-        let mut last_tx = Instant::now();
-        let mut last_rx = last_tx;
-        let start_time = last_tx;
+        // Create largeish grants
+        let mut wgr = publisher.grant(128).unwrap();
+        assert_eq!(wgr.len(), 128);
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        wgr.commit(255);
 
-        let tx_thread = spawn(move || {
-            let mut txd_ct = 0;
-            let mut txd_ivl = 0;
+        let mut wgr = publisher.grant(64).unwrap();
+        assert_eq!(wgr.len(), 64);
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = (i as u8) + 128;
+        }
+        wgr.commit(127);
 
-            for i in 0..ITERS {
-                'inner: loop {
-                    if last_tx.elapsed() > TIMEOUT_NODATA {
-                        panic!("tx timeout, iter {}", i);
-                    }
-                    if let Ok(mut gr) = tx.grant_exact(1) {
-                        gr[0] = (i & 0xFF) as u8;
-                        gr.commit(1);
+        let rgr = subscriber.read_any().unwrap();
+        assert_eq!(rgr.len(), 128);
+        rgr.release();
 
-                        // Update tracking
-                        last_tx = Instant::now();
-                        txd_ct += 1;
-                        if (txd_ct / RPT_IVAL) > txd_ivl {
-                            txd_ivl = txd_ct / RPT_IVAL;
+        let rgr = subscriber.read_any().unwrap();
+        assert_eq!(rgr.len(), 64);
+        rgr.release();
+    }
 
-                            println!("{:?} - sctx: {}", start_time.elapsed(), txd_ct);
-                        }
+    #[test]
+    fn frame_undercommit() {
+        let pubsub: PubSubChannel<StaticBufferProvider<512>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
 
-                        break 'inner;
-                    }
-                }
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        for _ in 0..100 {
+            // Create largeish grants
+            let mut wgr = publisher.grant(128).unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = i as u8;
             }
-        });
+            wgr.commit(13);
 
-        let rx_thread = spawn(move || {
-            let mut rxd_ct = 0;
-            let mut rxd_ivl = 0;
+            let mut wgr = publisher.grant(64).unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = (i as u8) + 128;
+            }
+            wgr.commit(7);
 
-            let mut i = 0;
+            let mut wgr = publisher.grant(32).unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = (i as u8) + 192;
+            }
+            wgr.commit(0);
 
-            while i < ITERS {
-                if last_rx.elapsed() > TIMEOUT_NODATA {
-                    panic!("rx timeout, iter {}", i);
+            let rgr = subscriber.read_any().unwrap();
+            assert_eq!(rgr.len(), 13);
+            rgr.release();
+
+            let rgr = subscriber.read_any().unwrap();
+            assert_eq!(rgr.len(), 7);
+            rgr.release();
+
+            let rgr = subscriber.read_any().unwrap();
+            assert_eq!(rgr.len(), 0);
+            rgr.release();
+        }
+    }
+
+    #[test]
+    fn frame_auto_commit_release() {
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        for _ in 0..100 {
+            {
+                let mut wgr = publisher.grant(64).unwrap();
+                wgr.to_commit(64);
+                assert_eq!(wgr.len(), 64);
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
                 }
+                // drop
+            }
 
-                let gr = match rx.read() {
-                    Ok(gr) => gr,
-                    Err(Error::InsufficientSize) => continue,
-                    Err(_) => panic!(),
+            {
+                let mut rgr = subscriber.read_any().unwrap();
+                rgr.auto_release(true);
+                assert_eq!(rgr.len(), 64);
+                for (i, by) in rgr.iter().enumerate() {
+                    assert_eq!(*by, i as u8);
+                }
+                // drop
+            }
+        }
+
+        assert!(subscriber.read_any().is_err());
+    }
+
+    #[test]
+    fn async_frame_wrong_size() {
+        block_on(async {
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+                PubSubChannel::new(StaticBufferProvider::new());
+            let mut publisher = pubsub.publisher().unwrap();
+            let mut subscriber = pubsub.subscriber().unwrap();
+
+            // Create largeish grants
+            let mut wgr = publisher.grant_async(127).await.unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = i as u8;
+            }
+            // Note: In debug mode, this hits a debug_assert
+            wgr.commit(256);
+
+            let rgr = subscriber.read_any_async().await.unwrap();
+            assert_eq!(rgr.len(), 127);
+            for (i, by) in rgr.iter().enumerate() {
+                assert_eq!((i as u8), *by);
+            }
+            rgr.release();
+        });
+    }
+
+    #[test]
+    fn async_full_size() {
+        block_on(async {
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+                PubSubChannel::new(StaticBufferProvider::new());
+            let mut publisher = pubsub.publisher().unwrap();
+            let mut subscriber = pubsub.subscriber().unwrap();
+
+            let mut ctr = 0;
+
+            for _ in 0..100 {
+                // Create largeish grants
+                if let Ok(mut wgr) = publisher.grant_async(127).await {
+                    ctr += 1;
+                    for (i, by) in wgr.iter_mut().enumerate() {
+                        *by = i as u8;
+                    }
+                    wgr.commit(127);
+
+                    let rgr = subscriber.read_any_async().await.unwrap();
+                    assert_eq!(rgr.len(), 127);
+                    for (i, by) in rgr.iter().enumerate() {
+                        assert_eq!((i as u8), *by);
+                    }
+                    rgr.release();
+                } else {
+                    // Create smallish grants
+                    let mut wgr = publisher.grant_async(1).await.unwrap();
+                    for (i, by) in wgr.iter_mut().enumerate() {
+                        *by = i as u8;
+                    }
+                    wgr.commit(1);
+
+                    let rgr = subscriber.read_any_async().await.unwrap();
+                    assert_eq!(rgr.len(), 1);
+                    for (i, by) in rgr.iter().enumerate() {
+                        assert_eq!((i as u8), *by);
+                    }
+                    rgr.release();
                 };
-
-                for data in &*gr {
-                    let act = *data;
-                    let exp = (i & 0xFF) as u8;
-                    if act != exp {
-                        // println!("baseptr: {}", panny);
-
-                        println!("offendr: {:p}", &gr[0]);
-
-                        println!("act: {:?}, exp: {:?}", act, exp);
-
-                        println!("len: {:?}", gr.len());
-
-                        // println!("{:?}", &gr);
-                        panic!("RX Iter: {}, mod: {}", i, i % 6);
-                    }
-
-                    i += 1;
-                }
-
-                let len = gr.len();
-                rxd_ct += len;
-                gr.release(len);
-
-                // Update tracking
-                last_rx = Instant::now();
-                if (rxd_ct / RPT_IVAL) > rxd_ivl {
-                    rxd_ivl = rxd_ct / RPT_IVAL;
-
-                    println!("{:?} - scrx: {}", start_time.elapsed(), rxd_ct);
-                }
             }
-        });
 
-        tx_thread.join().unwrap();
-        rx_thread.join().unwrap();
+            assert!(ctr > 1);
+        });
     }
 
     #[test]
-    fn sanity_check_grant_max() {
-        static mut PUBSUB: PubSubChannel<StaticBufferProvider<QUEUE_SIZE>, 1> =
-            PubSubChannel::new_static();
-        let mut tx = unsafe { PUBSUB.publisher().unwrap() };
-        let mut rx = unsafe { PUBSUB.subscriber().unwrap() };
+    fn async_frame_overcommit() {
+        block_on(async {
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+                PubSubChannel::new(StaticBufferProvider::new());
+            let mut publisher = pubsub.publisher().unwrap();
+            let mut subscriber = pubsub.subscriber().unwrap();
 
-        println!("SCGM: Generating Test Data...");
-        let gen_start = Instant::now();
+            // Create largeish grants
+            let mut wgr = publisher.grant_async(128).await.unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = i as u8;
+            }
+            wgr.commit(255);
 
-        let mut data_tx = (0..ITERS).map(|i| (i & 0xFF) as u8).collect::<Vec<_>>();
-        let mut data_rx = data_tx.clone();
+            let mut wgr = publisher.grant_async(64).await.unwrap();
+            for (i, by) in wgr.iter_mut().enumerate() {
+                *by = (i as u8) + 128;
+            }
+            wgr.commit(127);
 
-        println!("SCGM: Generated Test Data in: {:?}", gen_start.elapsed());
+            let rgr = subscriber.read_any_async().await.unwrap();
+            assert_eq!(rgr.len(), 128);
+            rgr.release();
 
-        println!("SCGM: Starting Test...");
+            let rgr = subscriber.read_any_async().await.unwrap();
+            assert_eq!(rgr.len(), 64);
+            rgr.release();
+        });
+    }
 
-        let mut last_tx = Instant::now();
-        let mut last_rx = last_tx;
-        let start_time = last_tx;
+    #[test]
+    fn async_frame_undercommit() {
+        block_on(async {
+            let pubsub: PubSubChannel<StaticBufferProvider<512>, 1> =
+                PubSubChannel::new(StaticBufferProvider::new());
+            let mut publisher = pubsub.publisher().unwrap();
+            let mut subscriber = pubsub.subscriber().unwrap();
 
-        let tx_thread = spawn(move || {
-            let mut txd_ct = 0;
-            let mut txd_ivl = 0;
-
-            let mut trng = thread_rng();
-
-            while !data_tx.is_empty() {
-                'inner: loop {
-                    if last_tx.elapsed() > TIMEOUT_NODATA {
-                        panic!("tx timeout");
-                    }
-                    if let Ok(mut gr) = tx.grant_max_remaining(
-                        trng.gen_range((QUEUE_SIZE / 3)..((2 * QUEUE_SIZE) / 3)),
-                    ) {
-                        let sz = ::std::cmp::min(data_tx.len(), gr.len());
-                        for i in 0..sz {
-                            gr[i] = data_tx.pop().unwrap();
-                        }
-
-                        // Update tracking
-                        last_tx = Instant::now();
-                        txd_ct += sz;
-                        if (txd_ct / RPT_IVAL) > txd_ivl {
-                            txd_ivl = txd_ct / RPT_IVAL;
-
-                            println!("{:?} - scgmtx: {}", start_time.elapsed(), txd_ct);
-                        }
-
-                        let len = gr.len();
-                        gr.commit(len);
-                        break 'inner;
-                    }
+            for _ in 0..100 {
+                // Create largeish grants
+                let mut wgr = publisher.grant_async(128).await.unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = i as u8;
                 }
+                wgr.commit(13);
+
+                let mut wgr = publisher.grant_async(64).await.unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = (i as u8) + 128;
+                }
+                wgr.commit(7);
+
+                let mut wgr = publisher.grant_async(32).await.unwrap();
+                for (i, by) in wgr.iter_mut().enumerate() {
+                    *by = (i as u8) + 192;
+                }
+                wgr.commit(0);
+
+                let rgr = subscriber.read_any_async().await.unwrap();
+                assert_eq!(rgr.len(), 13);
+                rgr.release();
+
+                let rgr = subscriber.read_any_async().await.unwrap();
+                assert_eq!(rgr.len(), 7);
+                rgr.release();
+
+                let rgr = subscriber.read_any_async().await.unwrap();
+                assert_eq!(rgr.len(), 0);
+                rgr.release();
             }
         });
+    }
 
-        let rx_thread = spawn(move || {
-            let mut rxd_ct = 0;
-            let mut rxd_ivl = 0;
+    #[test]
+    fn async_frame_auto_commit_release() {
+        block_on(async {
+            let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+                PubSubChannel::new(StaticBufferProvider::new());
+            let mut publisher = pubsub.publisher().unwrap();
+            let mut subscriber = pubsub.subscriber().unwrap();
 
-            while !data_rx.is_empty() {
-                'inner: loop {
-                    if last_rx.elapsed() > TIMEOUT_NODATA {
-                        panic!("rx timeout");
+            for _ in 0..100 {
+                {
+                    let mut wgr = publisher.grant_async(64).await.unwrap();
+                    wgr.to_commit(64);
+                    for (i, by) in wgr.iter_mut().enumerate() {
+                        *by = i as u8;
                     }
-                    let gr = match rx.read() {
-                        Ok(gr) => gr,
-                        Err(Error::InsufficientSize) => continue 'inner,
-                        Err(_) => panic!(),
-                    };
+                    // drop
+                }
 
-                    let act = gr[0];
-                    let exp = data_rx.pop().unwrap();
-                    if act != exp {
-                        println!("offendr: {:p}", &gr[0]);
+                {
+                    let mut rgr = subscriber.read_any_async().await.unwrap();
+                    rgr.auto_release(true);
+                    let rgr = rgr;
 
-                        println!("act: {:?}, exp: {:?}", act, exp);
-
-                        println!("len: {:?}", gr.len());
-
-                        // println!("{:?}", gr);
-                        panic!("RX Iter: {}", rxd_ct);
+                    for (i, by) in rgr.iter().enumerate() {
+                        assert_eq!(*by, i as u8);
                     }
-                    gr.release(1);
-
-                    // Update tracking
-                    last_rx = Instant::now();
-                    rxd_ct += 1;
-                    if (rxd_ct / RPT_IVAL) > rxd_ivl {
-                        rxd_ivl = rxd_ct / RPT_IVAL;
-
-                        println!("{:?} - scgmrx: {}", start_time.elapsed(), rxd_ct);
-                    }
-
-                    break 'inner;
+                    assert_eq!(rgr.len(), 64);
+                    // drop
                 }
             }
-        });
 
-        tx_thread.join().unwrap();
-        rx_thread.join().unwrap();
+            assert!(subscriber.read_any().is_err());
+        });
+    }
+
+    #[test]
+    fn subscriber_bitmap() {
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 10> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        {
+            let _subscriber1 = pubsub.subscriber().unwrap();
+            let _subscriber2 = pubsub.subscriber().unwrap();
+            let _subscriber3 = pubsub.subscriber().unwrap();
+            let _subscriber4 = pubsub.subscriber().unwrap();
+
+            let map = pubsub.subscribers_taken.lock(|s| s.borrow().clone());
+            assert_eq!(map.as_bytes()[0], 0b00001111);
+            assert_eq!(map.as_bytes()[1], 0b00000000);
+
+            drop(_subscriber3);
+
+            let map = pubsub.subscribers_taken.lock(|s| s.borrow().clone());
+            assert_eq!(map.as_bytes()[0], 0b00001011);
+            assert_eq!(map.as_bytes()[1], 0b00000000);
+
+            let _subscriber3 = pubsub.subscriber().unwrap();
+
+            let map = pubsub.subscribers_taken.lock(|s| s.borrow().clone());
+            assert_eq!(map.as_bytes()[0], 0b00001111);
+            assert_eq!(map.as_bytes()[1], 0b00000000);
+        }
+
+        let map = pubsub.subscribers_taken.lock(|s| s.borrow().clone());
+        assert_eq!(map.as_bytes()[0], 0b00000000);
+        assert_eq!(map.as_bytes()[1], 0b00000000);
     }
 }

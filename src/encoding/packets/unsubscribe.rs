@@ -1,5 +1,5 @@
 use crate::{
-    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
+    encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -46,7 +46,7 @@ impl<'a> Unsubscribe<'a> {
 }
 
 impl<'a> MqttEncode for Unsubscribe<'a> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         encoder.write_u16(self.pid.unwrap_or_default().get())?;
 
         #[cfg(feature = "mqttv5")]
@@ -58,7 +58,7 @@ impl<'a> MqttEncode for Unsubscribe<'a> {
 
         encoder.finalize_fixed_header(self)?;
 
-        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)
+        Ok(())
     }
 
     fn set_pid(&mut self, pid: Pid) {
@@ -66,7 +66,7 @@ impl<'a> MqttEncode for Unsubscribe<'a> {
     }
 
     fn max_packet_size(&self) -> usize {
-        let mut length = 2 + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN;
+        let mut length = 2 + MAX_MQTT_HEADER_LEN;
 
         #[cfg(feature = "mqttv5")]
         {

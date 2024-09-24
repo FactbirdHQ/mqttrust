@@ -1,11 +1,10 @@
 use super::{error::Error, utils::Pid, FixedHeader, QoS};
 
-use crate::{varint_len, PacketType, ToPayload};
+use crate::{varint_len, ToPayload};
 #[cfg(feature = "mqttv5")]
 use crate::{Properties, Property, PropertyIdentifier};
 
 pub(crate) const MAX_MQTT_HEADER_LEN: usize = 5;
-pub(crate) const TX_HEADER_LEN: usize = 5;
 
 pub struct MqttEncoder<'a> {
     buf: &'a mut [u8],
@@ -18,8 +17,8 @@ impl<'a> MqttEncoder<'a> {
     pub fn new(buf: &'a mut [u8]) -> Self {
         Self {
             buf,
-            offset: MAX_MQTT_HEADER_LEN + TX_HEADER_LEN,
-            header_start: MAX_MQTT_HEADER_LEN + TX_HEADER_LEN,
+            offset: MAX_MQTT_HEADER_LEN,
+            header_start: MAX_MQTT_HEADER_LEN,
             include_header: true,
         }
     }
@@ -34,7 +33,7 @@ impl<'a> MqttEncoder<'a> {
 
     pub(crate) fn finalize_fixed_header(&mut self, v: &impl FixedHeader) -> Result<(), Error> {
         if self.include_header {
-            let remaining_len = self.offset - MAX_MQTT_HEADER_LEN - TX_HEADER_LEN;
+            let remaining_len = self.offset - MAX_MQTT_HEADER_LEN;
             self.offset = self.header_start - varint_len(remaining_len) - 1;
             self.header_start = self.offset;
             self.write_u8(v.packet_type() | v.flags())?;
@@ -42,25 +41,11 @@ impl<'a> MqttEncoder<'a> {
             self.offset += remaining_len;
         }
 
+        self.buf[..self.offset].rotate_left(self.header_start);
+        self.offset -= self.header_start;
+        self.header_start = 0;
+
         Ok(())
-    }
-
-    pub(crate) fn write_tx_header(
-        &mut self,
-        packet_type: PacketType,
-        qos: Option<QoS>,
-        pid: Option<Pid>,
-    ) -> Result<TxHeader, Error> {
-        let tx_header = TxHeader {
-            typ: packet_type,
-            qos,
-            pid,
-            packet_start: self.header_start as u8,
-        };
-
-        tx_header.to_bytes(&mut self.buf[0..TX_HEADER_LEN])?;
-
-        Ok(tx_header)
     }
 
     pub(crate) fn check_remaining(&self, len: u32) -> Result<(), Error> {
@@ -203,7 +188,7 @@ impl<'a> MqttEncoder<'a> {
 
 #[allow(unused_variables)]
 pub trait MqttEncode: FixedHeader {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error>;
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error>;
 
     fn max_packet_size(&self) -> usize;
 
@@ -211,43 +196,5 @@ pub trait MqttEncode: FixedHeader {
 
     fn get_qos(&self) -> Option<QoS> {
         None
-    }
-}
-
-// FIXME: don't hand-roll these serializations?
-pub(crate) struct TxHeader {
-    pub typ: PacketType,
-    pub qos: Option<QoS>,
-    pub pid: Option<Pid>,
-    pub packet_start: u8,
-}
-
-impl TxHeader {
-    pub(crate) fn from_bytes(bytes: &[u8]) -> (Self, &[u8]) {
-        let packet_start = bytes[4];
-        (
-            Self {
-                typ: PacketType::try_from(bytes[0]).unwrap(),
-                qos: QoS::try_from(bytes[1]).ok(),
-                pid: Pid::try_from(u16::from_le_bytes(bytes[2..4].try_into().unwrap())).ok(),
-                packet_start,
-            },
-            &bytes[packet_start as usize..],
-        )
-    }
-
-    pub(crate) fn to_bytes(&self, buf: &mut [u8]) -> Result<(), Error> {
-        if buf.len() < 5 {
-            return Err(Error::BufferSize);
-        }
-
-        buf[0] = u8::from(self.typ);
-        buf[1] = match self.qos {
-            Some(qos) => u8::from(qos),
-            None => 0xFF,
-        };
-        buf[2..4].copy_from_slice(&self.pid.unwrap_or_default().get().to_le_bytes()[..]);
-        buf[4] = self.packet_start;
-        Ok(())
     }
 }

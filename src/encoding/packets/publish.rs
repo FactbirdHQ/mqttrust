@@ -2,7 +2,7 @@ use bon::Builder;
 use core::fmt::Debug;
 
 use crate::{
-    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
+    encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -120,7 +120,7 @@ impl<'a, P: ToPayload> FixedHeader for Publish<'a, P> {
 }
 
 impl<'a, P: ToPayload> MqttEncode for Publish<'a, P> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         // Topic
         encoder.write_str(self.topic_name)?;
 
@@ -144,7 +144,7 @@ impl<'a, P: ToPayload> MqttEncode for Publish<'a, P> {
 
         encoder.finalize_fixed_header(self)?;
 
-        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), self.pid)
+        Ok(())
     }
 
     fn set_pid(&mut self, pid: Pid) {
@@ -161,7 +161,7 @@ impl<'a, P: ToPayload> MqttEncode for Publish<'a, P> {
                 QoS::AtMostOnce => 0,
                 _ => 2,
             } // pid
-            + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN;
+            + MAX_MQTT_HEADER_LEN;
 
         #[cfg(feature = "mqttv5")]
         {
@@ -246,7 +246,7 @@ mod tests {
         let mut encoder = MqttEncoder::new(&mut buf);
         publish.to_buffer(&mut encoder).unwrap();
 
-        assert_eq!(publish.max_packet_size(), 67);
+        assert_eq!(publish.max_packet_size(), 62);
         assert_eq!(encoder.packet_bytes(), expected_bytes);
     }
 
@@ -281,7 +281,7 @@ mod tests {
         let mut encoder = MqttEncoder::new(&mut buf);
         publish.to_buffer(&mut encoder).unwrap();
 
-        assert_eq!(publish.max_packet_size(), 67);
+        assert_eq!(publish.max_packet_size(), 62);
         assert_eq!(encoder.packet_bytes(), expected_bytes);
     }
 }

@@ -1,7 +1,7 @@
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
-    encoder::{TxHeader, MAX_MQTT_HEADER_LEN, TX_HEADER_LEN},
+    encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
@@ -97,7 +97,7 @@ impl<'a> FixedHeader for Connect<'a> {
 }
 
 impl MqttEncode for Connect<'_> {
-    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<TxHeader, Error> {
+    fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         encoder.write_str(self.protocol.name())?;
         encoder.write_u8(self.protocol.into())?;
 
@@ -137,7 +137,7 @@ impl MqttEncode for Connect<'_> {
 
         encoder.finalize_fixed_header(self)?;
 
-        encoder.write_tx_header(Self::PACKET_TYPE, self.get_qos(), None)
+        Ok(())
     }
 
     fn max_packet_size(&self) -> usize {
@@ -167,7 +167,7 @@ impl MqttEncode for Connect<'_> {
             length += 2 + password.len();
         };
 
-        length + MAX_MQTT_HEADER_LEN + TX_HEADER_LEN
+        length + MAX_MQTT_HEADER_LEN
     }
 }
 

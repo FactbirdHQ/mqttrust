@@ -7,7 +7,6 @@ pub type BackoffAlgo = fn(u8) -> Duration;
 
 #[derive(Debug)]
 pub struct Config {
-    // pub(crate) broker: Broker,
     // pub(crate) will: Option<SerializedWill<'a>>,
     pub(crate) client_id: heapless::String<MAX_CLIENT_ID_LEN>,
     pub(crate) keepalive_interval: Duration,

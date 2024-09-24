@@ -21,3 +21,30 @@ We welcome contributions from the community! Please follow these guidelines:
 **📄 License:**
 
 This project is licensed under the MIT License. See the LICENSE file for more information.
+
+**☑ TODO:**
+
+- [x] Ping handling
+- [x] Connect/Disconnect/Reconnect
+- [x] Sending ACK
+- [x] Network write
+- [x] Topic filter
+- [x] Publish before connect handling
+- [x] MQTTv5 handling
+- [x] Reconnect backoff
+- [x] `embedded-tls` support
+- [x] Plug-able transport layer
+- [x] Deferred publish payload
+- [x] Allow client to await connected state
+- [x] Check subscribe reason code in SubAck packets
+- [x] MQTTv5 Properties
+- [x] Setup integration tests & CI
+- [x] Packet builders
+- [x] Retry on publish & subscribe
+- [x] Automatically drop packet if all subscribers touched it in `PubSub`
+- [ ] Support "Lass Will"
+- [ ] Username/password broker auth support
+- [ ] Error handling
+- [ ] Logging
+- [ ] Docs
+- [ ] TEST & Evaluate!
