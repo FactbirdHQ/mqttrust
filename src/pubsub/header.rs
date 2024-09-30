@@ -1,36 +1,18 @@
-use bitmaps::{Bits, BitsImpl};
-
 /// The header of message in the PubSub queue will look like:
 ///
 /// ```text
-/// |  FrameHeader  |  SubsHeader   |   Payload     |
-/// |  1..=9 bytes  |  1..=9 bytes  | 0..2^64 bytes |
+/// |  FrameHeader  |   Payload     |
+/// |  1..=9 bytes  | 0..2^64 bytes |
 /// ```
 ///
 /// Where:
-/// - the `FrameHeader` contains a variable length encoded length of the `SubsHeader` + `Payload`
-/// - the `SubsHeader` contains a map of subscribers, with one bit per subscriber in the const generic `SUBS`, denoting whether or not that particular subscriber has read the message yet
+/// - the `FrameHeader` contains a variable length encoded length of the `Payload`
 /// - the `Payload` contains the raw MQTT message
 ///
-/// The first byte of the `SubsHeader` is a bitstruct with the format:
-/// ```text
-/// b0..b4  (LSB): Number of bytes following the first byte in the `SubsHeader`
-/// b4..b8       : Dont care
 /// ```
 pub struct Header;
 
 impl Header {
-    pub fn subs_header_len<const SUBS: usize>() -> usize
-    where
-        BitsImpl<SUBS>: Bits,
-    {
-        if SUBS > 1 {
-            bitmaps::Bitmap::<SUBS>::new().as_bytes().len()
-        } else {
-            0
-        }
-    }
-
     pub fn encoded_len(value: usize) -> usize {
         vusize::encoded_len(value)
     }

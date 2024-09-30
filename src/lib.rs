@@ -15,10 +15,15 @@ mod config;
 mod encoding;
 mod error;
 mod packet;
-mod pubsub;
 mod stack;
 mod state;
 mod topic_filter;
+
+#[cfg(feature = "_test")]
+pub mod pubsub;
+
+#[cfg(not(feature = "_test"))]
+mod pubsub;
 
 use core::mem::MaybeUninit;
 

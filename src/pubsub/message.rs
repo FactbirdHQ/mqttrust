@@ -41,8 +41,7 @@ impl MessageInfo {
 
         let topic_name = {
             let topic_name_start = decoder.offset() + 2;
-            let name = decoder.read_str().ok()?;
-            warn!("GOT MESSAGE TOPIC: {}", name);
+            let _topic_name = decoder.read_str().ok()?;
             topic_name_start..decoder.offset()
         };
 

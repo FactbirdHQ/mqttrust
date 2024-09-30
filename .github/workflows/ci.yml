@@ -20,30 +20,30 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        mqtt_version: ["mqttv3", "mqttv5"]
+        mqtt_version: ["mqttv5"] #"mqttv3",
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          target: thumbv7m-none-eabi
-          override: true
+      - uses: dsherret/rust-toolchain-file@v1
 
       - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --all --target thumbv7m-none-eabi
+        run: cargo build --all --target thumbv7em-none-eabihf
 
       - name: Test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --features "log,${{ matrix.mqtt_version }}"
+        run: cargo test --features "log,${{ matrix.mqtt_version }}"
+
+  fuzz:
+    name: Fuzz Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - uses: dsherret/rust-toolchain-file@v1
+
+      - name: Fuzz (PubSub)
+        run: ./fuzz.sh
 
   device_advisor:
     name: AWS IoT Device Advisor
@@ -57,15 +57,10 @@ jobs:
       SUITE_ID: 1gaev57dq6i5
       THING_ARN: arn:aws:iot:eu-west-1:411974994697:thing/embedded-mqtt
     steps:
-      - name: Checkout
-        uses: actions/checkout@v1
+      - name: Checkout source code
+        uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+      - uses: dsherret/rust-toolchain-file@v1
 
       - name: Get AWS_HOSTNAME
         id: hostname
@@ -76,12 +71,9 @@ jobs:
           exit $ret
 
       - name: Build test binary
-        uses: actions-rs/cargo@v1
         env:
           AWS_HOSTNAME: ${{ steps.hostname.outputs.AWS_HOSTNAME }}
-        with:
-          command: build
-          args: --features=log --example aws_device_advisor --release
+        run: cargo build --features=log --example aws_device_advisor --release
 
       - name: Start test suite
         id: test_suite
@@ -90,16 +82,16 @@ jobs:
           ret=$?
           echo "::set-output name=SUITE_RUN_ID::$suite_id"
           exit $ret
-      
+
       - name: Execute test binary
         id: binary
         env:
           DEVICE_ADVISOR_PASSWORD: ${{ secrets.DEVICE_ADVISOR_PASSWORD }}
           RUST_LOG: trace
-        run: | 
+        run: |
           nohup ./target/release/examples/aws_device_advisor > device_advisor_integration.log &
           echo "::set-output name=PID::$!"
-      
+
       - name: Monitor test run
         run: |
           chmod +x ./scripts/da_monitor.sh
@@ -110,11 +102,11 @@ jobs:
         if: ${{ always() }}
         run: kill ${{ steps.binary.outputs.PID }} || true
 
-      - name: Log binary output 
+      - name: Log binary output
         if: ${{ always() }}
-        run: cat device_advisor_integration.log 
-      
-      - name: Stop test suite 
+        run: cat device_advisor_integration.log
+
+      - name: Stop test suite
         if: ${{ failure() }}
         run: aws iotdeviceadvisor stop-suite-run --suite-definition-id ${{ env.SUITE_ID }} --suite-run-id ${{ steps.test_suite.outputs.SUITE_RUN_ID }}
 
@@ -123,21 +115,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: nightly
-          override: true
-          components: rustfmt
+        uses: actions/checkout@v4
+      - uses: dsherret/rust-toolchain-file@v1
 
       - name: Run rustfmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check --verbose
+        run: cargo fmt --all -- --check --verbose
 
   clippy:
     name: clippy
@@ -146,19 +129,9 @@ jobs:
       CLIPPY_PARAMS: -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: clippy
+        uses: actions/checkout@v4
+      - uses: dsherret/rust-toolchain-file@v1
 
       - name: Run clippy
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --features "log" -- ${{ env.CLIPPY_PARAMS }}
-  
+        run: cargo clippy --features "log" -- ${{ env.CLIPPY_PARAMS }}

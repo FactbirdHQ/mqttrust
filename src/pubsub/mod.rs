@@ -5,7 +5,7 @@
 //! `bbqueue`. Full credit to those projects for the complex internals.
 
 mod atomic_multiwakers;
-mod header;
+pub(crate) mod header;
 mod message;
 mod publisher;
 mod subscriber;
@@ -14,10 +14,7 @@ use bitmaps::{Bitmap, Bits, BitsImpl};
 use core::cell::{RefCell, UnsafeCell};
 use portable_atomic::{AtomicBool, AtomicUsize, Ordering::AcqRel};
 
-use embassy_sync::{
-    blocking_mutex::{raw::CriticalSectionRawMutex, Mutex},
-    waitqueue::AtomicWaker,
-};
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 pub use message::*;
 pub use publisher::*;
 pub use subscriber::*;
@@ -81,15 +78,16 @@ where
     /// Is there an active write grant?
     pub(crate) write_in_progress: AtomicBool,
 
-    /// Collection of wakers for [`Subscriber`]'s that are waiting.  
+    /// Collection of wakers for [`Subscriber`]'s that are waiting.
     pub(crate) subscriber_wakers: atomic_multiwakers::MultiWakerRegistration<SUBS>,
 
     pub(crate) subscribers_taken: Mutex<CriticalSectionRawMutex, RefCell<Bitmap<SUBS>>>,
+    pub(crate) message_bitmap: Mutex<CriticalSectionRawMutex, RefCell<Bitmap<SUBS>>>,
     pub(crate) publisher_taken: AtomicBool,
 
     /// Write waker for async support
     /// Woken up when a release is done
-    pub(crate) publisher_waker: AtomicWaker,
+    pub(crate) publisher_waker: atomic_waker::AtomicWaker,
 }
 
 impl<B: BufferProvider, const SUBS: usize> PubSubChannel<B, SUBS>
@@ -107,8 +105,9 @@ where
             read_in_progress: AtomicBool::new(false),
             write_in_progress: AtomicBool::new(false),
             publisher_taken: AtomicBool::new(false),
-            publisher_waker: AtomicWaker::new(),
+            publisher_waker: atomic_waker::AtomicWaker::new(),
             subscribers_taken: Mutex::new(RefCell::new(Bitmap::new())),
+            message_bitmap: Mutex::new(RefCell::new(Bitmap::new())),
             subscriber_wakers: atomic_multiwakers::MultiWakerRegistration::new(),
         }
     }
@@ -157,12 +156,60 @@ where
     }
 }
 
+mod atomic_waker {
+    use core::cell::Cell;
+    use core::task::Waker;
+
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::blocking_mutex::Mutex;
+
+    /// Utility struct to register and wake a waker.
+    pub struct AtomicWaker {
+        waker: Mutex<CriticalSectionRawMutex, Cell<Option<Waker>>>,
+    }
+
+    impl AtomicWaker {
+        /// Create a new `AtomicWaker`.
+        pub const fn new() -> Self {
+            Self {
+                waker: Mutex::const_new(CriticalSectionRawMutex::new(), Cell::new(None)),
+            }
+        }
+
+        /// Register a waker. Overwrites the previous waker, if any.
+        pub fn register(&self, w: &Waker) {
+            self.waker.lock(|cell| {
+                cell.set(match cell.replace(None) {
+                    Some(w2) if (w2.will_wake(w)) => Some(w2),
+                    Some(old_waker) => {
+                        old_waker.wake();
+                        Some(w.clone())
+                    }
+                    _ => Some(w.clone()),
+                })
+            })
+        }
+
+        /// Wake the registered waker, if any.
+        pub fn wake(&self) {
+            self.waker.lock(|cell| {
+                if let Some(w) = cell.replace(None) {
+                    w.wake_by_ref();
+                    cell.set(Some(w));
+                }
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::pubsub::header::Header;
+
     use super::{PubSubChannel, StaticBufferProvider};
     use embassy_futures::block_on;
 
-    #[test]
+    #[test_log::test]
     fn frame_wrong_size() {
         let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
             PubSubChannel::new(StaticBufferProvider::new());
@@ -185,7 +232,7 @@ mod tests {
         rgr.release();
     }
 
-    #[test]
+    #[test_log::test]
     fn full_size() {
         let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
             PubSubChannel::new(StaticBufferProvider::new());
@@ -228,7 +275,7 @@ mod tests {
         assert!(ctr > 1);
     }
 
-    #[test]
+    #[test_log::test]
     fn frame_overcommit() {
         let pubsub: PubSubChannel<StaticBufferProvider<256>, 3> =
             PubSubChannel::new(StaticBufferProvider::new());
@@ -259,7 +306,7 @@ mod tests {
         rgr.release();
     }
 
-    #[test]
+    #[test_log::test]
     fn frame_undercommit() {
         let pubsub: PubSubChannel<StaticBufferProvider<512>, 1> =
             PubSubChannel::new(StaticBufferProvider::new());
@@ -301,7 +348,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_log::test]
     fn frame_auto_commit_release() {
         let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
             PubSubChannel::new(StaticBufferProvider::new());
@@ -333,7 +380,7 @@ mod tests {
         assert!(subscriber.read_any().is_err());
     }
 
-    #[test]
+    #[test_log::test]
     fn async_frame_wrong_size() {
         block_on(async {
             let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
@@ -358,7 +405,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[test_log::test]
     fn async_full_size() {
         block_on(async {
             let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
@@ -404,7 +451,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[test_log::test]
     fn async_frame_overcommit() {
         block_on(async {
             let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
@@ -435,7 +482,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[test_log::test]
     fn async_frame_undercommit() {
         block_on(async {
             let pubsub: PubSubChannel<StaticBufferProvider<512>, 1> =
@@ -478,7 +525,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[test_log::test]
     fn async_frame_auto_commit_release() {
         block_on(async {
             let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
@@ -513,7 +560,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[test_log::test]
     fn subscriber_bitmap() {
         let pubsub: PubSubChannel<StaticBufferProvider<256>, 10> =
             PubSubChannel::new(StaticBufferProvider::new());
@@ -543,5 +590,200 @@ mod tests {
         let map = pubsub.subscribers_taken.lock(|s| s.borrow().clone());
         assert_eq!(map.as_bytes()[0], 0b00000000);
         assert_eq!(map.as_bytes()[1], 0b00000000);
+    }
+
+    #[test_log::test]
+    fn watermark_test_1() {
+        // Test filling the buffer completely, then reading it completely
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        assert_eq!(publisher.free_capacity(), 256);
+
+        assert_eq!(Header::encoded_len(254), 2);
+
+        // Write a full buffer (254 bytes + 2 bytes header)
+        let grant = publisher.grant(254).unwrap();
+        grant.buf.fill(0xAA);
+        grant.commit(254);
+
+        // Read a full buffer
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 254);
+        assert!(grant.buf().iter().all(|&b| b == 0xAA));
+        grant.release();
+
+        // Buffer should be empty now
+        assert_eq!(publisher.free_capacity(), 256);
+    }
+
+    #[test_log::test]
+    fn watermark_test_2() {
+        // Test writing and reading data in chunks smaller than the buffer size
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        // Write first chunk
+        let grant = publisher.grant(100).unwrap();
+        grant.buf.fill(0xAA);
+        grant.commit(100);
+
+        // Read first chunk
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 100);
+        assert!(grant.buf().iter().all(|&b| b == 0xAA));
+        grant.release();
+
+        // Write second chunk
+        let grant = publisher.grant(50).unwrap();
+        grant.buf.fill(0xBB);
+        grant.commit(50);
+
+        // Read second chunk
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 50);
+        assert!(grant.buf().iter().all(|&b| b == 0xBB));
+        grant.release();
+
+        // Write third chunk to fill the buffer
+        let grant = publisher.grant(106).unwrap();
+        grant.buf.fill(0xCC);
+        grant.commit(106);
+
+        // Read third chunk
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 106);
+        assert!(grant.buf().iter().all(|&b| b == 0xCC));
+        grant.release();
+
+        // Buffer should be empty now
+        assert_eq!(publisher.free_capacity(), 256);
+    }
+
+    #[test_log::test]
+    fn watermark_test_3() {
+        // Test wrapping around the buffer
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        let grant = publisher.grant(200).unwrap();
+        grant.buf.fill(0xAA);
+        grant.commit(200);
+
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 200);
+        assert!(grant.buf()[..56].iter().all(|&b| b == 0xAA));
+        grant.release();
+
+        let grant = publisher.grant(200).unwrap();
+        grant.buf.fill(0xBB);
+        grant.commit(200);
+
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 200);
+        assert!(grant.buf().iter().all(|&b| b == 0xBB));
+        grant.release();
+
+        let grant = publisher.grant(50).unwrap();
+        grant.buf.fill(0xCC);
+        grant.commit(50);
+
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 50);
+        assert!(grant.buf().iter().all(|&b| b == 0xCC));
+        grant.release();
+
+        // Buffer should be empty now
+        assert_eq!(publisher.free_capacity(), 256);
+    }
+
+    #[test_log::test]
+    fn watermark_test_4() {
+        // Test writing a chunk that exactly fills the buffer after wrapping
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        // Write first chunk
+        assert_eq!(Header::encoded_len(100), 1);
+        let grant = publisher.grant(100).unwrap();
+        grant.buf.fill(0xAA);
+        grant.commit(100);
+
+        // Read part of the first chunk
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 100);
+        assert!(grant.buf().iter().all(|&b| b == 0xAA));
+        grant.release();
+
+        // Buffer should be empty now
+        assert_eq!(publisher.free_capacity(), 256);
+
+        // Write a chunk that exactly fills the buffer after wrapping
+        assert_eq!(Header::encoded_len(153), 2);
+        let grant = publisher.grant(153).unwrap();
+        grant.buf.fill(0xBB);
+        grant.commit(153);
+
+        // Read the rest of the first chunk and the second chunk
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 153);
+        assert!(grant.buf().iter().all(|&b| b == 0xBB));
+        grant.release();
+
+        // Buffer should be empty now
+        assert_eq!(publisher.free_capacity(), 256);
+    }
+
+    #[test_log::test]
+    fn watermark_test_5() {
+        // Test writing a chunk smaller than the buffer, then a chunk that fills the buffer exactly
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        // Write a small chunk
+        let grant = publisher.grant(50).unwrap();
+        grant.buf.fill(0xAA);
+        grant.commit(50);
+
+        // Write a chunk that fills the buffer exactly
+        let grant = publisher.grant(203).unwrap();
+        grant.buf.fill(0xBB);
+        grant.commit(203);
+
+        // Read the first chunk
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 50);
+        assert!(grant.buf().iter().all(|&b| b == 0xAA));
+        grant.release();
+
+        let grant = subscriber.read_any().unwrap();
+        assert_eq!(grant.buf().len(), 203);
+        assert!(grant.buf().iter().all(|&b| b == 0xBB));
+        grant.release();
+
+        // Buffer should be empty now
+        assert_eq!(publisher.free_capacity(), 256);
+    }
+
+    #[test_log::test]
+    fn watermark_test_6() {
+        // Test writing a chunk larger than the buffer, then a smaller chunk
+        let pubsub: PubSubChannel<StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let _subscriber = pubsub.subscriber().unwrap();
+
+        // Write a chunk larger than the buffer
+        assert!(publisher.grant(300).is_err());
     }
 }

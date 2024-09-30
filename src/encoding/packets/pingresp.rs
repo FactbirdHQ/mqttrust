@@ -10,22 +10,23 @@ use crate::{
 
 use super::PacketType;
 
-/// Represents a `PINGREQ` packet as defined in the MQTT specification.
+/// Represents a `PINGRESP` packet as defined in the MQTT specification.
 ///
-/// This packet is used to check if the network connection between a client and a server is still alive.
+/// This packet is the response to a `PINGREQ` packet. It indicates that the network connection
+/// between a client and a server is still alive.
 ///
 /// See [MQTT v3.1.1 specification](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398536887)
 /// and [MQTT v5 specification](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc453734767)
 /// for more details.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PingReq;
+pub struct PingResp;
 
-impl FixedHeader for PingReq {
-    const PACKET_TYPE: PacketType = PacketType::PingReq;
+impl FixedHeader for PingResp {
+    const PACKET_TYPE: PacketType = PacketType::PingResp;
 }
 
-impl MqttEncode for PingReq {
-    /// Encodes the `PINGREQ` packet into the given encoder.
+impl MqttEncode for PingResp {
+    /// Encodes the `PINGRESP` packet into the given encoder.
     fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         encoder.finalize_fixed_header(self)?;
         Ok(())
@@ -37,8 +38,8 @@ impl MqttEncode for PingReq {
     }
 }
 
-impl<'a> MqttDecode<'a> for PingReq {
-    /// Decodes the `PINGREQ` packet from the given decoder.
+impl<'a> MqttDecode<'a> for PingResp {
+    /// Decodes the `PINGRESP` packet from the given decoder.
     fn from_decoder(_decoder: &mut crate::decoder::MqttDecoder<'a>) -> Result<Self, Error> {
         Ok(Self)
     }

@@ -8,19 +8,19 @@ use crate::{
     PacketType, StateError,
 };
 
-pub(crate) struct PacketBuffer<const N: usize> {
+pub(crate) struct PacketBuffer {
     // MqttStack holds an RX buffer just big enough to hold a single packet
     // header + `MAX_TOPIC_LEN`, in order for it to handle `ACK`, `PING`, and
     // route incoming `PUBLISH` messages to a subscriber.
-    buf: [u8; N],
+    buf: [u8; 128],
     read_bytes: usize,
     packet_len: Option<usize>,
 }
 
-impl<const N: usize> PacketBuffer<N> {
+impl PacketBuffer {
     pub fn new() -> Self {
         Self {
-            buf: [0; N],
+            buf: [0; 128],
             read_bytes: 0,
             packet_len: None,
         }
@@ -76,7 +76,7 @@ impl<const N: usize> PacketBuffer<N> {
     fn receive_buffer(&mut self) -> Result<&mut [u8], crate::encoding::EncodingError> {
         if self.packet_len.is_none() {
             match self.probe_fixed_header() {
-                Ok(_) | Err(crate::encoding::EncodingError::InvalidLength) => {}
+                Ok(_) | Err(crate::encoding::EncodingError::InsufficientBytes) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -104,8 +104,8 @@ impl<const N: usize> PacketBuffer<N> {
 
         // Reset the buffer now. Once the user drops the `ReceivedPacket`, this reader will then be
         // immediately ready to begin receiving a new packet.
-        self.read_bytes = 0;
-        self.packet_len = None;
+        // self.read_bytes = 0;
+        // self.packet_len = None;
 
         Ok(packet)
     }

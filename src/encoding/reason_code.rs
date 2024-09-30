@@ -6,29 +6,52 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum ConnAckReasonCode {
+    /// Connection accepted.
     Success = 0x00,
 
+    /// Unspecified error.
     UnspecifiedError = 0x80,
+    /// Malformed packet.
     MalformedPacket = 0x81,
+    /// Protocol error.
     ProtocolError = 0x82,
+    /// Implementation-specific error.
     ImplementationError = 0x83,
+    /// Unsupported protocol version.
     UnsupportedProtocol = 0x84,
+    /// Client identifier not valid.
     ClientIdentifierInvalid = 0x85,
+    /// Bad user name or password.
     BadUsernameOrPassword = 0x86,
+    /// Not authorized.
     NotAuthorized = 0x87,
+    /// Server unavailable.
     ServerUnavailable = 0x88,
+    /// Server busy.
     ServerBusy = 0x89,
+    /// Banned.
     Banned = 0x8a,
+    /// Bad authentication method.
     BadAuthMethod = 0x8c,
+    /// Topic name invalid.
     TopicNameInvalid = 0x90,
+    /// Packet too large.
     PacketTooLarge = 0x95,
+    /// Message rate too high.
     MessageRateTooHigh = 0x96,
+    /// Quota exceeded.
     QuotaExceeded = 0x97,
+    /// Payload format invalid.
     PayloadFormatInvalid = 0x99,
+    /// Retain not supported.
     RetainNotSupported = 0x9A,
+    /// QoS not supported.
     QosNotSupported = 0x9b,
+    /// Use another server.
     UseAnotherServer = 0x9c,
+    /// Server moved.
     ServerMoved = 0x9d,
+    /// Connection rate exceeded.
     ConnectionRateExceeded = 0x9f,
 
     /// The reason code is not one of the documented MQTT reason codes.
@@ -44,19 +67,29 @@ impl ConnAckReasonCode {
     }
 }
 
+/// Publish acknowledge (PUBACK) reason codes.
 #[cfg(feature = "mqttv5")]
 #[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum PubAckReasonCode {
+    /// Success.
     Success = 0x00,
+    /// No matching subscribers.
     NoMatchingSubscribers = 0x10,
+    /// Unspecified error.
     UnspecifiedError = 0x80,
+    /// Implementation-specific error.
     ImplementationError = 0x83,
+    /// Not authorized.
     NotAuthorized = 0x87,
+    /// Topic name invalid.
     TopicNameInvalid = 0x90,
+    /// Packet identifier in use.
     PacketIdInUse = 0x91,
+    /// Quota exceeded.
     QuotaExceeded = 0x97,
+    /// Payload format invalid.
     PayloadFormatInvalid = 0x99,
 
     /// The reason code is not one of the documented MQTT reason codes.
@@ -64,19 +97,29 @@ pub enum PubAckReasonCode {
     Unknown = 0xFF,
 }
 
+/// Publish received (PUBREC) reason codes.
 #[cfg(feature = "mqttv5")]
 #[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum PubRecReasonCode {
+    /// Success.
     Success = 0x00,
+    /// No matching subscribers.
     NoMatchingSubscribers = 0x10,
+    /// Unspecified error.
     UnspecifiedError = 0x80,
+    /// Implementation-specific error.
     ImplementationError = 0x83,
+    /// Not authorized.
     NotAuthorized = 0x87,
+    /// Topic name invalid.
     TopicNameInvalid = 0x90,
+    /// Packet identifier in use.
     PacketIdInUse = 0x91,
+    /// Quota exceeded.
     QuotaExceeded = 0x97,
+    /// Payload format invalid.
     PayloadFormatInvalid = 0x99,
 
     /// The reason code is not one of the documented MQTT reason codes.
@@ -84,12 +127,15 @@ pub enum PubRecReasonCode {
     Unknown = 0xFF,
 }
 
+/// Publish release (PUBREL) reason codes.
 #[cfg(feature = "mqttv5")]
 #[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum PubRelReasonCode {
+    /// Success.
     Success = 0x00,
+    /// Packet identifier not found.
     PacketIdNotFound = 0x92,
 
     /// The reason code is not one of the documented MQTT reason codes.
@@ -97,12 +143,15 @@ pub enum PubRelReasonCode {
     Unknown = 0xFF,
 }
 
+/// Publish complete (PUBCOMP) reason codes.
 #[cfg(feature = "mqttv5")]
 #[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum PubCompReasonCode {
+    /// Success.
     Success = 0x00,
+    /// Packet identifier not found.
     PacketIdNotFound = 0x92,
 
     /// The reason code is not one of the documented MQTT reason codes.
@@ -120,9 +169,13 @@ pub enum PubCompReasonCode {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum SubAckReturnCode {
+    /// Success - Maximum QoS 0.
     SuccessMaxQoS0 = 0x00,
+    /// Success - Maximum QoS 1.
     SuccessMaxQoS1 = 0x01,
+    /// Success - Maximum QoS 2.
     SuccessMaxQoS2 = 0x02,
+    /// Failure.
     Failure = 0x80,
 
     /// The reason code is not one of the documented MQTT reason codes.
@@ -138,12 +191,18 @@ pub enum SubAckReturnCode {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum ConnAckReasonCode {
+    /// Connection accepted.
     ConnectionAccepted = 0x00,
 
+    /// Unacceptable protocol version.
     UnacceptableProtocolVersion = 0x01,
+    /// Identifier rejected.
     IdentifierRejected = 0x02,
+    /// Server unavailable.
     ServerUnavailable = 0x03,
+    /// Bad user name or password.
     BadUsernameOrPassword = 0x04,
+    /// Not authorized.
     NotAuthorized = 0x05,
 
     /// The reason code is not one of the documented MQTT reason codes.
@@ -158,13 +217,14 @@ impl ConnAckReasonCode {
     }
 }
 
+/// Disconnect reason codes for MQTTv3.
 #[cfg(feature = "mqttv3")]
 #[derive(Default, PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum DisconnectReasonCode {
+    /// Normal disconnection.
     #[default]
-    /// Normal disconnection
     Normal = 0x00,
 }
 
@@ -174,63 +234,63 @@ pub enum DisconnectReasonCode {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum DisconnectReasonCode {
+    /// Normal disconnection.
     #[default]
-    /// Normal disconnection
     Normal = 0x00,
     /// The Client wishes to disconnect but requires that the Server also publishes its Will Message.
     DisconnectWithWillMessage = 0x04,
     /// The Connection is closed but the sender either does not wish to reveal the reason, or none of the other Reason Codes apply.
     UnspecifiedError = 0x80,
-    /// The received packet does not conform to this specification.
+    /// Malformed packet.
     MalformedPacket = 0x81,
-    /// An unexpected or out of order packet was received.
+    /// Protocol error.
     ProtocolError = 0x82,
-    /// The packet received is valid but cannot be processed by this implementation.
+    /// Implementation-specific error.
     ImplementationSpecificError = 0x83,
-    /// The request is not authorized.
+    /// Not authorized.
     NotAuthorized = 0x87,
-    /// The Server is busy and cannot continue processing requests from this Client.
+    /// Server busy.
     ServerBusy = 0x89,
-    /// The Server is shutting down.
+    /// Server shutting down.
     ServerShuttingDown = 0x8B,
-    /// The Connection is closed because no packet has been received for 1.5 times the Keepalive time.
+    /// Keep alive timeout.
     KeepAliveTimeout = 0x8D,
-    /// Another Connection using the same ClientID has connected causing this Connection to be closed.
+    /// Session taken over.
     SessionTakenOver = 0x8E,
-    /// The Topic Filter is correctly formed, but is not accepted by this Sever.
+    /// Topic filter invalid.
     TopicFilterInvalid = 0x8F,
-    /// The Topic Name is correctly formed, but is not accepted by this Client or Server.
+    /// Topic name invalid.
     TopicNameInvalid = 0x90,
-    /// The Client or Server has received more than Receive Maximum publication for which it has not sent PUBACK or PUBCOMP.
+    /// Receive maximum exceeded.
     ReceiveMaximumExceeded = 0x93,
-    /// The Client or Server has received a PUBLISH packet containing a Topic Alias which is greater than the Maximum Topic Alias it sent in the CONNECT or CONNACK packet.
+    /// Topic alias invalid.
     TopicAliasInvalid = 0x94,
-    /// The packet size is greater than Maximum Packet Size for this Client or Server.
+    /// Packet too large.
     PacketTooLarge = 0x95,
-    /// The received data rate is too high.
+    /// Message rate too high.
     MessageRateTooHigh = 0x96,
-    /// An implementation or administrative imposed limit has been exceeded.
+    /// Quota exceeded.
     QuotaExceeded = 0x97,
-    /// The Connection is closed due to an administrative action.
+    /// Administrative action.
     AdministrativeAction = 0x98,
-    /// The payload format does not match the one specified by the Payload Format Indicator.
+    /// Payload format invalid.
     PayloadFormatInvalid = 0x99,
-    /// The Server has does not support retained messages.
+    /// Retain not supported.
     RetainNotSupported = 0x9A,
-    /// The Client specified a QoS greater than the QoS specified in a Maximum QoS in the CONNACK.
+    /// QoS not supported.
     QoSNotSupported = 0x9B,
-    /// The Client should temporarily change its Server.
+    /// Use another server.
     UseAnotherServer = 0x9C,
-    /// The Server is moved and the Client should permanently change its server location.
+    /// Server moved.
     ServerMoved = 0x9D,
-    /// The Server does not support Shared Subscriptions.
+    /// Shared subscriptions not supported.
     SharedSubscriptionsNotSupported = 0x9E,
-    /// This connection is closed because the connection rate is too high.
+    /// Connection rate exceeded.
     ConnectionRateExceeded = 0x9F,
-    /// The maximum connection time authorized for this connection has been exceeded.
+    /// Maximum connect time exceeded.
     MaximumConnectTime = 0xA0,
-    /// The Server does not support Subscription Identifiers; the subscription is not accepted.
+    /// Subscription identifiers not supported.
     SubscriptionIdentifiersNotSupported = 0xA1,
-    /// The Server does not support Wildcard Subscriptions; the subscription is not accepted.
+    /// Wildcard subscriptions not supported.
     WildcardSubscriptionsNotSupported = 0xA2,
 }

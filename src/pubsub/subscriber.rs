@@ -83,7 +83,7 @@ where
         topic_filters: &[TopicFilter],
         cx: Option<&mut Context<'_>>,
     ) -> Result<Message<'a, B, SUBS>> {
-        let mut grant = match self.read_inner() {
+        let grant = match self.read_inner() {
             Ok(grant) => grant,
             Err(e) => {
                 if let Some(cx) = cx {
@@ -101,7 +101,11 @@ where
                 return Ok(info.to_message(grant));
             }
 
-            let msg_bitmap = grant.mark_touched(self.id);
+            let msg_bitmap = self.channel.message_bitmap.lock(|s| {
+                let mut map = s.borrow_mut();
+                map.set(self.id, true);
+                map.clone()
+            });
 
             // Check if message has been touched by all subscribers!
             if self
@@ -109,6 +113,7 @@ where
                 .subscribers_taken
                 .lock(|subs_bitmap| (msg_bitmap & *subs_bitmap.borrow()) == *subs_bitmap.borrow())
             {
+                warn!("Message touched by every subscriber, but unwanted! Discarding!");
                 grant.release();
             }
         }
@@ -170,7 +175,7 @@ where
         let mut read = inner.read.load(Acquire);
 
         // Resolve the inverted case or end of read
-        if (read == last) && (write < read) {
+        if read == last {
             read = 0;
             // This has some room for error, the other thread reads this
             // Impact to Grant:
@@ -244,6 +249,7 @@ where
 }
 
 /// Future returned [Subscriber::read_async]
+#[must_use]
 pub struct GrantReadFuture<'a, 'b, B, const SUBS: usize>
 where
     BitsImpl<{ SUBS }>: Bits,
@@ -273,6 +279,7 @@ impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantReadFuture<'a,
 }
 
 /// Future returned [Subscriber::read_async]
+#[must_use]
 pub struct MessageReadFuture<'a, 'b, B, const SUBS: usize>
 where
     BitsImpl<{ SUBS }>: Bits,
@@ -327,7 +334,7 @@ where
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.buf[self.hdr_len as usize + Header::subs_header_len::<SUBS>()..]
+        self.buf()
     }
 }
 
@@ -337,7 +344,7 @@ where
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.buf[self.hdr_len as usize + Header::subs_header_len::<SUBS>()..]
+        self.buf_mut()
     }
 }
 
@@ -348,7 +355,7 @@ where
 {
     /// Obtain access to the inner buffer for reading
     pub fn buf(&self) -> &[u8] {
-        &self.buf[self.hdr_len as usize + Header::subs_header_len::<SUBS>()..]
+        &self.buf[self.hdr_len as usize..]
     }
 
     /// Obtain mutable access to the read grant
@@ -356,7 +363,7 @@ where
     /// This is useful if you are performing in-place operations
     /// on an incoming packet, such as decryption
     pub fn buf_mut(&mut self) -> &mut [u8] {
-        &mut self.buf[self.hdr_len as usize + Header::subs_header_len::<SUBS>()..]
+        &mut self.buf[self.hdr_len as usize..]
     }
 
     /// Sometimes, it's not possible for the lifetimes to check out. For example,
@@ -371,9 +378,7 @@ where
     /// Additionally, you must ensure that a separate reference to this data is not created
     /// to this data, e.g. using `Deref` or the `buf()` method of this grant.
     pub unsafe fn as_static_buf(&self) -> &'static [u8] {
-        core::mem::transmute::<&[u8], &'static [u8]>(
-            &self.buf[self.hdr_len as usize + Header::subs_header_len::<SUBS>()..],
-        )
+        core::mem::transmute::<&[u8], &'static [u8]>(&self.buf[self.hdr_len as usize..])
     }
 
     /// Release a frame to make the space available for future writing
@@ -408,22 +413,16 @@ where
         // This should be fine, purely incrementing
         let _ = inner.read.fetch_add(used, Release);
 
+        // Reset the message bitmap for the next message
+        if used > 0 {
+            inner
+                .message_bitmap
+                .lock(|s| *s.borrow_mut() = Bitmap::new());
+        }
+
         inner.read_in_progress.store(false, Release);
 
         inner.publisher_waker.wake();
-    }
-
-    fn mark_touched(&mut self, id: usize) -> Bitmap<SUBS> {
-        let mut msg_bitmap = bitmaps::Bitmap::try_from(
-            &self.buf[self.hdr_len as usize..][..Header::subs_header_len::<SUBS>()],
-        )
-        .unwrap();
-        msg_bitmap.set(id, true);
-
-        self.buf[self.hdr_len as usize..][..Header::subs_header_len::<SUBS>()]
-            .copy_from_slice(msg_bitmap.as_bytes());
-
-        msg_bitmap
     }
 }
 
@@ -467,8 +466,11 @@ mod tests {
         assert!(subscriber.read_message(&[]).is_err());
 
         let rgr = subscriber.read_any().unwrap();
+        // Drop without releasing the message
         drop(rgr);
 
+        // Second subscriber touches message, making it all subscribers, thus
+        // the message should auto release
         assert!(subscriber2.read_message(&[]).is_err());
 
         assert!(subscriber.read_any().is_err())

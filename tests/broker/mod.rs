@@ -67,7 +67,7 @@ pub fn start_broker(version: MqttVersion) {
     };
 
     let router = RouterConfig {
-        max_connections: 10010,
+        max_connections: 10,
         max_outgoing_packet_count: 200,
         max_segment_size: 104857600,
         max_segment_count: 10,

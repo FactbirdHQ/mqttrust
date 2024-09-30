@@ -29,8 +29,10 @@ async fn main() {
 
     // Create the MQTT stack
     let broker = IpBroker::new(Ipv4Addr::new(0, 0, 0, 0), 1883);
-    let config =
-        Config::new(client_id, broker).keepalive_interval(embassy_time::Duration::from_secs(50));
+    let config = Config::builder()
+        .client_id(client_id.try_into().unwrap())
+        .keepalive_interval(embassy_time::Duration::from_secs(50))
+        .build();
 
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 2>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 1024, 1024, 2>::new());

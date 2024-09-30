@@ -3,7 +3,6 @@ use core::{future::poll_fn, mem::MaybeUninit, ops::DerefMut, task::Poll};
 use bitmaps::{Bits, BitsImpl};
 use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
-use embassy_time::{with_timeout, Duration};
 
 use crate::{
     crate_config::MAX_CLIENT_ID_LEN,
@@ -172,12 +171,13 @@ where
         // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
-                warn!(
-                    "[DROP] Removing {:?} from inflight_pub & outgoing_pid!",
-                    pid
-                );
-                let _ = shared.inflight_pub.remove(&pid.get());
-                let _ = shared.outgoing_pid.remove(&pid.get());
+                if shared.inflight_pub.remove(&pid.get()) || shared.outgoing_pid.remove(&pid.get())
+                {
+                    warn!(
+                        "[DROP] Removed {:?} from either inflight_pub or outgoing_pid!",
+                        pid
+                    );
+                }
             }
         });
 
@@ -269,36 +269,38 @@ where
     ) -> Result<(), Error> {
         let mut pub_pkg: Publish<'_, P> = packet.into();
 
-        const MAX_ATTEMPTS: u8 = 3;
+        self.publish_inner(&mut pub_pkg).await
 
-        for attempt in 1..=MAX_ATTEMPTS {
-            self.wait_connected().await;
+        // const MAX_ATTEMPTS: u8 = 3;
 
-            if attempt > 1 {
-                debug!(
-                    "[Publish] Attempt: {}. Sending to {:?}",
-                    attempt - 1,
-                    pub_pkg.topic_name
-                );
-            } else {
-                debug!("[Publish] Sending to {:?}", pub_pkg.topic_name);
-            }
+        // for attempt in 1..=MAX_ATTEMPTS {
+        //     self.wait_connected().await;
 
-            match with_timeout(
-                Duration::from_secs(3 * attempt as u64),
-                self.publish_inner(&mut pub_pkg),
-            )
-            .await
-            {
-                Ok(Ok(())) => return Ok(()),
-                Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
-                _ => {
-                    continue;
-                }
-            }
-        }
+        //     if attempt > 1 {
+        //         debug!(
+        //             "[Publish] Attempt: {}. Sending to {:?}",
+        //             attempt - 1,
+        //             pub_pkg.topic_name
+        //         );
+        //     } else {
+        //         debug!("[Publish] Sending to {:?}", pub_pkg.topic_name);
+        //     }
 
-        Err(Error::Timeout)
+        //     match with_timeout(
+        //         Duration::from_secs(5 * attempt as u64),
+        //         self.publish_inner(&mut pub_pkg),
+        //     )
+        //     .await
+        //     {
+        //         Ok(Ok(())) => return Ok(()),
+        //         Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
+        //         _ => {
+        //             continue;
+        //         }
+        //     }
+        // }
+
+        // Err(Error::Timeout)
     }
 
     pub async fn subscribe<'b, const MAX_TOPICS: usize>(
@@ -319,42 +321,50 @@ where
             .map(|sub| TopicFilter::new(sub.topic_path))
             .collect::<Result<_, _>>()?;
 
-        const MAX_ATTEMPTS: u8 = 3;
+        self.subscribe_inner(&mut subscribe).await?;
 
-        for attempt in 1..=MAX_ATTEMPTS {
-            self.wait_connected().await;
+        Ok(Subscription {
+            subscriber,
+            topic_filters,
+            client: self,
+        })
 
-            if attempt > 1 {
-                debug!(
-                    "[Subscribe] Attempt: {}. Subscribing to {:?}",
-                    attempt - 1,
-                    topic_filters
-                );
-            } else {
-                debug!("[Subscribe] Subscribing to {:?}", topic_filters);
-            }
+        // const MAX_ATTEMPTS: u8 = 3;
 
-            match with_timeout(
-                Duration::from_secs(3 * attempt as u64),
-                self.subscribe_inner(&mut subscribe),
-            )
-            .await
-            {
-                Ok(Ok(())) => {
-                    return Ok(Subscription {
-                        subscriber,
-                        topic_filters,
-                        client: self,
-                    })
-                }
-                Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
-                _ => {
-                    continue;
-                }
-            }
-        }
+        // for attempt in 1..=MAX_ATTEMPTS {
+        //     self.wait_connected().await;
 
-        Err(Error::Timeout)
+        //     if attempt > 1 {
+        //         debug!(
+        //             "[Subscribe] Attempt: {}. Subscribing to {:?}",
+        //             attempt - 1,
+        //             topic_filters
+        //         );
+        //     } else {
+        //         debug!("[Subscribe] Subscribing to {:?}", topic_filters);
+        //     }
+
+        //     match with_timeout(
+        //         Duration::from_secs(3 * attempt as u64),
+        //         self.subscribe_inner(&mut subscribe),
+        //     )
+        //     .await
+        //     {
+        //         Ok(Ok(())) => {
+        //             return Ok(Subscription {
+        //                 subscriber,
+        //                 topic_filters,
+        //                 client: self,
+        //             })
+        //         }
+        //         Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
+        //         _ => {
+        //             continue;
+        //         }
+        //     }
+        // }
+
+        // Err(Error::Timeout)
     }
 }
 
@@ -446,8 +456,6 @@ where
     BitsImpl<{ SUBS }>: Bits,
 {
     fn drop(&mut self) {
-        warn!("Dropping subscription! {:?}", self.topic_filters);
-
         let pid = if let Ok(mut shared) = self.client.shared.try_lock() {
             shared.next_pid()
         } else {

@@ -1,6 +1,8 @@
+mod connack;
 mod connect;
 mod disconnect;
 mod pingreq;
+mod pingresp;
 mod puback;
 #[cfg(feature = "qos2")]
 mod pubcomp;
@@ -9,13 +11,17 @@ mod publish;
 mod pubrec;
 #[cfg(feature = "qos2")]
 mod pubrel;
+mod suback;
 mod subscribe;
+mod unsuback;
 mod unsubscribe;
 
+pub use connack::*;
 pub use connect::*;
 pub use disconnect::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 pub use pingreq::*;
+pub use pingresp::*;
 pub use puback::*;
 #[cfg(feature = "qos2")]
 pub use pubcomp::*;
@@ -24,7 +30,9 @@ pub use publish::*;
 pub use pubrec::*;
 #[cfg(feature = "qos2")]
 pub use pubrel::*;
+pub use suback::*;
 pub use subscribe::*;
+pub use unsuback::*;
 pub use unsubscribe::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
@@ -63,5 +71,35 @@ impl PacketType {
 
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use crate::{
+        decoder::MqttDecode,
+        encoder::{MqttEncode, MqttEncoder},
+    };
+
+    /// Helper function to test encode/decode roundtrip for various packet types.
+    pub fn test_roundtrip<
+        'a,
+        T: MqttEncode + MqttDecode<'a> + core::fmt::Debug + core::cmp::PartialEq,
+    >(
+        encoder: &'a mut MqttEncoder,
+        packet: T,
+    ) {
+        // Encode the packet
+        packet.to_buffer(encoder).unwrap();
+
+        let encoded = encoder.packet_bytes();
+
+        let mut decoder = crate::decoder::MqttDecoder::try_new(encoded).unwrap();
+
+        // Decode the packet
+        let decoded_packet = T::from_decoder(&mut decoder).unwrap();
+
+        // Assert that the encoded and decoded packets are equal
+        assert_eq!(packet, decoded_packet);
     }
 }

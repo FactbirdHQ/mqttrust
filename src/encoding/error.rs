@@ -7,6 +7,7 @@
 pub enum Error {
     ProvidedClientIdTooLong,
     UnexpectedPacket,
+    InsufficientBytes,
     InvalidProperty(u8),
     MalformedPacket,
     /// Not enough space in the write buffer.

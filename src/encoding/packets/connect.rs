@@ -1,6 +1,7 @@
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
+    decoder::MqttDecode,
     encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
@@ -54,42 +55,67 @@ impl Protocol {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct LastWill<'a> {
-    pub topic: &'a str,
-    pub data: &'a [u8],
-    pub qos: QoS,
-    pub retained: bool,
+    pub(crate) topic: &'a str,
+    pub(crate) data: &'a [u8],
+    pub(crate) qos: QoS,
+    pub(crate) retained: bool,
     #[cfg(feature = "mqttv5")]
-    pub properties: Properties<'a>,
+    pub(crate) properties: Properties<'a>,
 }
 
-/// Connect packet ([MQTT 3.1]).
-///
-/// [MQTT 3.1]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901033
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Connect<'a> {
-    pub protocol: Protocol,
+    pub(crate) protocol: Protocol,
 
     /// Any properties associated with the CONNECT request.
+    ///
+    /// This field is only present when using MQTT v5.
+    ///
+    /// [MQTT v5 spec](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc408185329)
     #[cfg(feature = "mqttv5")]
-    pub properties: Properties<'a>,
+    pub(crate) properties: Properties<'a>,
 
     /// Specifies the keep-alive interval of the connection in seconds.
-    pub keep_alive: u16,
+    ///
+    /// The keep-alive interval is the maximum time interval in seconds that the Client is willing to wait
+    /// between receiving control packets from the Server before assuming that the connection is broken.
+    ///
+    /// This field is required for both MQTT v3.1.1 and MQTT v5.
+    ///
+    /// [MQTT v3.1.1 spec](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc408983217)
+    /// [MQTT v5 spec](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc408185330)
+    pub(crate) keep_alive: u16,
 
     /// The ID of the client that is connecting. May be an empty string to automatically allocate
     /// an ID from the broker.
-    pub client_id: &'a str,
+    ///
+    /// This field is required for both MQTT v3.1.1 and MQTT v5.
+    ///
+    /// [MQTT v3.1.1 spec](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc408983219)
+    /// [MQTT v5 spec](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc408185332)
+    pub(crate) client_id: &'a str,
 
     /// An optional authentication message used by the server.
-    pub username: Option<&'a str>,
-    pub password: Option<&'a [u8]>,
+    ///
+    /// [MQTT v3.1.1 spec](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc408983220)
+    /// [MQTT v5 spec](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc408185333)
+    pub(crate) username: Option<&'a str>,
+    pub(crate) password: Option<&'a [u8]>,
 
     /// An optional will message to be transmitted whenever the connection is lost.
+    ///
+    /// [MQTT v3.1.1 spec](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc408983221)
+    /// [MQTT v5 spec](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc408185334)
     pub(crate) last_will: Option<LastWill<'a>>,
 
     /// Specified true there is no session state being taken in to the MQTT connection.
-    pub clean_start: bool,
+    ///
+    /// This field is required for both MQTT v3.1.1 and MQTT v5.
+    ///
+    /// [MQTT v3.1.1 spec](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc408983222)
+    /// [MQTT v5 spec](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc408185335)
+    pub(crate) clean_start: bool,
 }
 
 impl<'a> FixedHeader for Connect<'a> {
@@ -97,6 +123,7 @@ impl<'a> FixedHeader for Connect<'a> {
 }
 
 impl MqttEncode for Connect<'_> {
+    /// Encodes the `CONNECT` packet into the given encoder.
     fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         encoder.write_str(self.protocol.name())?;
         encoder.write_u8(self.protocol.into())?;
@@ -140,6 +167,7 @@ impl MqttEncode for Connect<'_> {
         Ok(())
     }
 
+    /// Returns the maximum size of the packet in bytes.
     fn max_packet_size(&self) -> usize {
         let mut length: usize = 2 + self.protocol.name().len() + 1 + 1; // NOTE: protocol_name(6) + protocol_level(1) + flags(1);
         length += 2; // keep alive
@@ -168,6 +196,13 @@ impl MqttEncode for Connect<'_> {
         };
 
         length + MAX_MQTT_HEADER_LEN
+    }
+}
+
+impl<'a> MqttDecode<'a> for Connect<'a> {
+    /// Decodes the `CONNECT` packet from the given decoder.
+    fn from_decoder(_decoder: &mut crate::decoder::MqttDecoder<'a>) -> Result<Self, Error> {
+        todo!()
     }
 }
 

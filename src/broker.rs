@@ -1,40 +1,60 @@
 use core::convert::TryFrom;
 use embedded_nal_async::{AddrType, Dns, IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
+/// Default MQTT port without TLS.
 #[cfg(not(feature = "embedded-tls"))]
 const MQTT_DEFAULT_PORT: u16 = 1883;
 
+/// Default MQTT port with TLS.
 #[cfg(feature = "embedded-tls")]
 const MQTT_DEFAULT_PORT: u16 = 8883;
 
-/// A type that allows us to (eventually) determine the broker address.
+/// Represents an MQTT broker.
+///
+/// This trait provides a common interface to retrieve the broker's address,
+/// which might involve resolving a domain name.
 pub trait Broker {
-    /// Retrieve the broker address (if available).
+    /// Retrieves the broker's `SocketAddr`.
+    ///
+    /// This method should attempt to resolve the address if it's not readily available (e.g.,
+    /// for domain-based brokers).
     async fn get_address(&mut self) -> Option<SocketAddr>;
 
+    /// Retrieves the hostname of the broker, if applicable.
+    ///
+    /// This method returns `None` for IP-based brokers.
     fn get_hostname(&self) -> Option<&str> {
         None
     }
 }
 
-/// A broker that is specified using a qualified domain-name. The name will be resolved at some
-/// point in the future.
+/// Represents an MQTT broker specified by a domain name.
+///
+/// The domain name is resolved to an IP address when `get_address` is called.
 #[derive(Debug)]
 pub struct DomainBroker<'a, R: Dns, const T: usize = 253> {
+    /// The raw domain name string of the broker.
     raw: heapless::String<T>,
+
+    /// A reference to the DNS resolver used to resolve the domain name.
     resolver: &'a R,
+
+    /// The resolved `SocketAddr` of the broker.
     addr: SocketAddr,
 }
 
 impl<'a, R: Dns, const T: usize> DomainBroker<'a, R, T> {
-    /// Construct a new domain broker.
+    /// Creates a new `DomainBroker`.
     ///
-    /// # Args
-    /// * `broker` - The domain name of the broker, such as `broker.example.com`
-    ///   or `broker.example.com:8883`
-    /// * `resolver` - A [embedded_nal::Dns] resolver to resolve the broker
-    /// domain name to an IP address.
+    /// # Arguments
+    /// * `broker` - The domain name of the broker (e.g., `broker.example.com` or `broker.example.com:8883`).
+    /// * `resolver` - A `embedded_nal::Dns` resolver for resolving the domain name.
+    ///
+    /// # Errors
+    /// Returns an error if the provided `broker` string cannot be parsed or is too long.
     pub fn new(broker: &str, resolver: &'a R) -> Result<Self, ()> {
+        // Attempt to parse the broker string as a SocketAddr.
+        // If parsing fails, it creates a SocketAddr with an unspecified IP and the provided or default port.
         let addr: SocketAddr = broker.parse().unwrap_or_else(|_| {
             let (_, port) = broker
                 .split_once(':')
@@ -55,8 +75,11 @@ impl<'a, R: Dns, const T: usize> DomainBroker<'a, R, T> {
 }
 
 impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
+    /// Resolves and returns the `SocketAddr` of the broker.
+    ///
+    /// If the IP address is unspecified, it attempts to resolve the domain name using the provided resolver.
     async fn get_address(&mut self) -> Option<SocketAddr> {
-        // Attempt to resolve the address.
+        // If the IP address is unspecified, it needs to be resolved
         if self.addr.ip().is_unspecified() {
             let hostname = self
                 .raw
@@ -66,12 +89,13 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
 
             info!("Trying to resolve IP of {:?}", hostname);
 
+            // Try resolving the hostname
             match self
                 .resolver
                 .get_host_by_name(hostname, AddrType::IPv4)
                 .await
             {
-                Ok(ip) => self.addr.set_ip(ip),
+                Ok(ip) => self.addr.set_ip(ip), // Update the address with the resolved IP
                 Err(_e) => {
                     #[cfg(feature = "log")]
                     warn!("DNS lookup failed: {:?}", _e);
@@ -81,6 +105,7 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
             }
         }
 
+        // Return the SocketAddr if the IP is now specified, otherwise return None
         if !self.addr.ip().is_unspecified() {
             Some(self.addr)
         } else {
@@ -89,6 +114,7 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
     }
 
     fn get_hostname(&self) -> Option<&str> {
+        // Extract and return the hostname from the 'raw' string
         let hostname = self
             .raw
             .split_once(':')
@@ -99,26 +125,30 @@ impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
     }
 }
 
-/// A simple broker specification where the address of the broker is known in advance.
+/// Represents an MQTT broker with a known IP address.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct IpBroker {
+    /// The `SocketAddr` of the broker.
     addr: SocketAddr,
 }
 
 impl IpBroker {
-    /// Construct a broker with a known IP address & port.
+    /// Creates a new `IpBroker` with the specified IP address and port.
     pub fn new(broker: impl Into<IpAddr>, port: u16) -> Self {
         Self {
             addr: SocketAddr::new(broker.into(), port),
         }
     }
 }
+
 impl Broker for IpBroker {
+    /// Returns the stored `SocketAddr` of the broker.
     async fn get_address(&mut self) -> Option<SocketAddr> {
         Some(self.addr)
     }
 }
 
+// Implement From trait for various types to simplify creating an IpBroker
 impl From<(IpAddr, u16)> for IpBroker {
     fn from((addr, port): (IpAddr, u16)) -> Self {
         IpBroker::new(addr, port)

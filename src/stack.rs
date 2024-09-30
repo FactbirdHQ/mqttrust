@@ -9,7 +9,6 @@ use embedded_io_async::{Error as _, ReadExactError};
 use embedded_io_async::{ErrorKind, Write as _};
 
 use crate::decoder::MqttDecoder;
-use crate::Property;
 use crate::{
     config::Config,
     encoding::{
@@ -23,9 +22,13 @@ use crate::{
     transport::Transport,
     Disconnect,
 };
+use crate::{SubAck, UnsubAck};
+
+#[cfg(feature = "mqttv5")]
+use crate::{Properties, Property, PubAckReasonCode};
 
 #[cfg(feature = "qos2")]
-use crate::encoding::{PubComp, PubRec, PubRel};
+use crate::{PubComp, PubRec, PubRel};
 
 pub struct MqttStack<'a, M: RawMutex, const SUBS: usize>
 where
@@ -36,10 +39,10 @@ where
     rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
 
     config: Config,
-    packet_buf: PacketBuffer<128>,
+    packet_buf: PacketBuffer,
 
     last_network_action: Instant,
-    await_pingresp: Option<Instant>,
+    awaiting_pingresp: bool,
 
     clean_start: bool,
     connect_attempts: u8,
@@ -67,7 +70,7 @@ where
             connect_attempts: 0,
 
             last_network_action: Instant::now(),
-            await_pingresp: None,
+            awaiting_pingresp: false,
         }
     }
 
@@ -106,7 +109,7 @@ where
                 error!("Stack error {}", e);
                 // Clean state
                 transport.disconnect().ok();
-                self.await_pingresp = None;
+                self.awaiting_pingresp = false;
                 self.connect_attempts = 0;
                 self.shared.lock().await.reset();
                 self.packet_buf.reset();
@@ -118,18 +121,14 @@ where
         &mut self,
         transport: &mut impl Transport,
     ) -> Result<(), ConnectionError> {
-        let disconnect = Disconnect {
-            reason_code: Default::default(),
-            #[cfg(feature = "mqttv5")]
-            properties: crate::Properties::Slice(&[Property::SessionExpiryInterval(0)]),
-
-            #[cfg(feature = "mqttv3")]
-            _marker: core::marker::PhantomData,
-        };
+        let disconnect = Disconnect::builder();
+        #[cfg(feature = "mqttv5")]
+        let disconnect =
+            disconnect.properties(Properties::Slice(&[Property::SessionExpiryInterval(0)]));
 
         debug!("Disconnecting from MQTT");
         self.packet_buf
-            .write_packet(transport, disconnect)
+            .write_packet(transport, disconnect.build())
             .await
             .map_err(ConnectionError::MqttState)?;
 
@@ -139,215 +138,24 @@ where
     }
 
     async fn select(&mut self, transport: &mut impl Transport) -> Result<(), StateError> {
-        let last_action_instant = self.await_pingresp.unwrap_or(self.last_network_action);
-        let network_activity_deadline = last_action_instant + self.config.keepalive_interval;
-
-        let keep_alive_sleep = Timer::after(
-            network_activity_deadline
-                .checked_duration_since(Instant::now())
-                .unwrap_or_default(),
-        );
+        let now = Instant::now();
+        let keep_alive_sleep = if let Some(remaining_time) =
+            (self.last_network_action + self.config.keepalive_interval).checked_duration_since(now)
+        {
+            Timer::after(remaining_time)
+        } else {
+            Timer::after(Duration::MIN)
+        };
 
         match select3(
-            self.packet_buf.get_received_packet(transport),
             self.tx_subscriber.read_any_async(),
+            self.packet_buf.get_received_packet(transport),
             keep_alive_sleep,
         )
         .await
         {
-            Either3::First(Ok(mut packet)) => {
-                // ### RX future:
-                //
-                // Handle all incoming packet types by sending ack & waking
-                // `tx_wakers`.
-                self.last_network_action = Instant::now();
-
-                match packet {
-                    ReceivedPacket::Disconnect { reason_code, .. } => {
-                        warn!("Received disconnect packet {}", reason_code);
-                    }
-                    ReceivedPacket::PingResp => {
-                        // If there was no timeout to begin with, log the spurious ping response.
-                        if self.await_pingresp.take().is_none() {
-                            warn!("Got unexpected ping response");
-                        }
-                    }
-                    ReceivedPacket::ConnAck { .. } => {
-                        // This should never happen, as this function is not used until after successfully connected to MQTT broker
-                        warn!("Got unexpected connack");
-                    }
-                    ReceivedPacket::Publish {
-                        qos_pid,
-                        topic_name,
-                        ref mut publish,
-                    } => {
-                        // Handle incoming `Publish` type packets by copying the full
-                        // packet to any `shared.rx_publisher` buffers where topic
-                        // matches their topic_filter.
-
-                        // If the incoming topic matches any of the topicfilters in AwaitingUnsubAck
-                        // ignore them, as there will be no subscribers to remove them from the queue again
-                        // The topic filters will be added to AwaitingUnSubAck when drop is called on Subscription
-
-                        let mut ignore_message = false;
-
-                        let shared = self.shared.lock().await;
-                        let iter = shared.ack_status.iter();
-
-                        for (_, status) in iter {
-                            let AckStatus::AwaitingUnsubAck(filters) = status else {
-                                continue;
-                            };
-
-                            for filter in filters {
-                                if filter.is_match(topic_name) {
-                                    error!("Got MSG on Publish but the topic: {} matched a topic in AwaitingUnSubAck: {}", topic_name, filter.filter());
-                                    ignore_message = true;
-                                }
-                            }
-                        }
-
-                        // Shared is dropped as we don't want to hold on to the lock while awaiting below.
-                        // Not dropping shared caused
-                        drop(shared);
-
-                        if !ignore_message {
-                            match self.rx_publisher.grant_async(publish.len()).await {
-                                Ok(mut grant) => {
-                                    publish.copy_all(grant.deref_mut()).await.map_err(
-                                        |e| match e {
-                                            ReadExactError::UnexpectedEof => {
-                                                StateError::Io(ErrorKind::BrokenPipe)
-                                            }
-                                            ReadExactError::Other(i) => StateError::Io(i.kind()),
-                                        },
-                                    )?;
-
-                                    // calling `commit` will wake all subscribers
-                                    grant.commit(publish.len());
-                                }
-                                Err(_) => {
-                                    error!(
-                                        "Packet is larger than the storage allocated in `rx_publisher`"
-                                    );
-                                }
-                            }
-                        }
-
-                        // Write `PubAck` or `PubRec` depending on received QoS
-                        match qos_pid {
-                            QosPid::AtMostOnce => {}
-                            QosPid::AtLeastOnce(pid) => {
-                                warn!("sending puback {:?}", pid);
-                                let puback = PubAck { pid };
-                                self.packet_buf.write_packet(transport, puback).await?;
-                            }
-                            #[cfg(feature = "qos2")]
-                            QosPid::ExactlyOnce(pid) => {
-                                self.shared
-                                    .lock()
-                                    .await
-                                    .borrow_mut()
-                                    .incoming_pub
-                                    .insert(pid.get())
-                                    .unwrap();
-
-                                let pubrec = PubRec { pid };
-                                self.packet_buf.write_packet(transport, pubrec).await?;
-                            }
-                        }
-                    }
-                    ReceivedPacket::PubAck { pid, .. } => {
-                        let mut shared = self.shared.lock().await;
-                        debug!("Removing PID {:?} from inflight_pub", pid.get());
-                        if !shared.inflight_pub.remove(&pid.get()) {
-                            warn!("Unexpected Puback, PID: {:?}", pid.get());
-                        }
-                        // TODO: Handle collisions (See rumqttc state.rs)
-                        shared.wake_tx();
-                    }
-                    #[cfg(feature = "qos2")]
-                    ReceivedPacket::PubRel { pid, .. } => {
-                        let mut shared = self.shared.lock().await;
-                        match shared.incoming_pub.remove(&pid.get()) {
-                            true => {
-                                let pubcomp = PubComp { pid };
-                                self.packet_buf.write_packet(transport, pubcomp).await?;
-                                shared.wake_tx();
-                            }
-                            false => {
-                                error!("Unsolicited pubrel packet: {:?}", pid);
-                            }
-                        }
-                    }
-                    #[cfg(feature = "qos2")]
-                    ReceivedPacket::PubRec { pid, .. } => {
-                        let mut shared = self.shared.lock().await;
-                        match shared.inflight_pub.remove(&pid.get()) {
-                            Some(_) => {
-                                shared.outgoing_rel.insert(pid.get());
-
-                                let pubrel = PubRel { pid };
-                                self.packet_buf.write_packet(transport, pubrel).await?;
-                                shared.wake_tx();
-                            }
-                            None => {
-                                error!("Unsolicited pubrec packet: {:?}", pid);
-                            }
-                        }
-                    }
-                    #[cfg(feature = "qos2")]
-                    ReceivedPacket::PubComp { pid, .. } => {
-                        // TODO: Handle collisions (See rumqttc state.rs)
-
-                        let mut shared = self.shared.lock().await;
-                        match shared.outgoing_rel.remove(&pid.get()) {
-                            true => {
-                                // self.inflight -= 1;
-                                shared.wake_tx();
-                            }
-                            false => {
-                                error!("Unsolicited pubcomp packet: {:?}", pid);
-                            }
-                        }
-                    }
-                    ReceivedPacket::SubAck { pid, codes, .. } => {
-                        let mut shared = self.shared.lock().await;
-                        // Pop pid from pending_ack
-                        debug!("Received suback: {:?}, {:?}", pid, codes);
-
-                        match shared.ack_status.get_mut(&pid.get()) {
-                            Some(status) if *status == AckStatus::AwaitingSubAck => {
-                                *status =
-                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
-                                shared.wake_tx();
-                            }
-                            None | Some(_) => {
-                                error!("Unsolicited suback packet: {:?}", pid);
-                            }
-                        }
-                    }
-                    ReceivedPacket::UnsubAck { pid, codes, .. } => {
-                        let mut shared = self.shared.lock().await;
-
-                        // Pop pid from pending_ack
-                        match shared.ack_status.get_mut(&pid.get()) {
-                            Some(status) if matches!(*status, AckStatus::AwaitingUnsubAck(_)) => {
-                                *status =
-                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
-                                shared.wake_tx();
-                            }
-                            None | Some(_) => {
-                                error!("Unsolicited suback packet: {:?}", pid);
-                            }
-                        }
-                    }
-                }
-            }
-            Either3::Second(Ok(mut tx_grant)) => {
-                tx_grant.auto_release(true);
+            Either3::First(Ok(tx_grant)) => {
                 // ### TX future:
-
                 transport
                     .socket()?
                     .write_all(&tx_grant)
@@ -366,15 +174,246 @@ where
                 if let Some(pid) = decoder.read_pid() {
                     shared.outgoing_pid.remove(&pid.get());
                 }
+
+                tx_grant.release();
                 shared.wake_tx();
 
                 self.last_network_action = Instant::now();
             }
+            Either3::Second(Ok(mut packet)) => {
+                // ### RX future:
+                //
+                // Handle all incoming packet types by sending ack & waking
+                // // `tx_wakers`.
+
+                // if packet_header.typ == PacketType::Publish {
+                //     if self.rx_publisher.free_capacity()
+                //         < Header::encoded_len(packet_len) + packet_len
+                //     {
+                //         warn!(
+                //             "Not enough free capacity ({}) to handle publish packet of len ({}) + header ({})",
+                //             self.rx_publisher.free_capacity(),
+                //             packet_len,
+                //             Header::encoded_len(packet_len)
+                //         );
+                //         // Make sure we have a yield point in this potential hot-loop
+                //         yield_now().await;
+                //         return Ok(());
+                //     }
+                // }
+
+                // let mut packet = self
+                //     .packet_buf
+                //     .read_packet(transport)
+                //     .await
+                //     .map_err(|_e| StateError::Deserialization)?;
+
+                match packet {
+                    ReceivedPacket::Disconnect(Disconnect { reason_code, .. }) => {
+                        warn!("Received disconnect packet {:?}", reason_code);
+                    }
+                    ReceivedPacket::PingResp => {
+                        // If there was no timeout to begin with, log the spurious ping response.
+                        if !self.awaiting_pingresp {
+                            warn!("Got unexpected ping response");
+                        }
+                        self.awaiting_pingresp = false;
+                    }
+                    ReceivedPacket::ConnAck(_) => {
+                        // This should never happen, as this function is not
+                        // used until after successfully connected to MQTT
+                        // broker
+                        warn!("Got unexpected connack");
+                    }
+                    ReceivedPacket::PartialPublish {
+                        qos_pid,
+                        topic_name,
+                        ref mut publish,
+                    } => {
+                        warn!("Received packet PID {:?}", qos_pid);
+
+                        // Handle incoming `Publish` type packets by copying the full
+                        // packet to any `shared.rx_publisher` buffers where topic
+                        // matches their topic_filter.
+
+                        // If the incoming topic matches any of the topicfilters
+                        // in AwaitingUnsubAck ignore them, as there will be no
+                        // subscribers to remove them from the queue again The
+                        // topic filters will be added to AwaitingUnSubAck when
+                        // drop is called on Subscription
+                        let shared = self.shared.lock().await;
+
+                        let ignore_message = shared.ack_status.iter().any(|(_, status)| {
+                            // Only check AwaitingUnsubAck status
+                            if let AckStatus::AwaitingUnsubAck(filters) = status {
+                                filters.iter().any(|f| f.is_match(topic_name))
+                            } else {
+                                false
+                            }
+                        });
+
+                        // Shared is dropped as we don't want to hold on to the lock while awaiting below.
+                        drop(shared);
+
+                        if !ignore_message {
+                            debug!("Adding {:?} as available for subscribers", topic_name);
+
+                            match self.rx_publisher.grant_async(publish.len()).await {
+                                Ok(mut grant) => {
+                                    publish.copy_all(grant.deref_mut()).await.map_err(
+                                        |e| match e {
+                                            ReadExactError::UnexpectedEof => {
+                                                StateError::Io(ErrorKind::BrokenPipe)
+                                            }
+                                            ReadExactError::Other(i) => StateError::Io(i.kind()),
+                                        },
+                                    )?;
+
+                                    // calling `commit` will wake all subscribers
+                                    grant.commit(publish.len());
+                                }
+                                Err(_) => {
+                                    error!(
+                                        "Packet is larger than the storage allocated in `rx_publisher`"
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        } else {
+                            // TODO: Do we need to read remaining bytes of PartialPublish when we ignore the message here?¨
+                            warn!("Ignore message with topic {:?}", topic_name);
+                        }
+
+                        // Write `PubAck` or `PubRec` depending on received QoS
+                        match qos_pid {
+                            QosPid::AtMostOnce => {}
+                            QosPid::AtLeastOnce(pid) => {
+                                warn!("sending puback {:?}", pid);
+                                let puback = PubAck {
+                                    pid,
+                                    #[cfg(feature = "mqttv5")]
+                                    reason_code: PubAckReasonCode::Success,
+                                    #[cfg(feature = "mqttv5")]
+                                    properties: Properties::Slice(&[]),
+                                };
+                                self.packet_buf.write_packet(transport, puback).await?;
+                            }
+                            #[cfg(feature = "qos2")]
+                            QosPid::ExactlyOnce(pid) => {
+                                self.shared
+                                    .lock()
+                                    .await
+                                    .borrow_mut()
+                                    .incoming_pub
+                                    .insert(pid.get())
+                                    .unwrap();
+
+                                let pubrec = PubRec { pid };
+                                self.packet_buf.write_packet(transport, pubrec).await?;
+                            }
+                        }
+                    }
+                    ReceivedPacket::PubAck(p) => {
+                        let mut shared = self.shared.lock().await;
+                        debug!("Removing PID {:?} from inflight_pub", p.pid.get());
+                        if !shared.inflight_pub.remove(&p.pid.get()) {
+                            warn!("Unexpected Puback, PID: {:?}", p.pid.get());
+                        }
+                        #[cfg(feature = "mqttv5")]
+                        if p.reason_code != PubAckReasonCode::Success {
+                            warn!("Received PUBACK with reason code: {:?}", p.reason_code);
+                        }
+                        // TODO: Handle collisions (See rumqttc state.rs)
+                        shared.wake_tx();
+                    }
+                    #[cfg(feature = "qos2")]
+                    ReceivedPacket::PubRel(p) => {
+                        let mut shared = self.shared.lock().await;
+                        match shared.incoming_pub.remove(&p.pid.get()) {
+                            true => {
+                                let pubcomp = PubComp { pid: p };
+                                self.packet_buf.write_packet(transport, pubcomp).await?;
+                                shared.wake_tx();
+                            }
+                            false => {
+                                error!("Unsolicited pubrel packet: {:?}", p.pid);
+                            }
+                        }
+                    }
+                    #[cfg(feature = "qos2")]
+                    ReceivedPacket::PubRec(p) => {
+                        let mut shared = self.shared.lock().await;
+                        match shared.inflight_pub.remove(&p.pid.get()) {
+                            Some(_) => {
+                                shared.outgoing_rel.insert(p.pid.get());
+
+                                let pubrel = PubRel { pid: p };
+                                self.packet_buf.write_packet(transport, pubrel).await?;
+                                shared.wake_tx();
+                            }
+                            None => {
+                                error!("Unsolicited pubrec packet: {:?}", p.pid);
+                            }
+                        }
+                    }
+                    #[cfg(feature = "qos2")]
+                    ReceivedPacket::PubComp(p) => {
+                        // TODO: Handle collisions (See rumqttc state.rs)
+
+                        let mut shared = self.shared.lock().await;
+                        match shared.outgoing_rel.remove(&p.pid.get()) {
+                            true => {
+                                shared.wake_tx();
+                            }
+                            false => {
+                                error!("Unsolicited pubcomp packet: {:?}", p.pid);
+                            }
+                        }
+                    }
+                    ReceivedPacket::SubAck(SubAck { pid, codes, .. }) => {
+                        let mut shared = self.shared.lock().await;
+                        // Pop pid from pending_ack
+                        debug!("Received suback: {:?}, {:?}", pid, codes);
+
+                        match shared.ack_status.get_mut(&pid.get()) {
+                            Some(status) if *status == AckStatus::AwaitingSubAck => {
+                                *status =
+                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
+                                shared.wake_tx();
+                            }
+                            None | Some(_) => {
+                                error!("Unsolicited suback packet: {:?}", pid);
+                            }
+                        }
+                    }
+                    ReceivedPacket::UnsubAck(UnsubAck { pid, codes, .. }) => {
+                        let mut shared = self.shared.lock().await;
+
+                        // Pop pid from pending_ack
+                        match shared.ack_status.get_mut(&pid.get()) {
+                            Some(status) if matches!(*status, AckStatus::AwaitingUnsubAck(_)) => {
+                                *status =
+                                    AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
+                                shared.wake_tx();
+                            }
+                            None | Some(_) => {
+                                error!("Unsolicited suback packet: {:?}", pid);
+                            }
+                        }
+                    }
+                }
+
+                self.last_network_action = Instant::now();
+
+                // Reset the buffer in `PacketReader`, so we are ready for the
+                // next MQTT packet
+                self.packet_buf.reset();
+            }
             Either3::Third(_) => {
                 // ### PING future:
 
-                // raise error if last ping didn't receive ack
-                if self.await_pingresp.is_some() {
+                // Raise error if last ping didn't receive PINGRESP
+                if self.awaiting_pingresp {
                     return Err(StateError::AwaitPingResp);
                 }
 
@@ -390,7 +429,7 @@ where
                 self.packet_buf.write_packet(transport, pingreq).await?;
 
                 self.last_network_action = Instant::now();
-                self.await_pingresp = Some(Instant::now());
+                self.awaiting_pingresp = true;
             }
             _ => {}
         }
@@ -415,7 +454,7 @@ where
             username: None,
             password: None,
             #[cfg(feature = "mqttv5")]
-            properties: crate::encoding::Properties::Slice(&[Property::SessionExpiryInterval(600)]),
+            properties: Properties::Slice(&[Property::SessionExpiryInterval(600)]),
         };
 
         if self.clean_start {
@@ -434,29 +473,15 @@ where
 
         // validate connack
         // TODO: ERROR types
-        match self
+        let result = match self
             .packet_buf
             .get_received_packet(transport)
             .await
             .map_err(|_| ConnectionError::FlushTimeout)?
         {
-            ReceivedPacket::ConnAck {
-                reason_code,
-                session_present,
+            ReceivedPacket::ConnAck(p) => {
                 #[cfg(feature = "mqttv5")]
-                properties,
-            } if reason_code.success() => {
-                if self.clean_start {
-                    debug!("Connected! Reusing existing session: {}", session_present);
-                } else {
-                    debug!("Reconnected! Reusing existing session: {}", session_present);
-                }
-
-                self.clean_start = false;
-                self.connect_attempts = 0;
-
-                #[cfg(feature = "mqttv5")]
-                for prop in properties.iter() {
+                for prop in p.properties.iter() {
                     match prop {
                         Ok(Property::ServerKeepAlive(keep_alive)) => {
                             self.config.keepalive_interval = self
@@ -470,32 +495,39 @@ where
                                 .max_qos
                                 .max(QoS::try_from(qos).unwrap_or(QoS::AtLeastOnce));
                         }
-                        _ => (),
-                    }
-                }
-
-                Ok(session_present)
-            }
-            ReceivedPacket::ConnAck {
-                reason_code,
-                properties,
-                ..
-            } => {
-                error!("Connection refused! reason code: {:?}", reason_code);
-
-                #[cfg(feature = "mqttv5")]
-                for prop in properties.iter() {
-                    match prop {
                         Ok(Property::ReasonString(reason)) => {
                             error!(" => {}", reason);
                         }
                         _ => (),
                     }
                 }
-                Err(ConnectionError::ConnectionRefused)
+
+                if p.reason_code.success() {
+                    if self.clean_start {
+                        debug!("Connected! Reusing existing session: {}", p.session_present);
+                    } else {
+                        debug!(
+                            "Reconnected! Reusing existing session: {}",
+                            p.session_present
+                        );
+                    }
+
+                    self.clean_start = false;
+                    self.connect_attempts = 0;
+
+                    Ok(p.session_present)
+                } else {
+                    error!("Connection refused! reason code: {:?}", p.reason_code);
+                    Err(ConnectionError::ConnectionRefused)
+                }
             }
             _ => Err(ConnectionError::NotConnAck),
-        }
+        };
+
+        // Reset the buffer in `PacketReader`, so we are ready for the next MQTT packet
+        self.packet_buf.reset();
+
+        result
     }
 }
 
@@ -561,7 +593,9 @@ mod tests {
         // Create the MQTT stack
         static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
         let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
-        let config = Config::new("client_id");
+        let config = Config::builder()
+            .client_id("client_id".try_into().unwrap())
+            .build();
         let (mut stack, client) = crate::new(state, config);
 
         let fut = async {
@@ -602,7 +636,9 @@ mod tests {
         // Create the MQTT stack
         static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
         let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
-        let config = Config::new("client_id");
+        let config = Config::builder()
+            .client_id("client_id".try_into().unwrap())
+            .build();
         let (mut stack, client) = crate::new(state, config);
 
         // Use the MQTT client to subscribe
@@ -627,7 +663,7 @@ mod tests {
                             retain: false,
                             topic_name: "CDE",
                             payload: b"",
-                            properties: crate::encoding::Properties::Slice(&[]),
+                            properties: crate::Properties::Slice(&[]),
                         })
                         .await
                         .unwrap();
