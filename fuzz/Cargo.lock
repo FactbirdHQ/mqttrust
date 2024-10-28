@@ -110,12 +110,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
-name = "bitmaps"
-version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d084b0137aaa901caf9f1e8b21daa6aa24d41cd806e111335541eff9683bd6"
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -444,7 +438,6 @@ dependencies = [
 name = "embedded-mqtt"
 version = "0.1.0"
 dependencies = [
- "bitmaps",
  "bon",
  "embassy-futures",
  "embassy-sync",
@@ -466,6 +459,8 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "critical-section",
+ "embassy-futures",
+ "embassy-sync",
  "embassy-time",
  "embedded-mqtt",
  "env_logger",

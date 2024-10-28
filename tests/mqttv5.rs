@@ -36,7 +36,7 @@ async fn mqttv5() {
         .client_id(client_id.try_into().unwrap())
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
-    static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 8>> = StaticCell::new();
+    static STATE: StaticCell<State<NoopRawMutex, 1024, 1024>> = StaticCell::new();
     let state = STATE.init(State::new());
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
@@ -47,8 +47,6 @@ async fn mqttv5() {
         connected_signal.wait().await;
 
         for i in 0..ROUND_TRIP_COUNT {
-            log::debug!("################# PUBLISH ROUND {}!", i);
-
             client
                 .publish(
                     Publish::builder()
@@ -71,19 +69,17 @@ async fn mqttv5() {
                 .await
                 .unwrap();
 
-            // client
-            //     .publish(
-            //         Publish::builder()
-            //             .topic_name("embedded_mqtt/embassy_async_no_subs/hello")
-            //             .payload(format!("This is my super secret payload {i}").as_bytes())
-            //             .build(),
-            //     )
-            //     .await
-            //     .unwrap();
+            client
+                .publish(
+                    Publish::builder()
+                        .topic_name("embedded_mqtt/embassy_async_no_subs/hello")
+                        .payload(format!("This is my super secret payload {i}").as_bytes())
+                        .build(),
+                )
+                .await
+                .unwrap();
 
-            log::debug!("#################");
-
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
         loop {
@@ -92,16 +88,31 @@ async fn mqttv5() {
     };
 
     let sub = async {
-        let topic_paths = [SubscribeTopic::builder()
-            .topic_path("embedded_mqtt/embassy_async/#")
-            .build()];
-
-        let subscribe = Subscribe::builder().topics(&topic_paths).build();
-
         client.wait_connected().await;
 
         let mut msg_cnt = 0;
-        let mut subscription = client.subscribe::<1>(subscribe).await.unwrap();
+        let mut subscription = client
+            .subscribe::<1>(
+                Subscribe::builder()
+                    .topics(&[SubscribeTopic::builder()
+                        .topic_path("embedded_mqtt/embassy_async/#")
+                        .build()])
+                    .build(),
+            )
+            .await
+            .unwrap();
+
+        let mut _blocking_subscription = client
+            .subscribe::<1>(
+                Subscribe::builder()
+                    .topics(&[SubscribeTopic::builder()
+                        .topic_path("embedded_mqtt/others/#")
+                        .build()])
+                    .build(),
+            )
+            .await
+            .unwrap();
+
         connected_signal.signal(());
         while let Some(message) = subscription.next().await {
             log::info!(
@@ -109,9 +120,14 @@ async fn mqttv5() {
                 message.topic_name(),
                 core::str::from_utf8(message.payload())
             );
+
+            if message.topic_name() == "embedded_mqtt/embassy_async_no_subs/hello" {
+                return Err(());
+            }
+
             msg_cnt += 1;
-            if msg_cnt >= ROUND_TRIP_COUNT * 2 {
-                return Ok(());
+            if msg_cnt == ROUND_TRIP_COUNT * 2 {
+                return Ok(msg_cnt);
             }
         }
 
@@ -129,7 +145,10 @@ async fn mqttv5() {
     {
         select::Either3::First(_) => unreachable!(),
         select::Either3::Second(_) => unreachable!(),
-        select::Either3::Third(r) => r.unwrap(),
+        select::Either3::Third(r) => {
+            let msg_cnt = r.expect(&format!("to receive {} messages!", ROUND_TRIP_COUNT * 2));
+            assert_eq!(msg_cnt, ROUND_TRIP_COUNT * 2)
+        }
     }
 
     stack.disconnect(&mut transport).await.unwrap();

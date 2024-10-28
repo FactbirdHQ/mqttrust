@@ -1,313 +1,178 @@
-//! A Framed flavor of [`PubSubChannel`], useful for variable length packets
-//!
-//! This module allows for a `Framed` mode of operation,
-//! where a size header is included in each grant, allowing for
-//! "chunks" of data to be passed through a [`PubSubChannel`], rather than
-//! just a stream of bytes. This is convenient when receiving
-//! packets of variable sizes.
-//!
-//! ## Frame header
-//!
-//! An internal header is required for each frame stored
-//! inside of the [`PubSubChannel`]. This header is never exposed to end
-//! users of the pubsub library.
-//!
-//! A variable sized integer is used for the header size, and the
-//! size of this header is based on the max size requested for the grant.
-//! This header size must be factored in when calculating an appropriate
-//! total size of your buffer.
-//!
-//! Even if a smaller portion of the grant is committed, the original
-//! requested grant size will be used for the header size calculation.
-//!
-//! For example, if you request a 128 byte grant, the header size will
-//! be two bytes. If you then only commit 32 bytes, two bytes will still
-//! be used for the header of that grant.
-//!
-//! | Grant Size (bytes)    | Header size (bytes)  |
-//! | :---                  | :---                 |
-//! | 1..(2^7)              | 1                    |
-//! | (2^7)..(2^14)         | 2                    |
-//! | (2^14)..(2^21)        | 3                    |
-//! | (2^21)..(2^28)        | 4                    |
-//! | (2^28)..(2^35)        | 5                    |
-//! | (2^35)..(2^42)        | 6                    |
-//! | (2^42)..(2^49)        | 7                    |
-//! | (2^49)..(2^56)        | 8                    |
-//! | (2^56)..(2^64)        | 9                    |
-//!
+use crate::pubsub::Error;
 
-use crate::pubsub::header::Header;
-use crate::pubsub::{Error, MessageInfo};
-use crate::topic_filter::TopicFilter;
-
-use super::{BufferProvider, Message, PubSubChannel};
+use super::{BufferProvider, PubSubChannel};
 
 use super::Result;
 
-use bitmaps::{Bitmap, Bits, BitsImpl};
-use portable_atomic::Ordering::{AcqRel, Acquire, Release};
+use embassy_sync::blocking_mutex::raw::RawMutex;
 
 use core::future::Future;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
+use core::ptr::NonNull;
 use core::slice::from_raw_parts_mut;
 use core::task::{Context, Poll};
 
 /// A subscriber of framed MQTT data
-pub struct FrameSubscriber<'a, B, const SUBS: usize>
+pub struct FrameSubscriber<'a, M, B, const SUBS: usize>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    id: usize,
-    channel: &'a PubSubChannel<B, SUBS>,
+    channel: &'a PubSubChannel<M, B, SUBS>,
+    next_message_id: u64,
 }
 
-impl<'a, B, const SUBS: usize> FrameSubscriber<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FrameSubscriber<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(channel: &'a PubSubChannel<B, SUBS>, id: usize) -> Self {
-        Self { channel, id }
-    }
-
-    /// Obtain the next available MQTT message matching topic_filters, if any
-    pub fn read_message(&mut self, topic_filters: &[TopicFilter]) -> Result<Message<'a, B, SUBS>> {
-        self.read_message_with_context(topic_filters, None)
-    }
-
-    pub fn read_message_with_context(
-        &mut self,
-        topic_filters: &[TopicFilter],
-        cx: Option<&mut Context<'_>>,
-    ) -> Result<Message<'a, B, SUBS>> {
-        let grant = match self.read_inner() {
-            Ok(grant) => grant,
-            Err(e) => {
-                if let Some(cx) = cx {
-                    self.channel.subscriber_wakers.register(cx.waker());
-                }
-                return Err(e);
-            }
-        };
-
-        if let Some(info) = MessageInfo::try_new(&grant) {
-            if topic_filters
-                .iter()
-                .any(|f| f.is_match(info.topic_name(&grant)))
-            {
-                return Ok(info.to_message(grant));
-            }
-
-            let msg_bitmap = self.channel.message_bitmap.lock(|s| {
-                let mut map = s.borrow_mut();
-                map.set(self.id, true);
-                map.clone()
-            });
-
-            // Check if message has been touched by all subscribers!
-            if self
-                .channel
-                .subscribers_taken
-                .lock(|subs_bitmap| (msg_bitmap & *subs_bitmap.borrow()) == *subs_bitmap.borrow())
-            {
-                warn!("Message touched by every subscriber, but unwanted! Discarding!");
-                grant.release();
-            }
-        }
-
-        if let Some(cx) = cx {
-            self.channel.subscriber_wakers.register(cx.waker());
-        }
-
-        Err(Error::MismatchedTopicFilter)
-    }
-
-    /// Async version of [Self::read_message].
-    /// Will wait for the buffer to have data to read. When data is available, the grant is returned.
-    pub fn read_message_async<'b>(
-        &'b mut self,
-        topic_filters: &'b [TopicFilter],
-    ) -> MessageReadFuture<'a, 'b, B, SUBS> {
-        MessageReadFuture {
-            sub: self,
-            topic_filters,
+    pub(super) fn new(channel: &'a PubSubChannel<M, B, SUBS>, next_message_id: u64) -> Self {
+        Self {
+            channel,
+            next_message_id,
         }
     }
 
     /// Obtain the next available MQTT frame, if any
-    pub fn read_any(&mut self) -> Result<FrameGrantR<'a, B, SUBS>> {
-        self.read_any_with_context(None)
+    pub fn read(&mut self) -> Result<FrameGrantR<'a, M, B, SUBS>> {
+        self.read_with_context(None)
     }
 
-    pub fn read_any_with_context(
+    pub fn read_with_context(
         &mut self,
         cx: Option<&mut Context<'_>>,
-    ) -> Result<FrameGrantR<'a, B, SUBS>> {
-        match self.read_inner() {
-            Ok(grant) => Ok(grant),
-            Err(e) => {
-                if let Some(cx) = cx {
-                    self.channel.subscriber_wakers.register(cx.waker());
-                }
-                return Err(e);
+    ) -> Result<FrameGrantR<'a, M, B, SUBS>> {
+        let (start, len, id) = self.channel.inner.lock(|inner| {
+            let mut inner = inner.borrow_mut();
+
+            let start_id = inner.next_message_id - inner.messages.len() as u64;
+
+            if self.next_message_id < start_id {
+                self.next_message_id = start_id;
+                // return Some(WaitResult::Lagged(start_id - message_id));
             }
-        }
+
+            let current_message_index = (self.next_message_id - start_id) as usize;
+
+            if current_message_index >= inner.messages.len() {
+                if let Some(cx) = cx {
+                    inner.subscriber_wakers.register(cx.waker());
+                }
+                return Err(Error::InsufficientSize);
+            }
+
+            // We've checked that the index is valid
+            let header = inner
+                .messages
+                .iter_mut()
+                .nth(current_message_index)
+                .unwrap();
+
+            if header.read_in_progress {
+                if let Some(cx) = cx {
+                    inner.subscriber_wakers.register(cx.waker());
+                }
+                return Err(Error::GrantInProgress);
+            }
+
+            // We're reading this item, so decrement the counter & mark it as read in progress
+            header.subscriber_count -= 1;
+            header.read_in_progress = true;
+
+            self.next_message_id += 1;
+
+            Ok((header.start, header.len, header.message_id))
+        })?;
+
+        // Get a mutable slice of the buffer for the granted memory. This is
+        // sound, as UnsafeCell, MaybeUninit, and GenericArray are all
+        // `#[repr(Transparent)]
+        let start_of_buf_ptr = unsafe { (*self.channel.buf.get()).buf().as_mut_ptr().cast::<u8>() };
+        let grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(start), len as usize) };
+
+        Ok(FrameGrantR {
+            channel: self.channel,
+            buf: grant_slice.into(),
+            message_id: id,
+            auto_release: true,
+        })
     }
 
     /// Async version of [Self::read].
     /// Will wait for the buffer to have data to read. When data is available, the grant is returned.
-    pub fn read_any_async<'b>(&'b mut self) -> GrantReadFuture<'a, 'b, B, SUBS> {
+    pub fn read_async(&mut self) -> GrantReadFuture<'a, '_, M, B, SUBS> {
         GrantReadFuture { sub: self }
     }
+}
 
-    fn read_inner(&mut self) -> Result<FrameGrantR<'a, B, SUBS>> {
-        let inner = self.channel;
+impl<'a, M, B, const SUBS: usize> Drop for FrameSubscriber<'a, M, B, SUBS>
+where
+    M: RawMutex,
+    B: BufferProvider,
+{
+    fn drop(&mut self) {
+        self.channel.inner.lock(|inner| {
+            let mut inner = inner.borrow_mut();
 
-        if inner.read_in_progress.swap(true, AcqRel) {
-            return Err(Error::GrantInProgress);
-        }
+            inner.subscriber_count -= 1;
 
-        let write = inner.write.load(Acquire);
-        let last = inner.last.load(Acquire);
-        let mut read = inner.read.load(Acquire);
+            // All messages that haven't been read yet by this subscriber must have their counter decremented
+            let start_id = inner.next_message_id - inner.messages.len() as u64;
+            if self.next_message_id >= start_id {
+                let current_message_index = (self.next_message_id - start_id) as usize;
+                inner
+                    .messages
+                    .iter_mut()
+                    .skip(current_message_index)
+                    .for_each(|header| header.subscriber_count -= 1);
 
-        // Resolve the inverted case or end of read
-        if read == last {
-            read = 0;
-            // This has some room for error, the other thread reads this
-            // Impact to Grant:
-            //   Grant checks if read < write to see if inverted. If not inverted, but
-            //     no space left, Grant will initiate an inversion, but will not trigger it
-            // Impact to Commit:
-            //   Commit does not check read, but if Grant has started an inversion,
-            //   grant could move Last to the prior write position
-            // MOVING READ BACKWARDS!
-            inner.read.store(0, Release);
-        }
+                let mut wake_publisher = false;
+                while let Some(header) = inner.messages.front() {
+                    if header.subscriber_count == 0 {
+                        inner.messages.pop_front().unwrap();
+                        wake_publisher |= true;
+                    } else {
+                        break;
+                    }
+                }
 
-        let sz = if write < read {
-            // Inverted, only believe last
-            last
-        } else {
-            // Not inverted, only believe write
-            write
-        } - read;
-
-        if sz == 0 {
-            inner.read_in_progress.store(false, Release);
-            return Err(Error::InsufficientSize);
-        }
-
-        // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
-        // are all `#[repr(Transparent)]
-        let start_of_buf_ptr = unsafe { (*inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
-        let mut grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(read), sz) };
-
-        // Additionally, we never commit less than a full frame with
-        // a header, so if we have ANY data, we'll have a full header
-        // and frame. [`FrameSubscriber::read`] will return an Error when
-        // there are 0 bytes available.
-
-        // The header consists of a single usize, encoded in native
-        // endianness order
-        let frame_len = Header::decode_usize(&grant_slice);
-        let hdr_len = Header::decoded_len(grant_slice[0]);
-        let total_len = frame_len + hdr_len;
-        let hdr_len = hdr_len as u8;
-
-        debug_assert!(grant_slice.len() >= total_len);
-
-        // Reduce the grant down to the size of the frame with a header
-        let mut new_buf: &mut [u8] = &mut [];
-        core::mem::swap(&mut grant_slice, &mut new_buf);
-        let (new, _) = new_buf.split_at_mut(total_len);
-        grant_slice = new;
-
-        Ok(FrameGrantR {
-            buf: grant_slice,
-            channel: self.channel,
-            to_release: 0,
-            hdr_len,
+                if wake_publisher {
+                    inner.publisher_waker.wake();
+                }
+            }
         })
     }
 }
 
-impl<'a, B, const SUBS: usize> Drop for FrameSubscriber<'a, B, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-    B: BufferProvider,
-{
-    fn drop(&mut self) {
-        let inner = self.channel;
-        inner
-            .subscribers_taken
-            .lock(|f| f.borrow_mut().set(self.id, false));
-    }
-}
-
 /// Future returned [Subscriber::read_async]
-#[must_use]
-pub struct GrantReadFuture<'a, 'b, B, const SUBS: usize>
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct GrantReadFuture<'a, 'b, M, B, const SUBS: usize>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) sub: &'b mut FrameSubscriber<'a, B, SUBS>,
+    pub(crate) sub: &'b mut FrameSubscriber<'a, M, B, SUBS>,
 }
 
-impl<'a, 'b, B, const SUBS: usize> Future for GrantReadFuture<'a, 'b, B, SUBS>
+impl<'a, 'b, M, B, const SUBS: usize> Future for GrantReadFuture<'a, 'b, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<FrameGrantR<'a, B, SUBS>>;
+    type Output = Result<FrameGrantR<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.sub.read_any_with_context(Some(cx)) {
+        match self.sub.read_with_context(Some(cx)) {
             Ok(grant) => Poll::Ready(Ok(grant)),
             Err(_) => Poll::Pending,
         }
     }
 }
 
-impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantReadFuture<'a, 'b, B, SUBS> where
-    BitsImpl<{ SUBS }>: Bits
-{
-}
-
-/// Future returned [Subscriber::read_async]
-#[must_use]
-pub struct MessageReadFuture<'a, 'b, B, const SUBS: usize>
-where
-    BitsImpl<{ SUBS }>: Bits,
-    B: BufferProvider,
-{
-    pub(crate) sub: &'b mut FrameSubscriber<'a, B, SUBS>,
-    pub(crate) topic_filters: &'b [TopicFilter],
-}
-
-impl<'a, 'b, B, const SUBS: usize> Future for MessageReadFuture<'a, 'b, B, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-    B: BufferProvider,
-{
-    type Output = Result<Message<'a, B, SUBS>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { topic_filters, sub } = self.get_mut();
-
-        match sub.read_message_with_context(topic_filters, Some(cx)) {
-            Ok(message) => Poll::Ready(Ok(message)),
-            Err(_) => Poll::Pending,
-        }
-    }
-}
-
-impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for MessageReadFuture<'a, 'b, B, SUBS> where
-    BitsImpl<{ SUBS }>: Bits
+impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
+    for GrantReadFuture<'a, 'b, M, B, SUBS>
 {
 }
 
@@ -315,20 +180,20 @@ impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for MessageReadFuture<'
 ///
 /// NOTE: If the grant is dropped without explicitly releasing
 /// the contents, then no frame will be released.
-pub struct FrameGrantR<'a, B, const SUBS: usize>
+pub struct FrameGrantR<'a, M, B, const SUBS: usize>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) buf: &'a mut [u8],
-    pub(crate) channel: &'a PubSubChannel<B, SUBS>,
-    pub(crate) to_release: usize,
-    pub(crate) hdr_len: u8,
+    pub(crate) channel: &'a PubSubChannel<M, B, SUBS>,
+    pub(crate) buf: NonNull<[u8]>,
+    pub(crate) message_id: u64,
+    pub(crate) auto_release: bool,
 }
 
-impl<'a, B, const SUBS: usize> Deref for FrameGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Deref for FrameGrantR<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
@@ -338,9 +203,9 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> DerefMut for FrameGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> DerefMut for FrameGrantR<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
@@ -348,14 +213,14 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> FrameGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FrameGrantR<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     /// Obtain access to the inner buffer for reading
     pub fn buf(&self) -> &[u8] {
-        &self.buf[self.hdr_len as usize..]
+        unsafe { from_raw_parts_mut(self.buf.as_ptr() as *mut u8, self.buf.len()) }
     }
 
     /// Obtain mutable access to the read grant
@@ -363,7 +228,7 @@ where
     /// This is useful if you are performing in-place operations
     /// on an incoming packet, such as decryption
     pub fn buf_mut(&mut self) -> &mut [u8] {
-        &mut self.buf[self.hdr_len as usize..]
+        unsafe { from_raw_parts_mut(self.buf.as_ptr() as *mut u8, self.buf.len()) }
     }
 
     /// Sometimes, it's not possible for the lifetimes to check out. For example,
@@ -378,101 +243,280 @@ where
     /// Additionally, you must ensure that a separate reference to this data is not created
     /// to this data, e.g. using `Deref` or the `buf()` method of this grant.
     pub unsafe fn as_static_buf(&self) -> &'static [u8] {
-        core::mem::transmute::<&[u8], &'static [u8]>(&self.buf[self.hdr_len as usize..])
+        core::mem::transmute::<&[u8], &'static [u8]>(&self.buf())
     }
 
     /// Release a frame to make the space available for future writing
     ///
     /// Note: The full frame is always released
     pub fn release(mut self) {
-        // For a read grant, we have already shrunk the grant
-        // size down to the correct size
-        let len = self.buf.len();
-        self.release_inner(len);
-        core::mem::forget(self);
+        self.auto_release(true);
+        drop(self);
     }
 
     /// Set whether the read frame should be automatically released
     pub fn auto_release(&mut self, is_auto: bool) {
-        self.to_release = self.buf.len().min(if is_auto { self.buf.len() } else { 0 });
+        self.auto_release = is_auto;
     }
 
-    fn release_inner(&mut self, used: usize) {
-        let inner = self.channel;
+    fn release_inner(&mut self) {
+        self.channel.inner.lock(|inner| {
+            let mut inner = inner.borrow_mut();
 
-        // If there is no grant in progress, return early. This
-        // generally means we are dropping the grant within a
-        // wrapper structure
-        if !inner.read_in_progress.load(Acquire) {
-            return;
-        }
+            let Some(index) = inner
+                .messages
+                .iter()
+                .position(|m| m.message_id == self.message_id)
+            else {
+                return;
+            };
 
-        // This should always be checked by the public interfaces
-        debug_assert!(used <= self.buf.len());
+            // We already checked that the index is valid above
+            let header = inner.messages.iter_mut().nth(index).unwrap();
 
-        // This should be fine, purely incrementing
-        let _ = inner.read.fetch_add(used, Release);
+            if !header.read_in_progress {
+                return;
+            }
 
-        // Reset the message bitmap for the next message
-        if used > 0 {
-            inner
-                .message_bitmap
-                .lock(|s| *s.borrow_mut() = Bitmap::new());
-        }
+            trace!(
+                "Releasing {:?} with {} subs @ index {}",
+                header.message_id,
+                header.subscriber_count,
+                index
+            );
 
-        inner.read_in_progress.store(false, Release);
+            if index == 0 && header.subscriber_count == 0 {
+                let _ = inner.messages.pop_front().unwrap();
+                inner.publisher_waker.wake();
+            } else {
+                header.read_in_progress = false
+            };
 
-        inner.publisher_waker.wake();
+            inner.subscriber_wakers.wake();
+        })
     }
 }
 
-impl<'a, B, const SUBS: usize> Drop for FrameGrantR<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for FrameGrantR<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
-        self.release_inner(self.to_release)
+        if self.auto_release {
+            self.release_inner();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::pubsub::StaticBufferProvider;
-
-    use super::*;
+    use crate::pubsub::Error;
+    use crate::pubsub::{buffer_provider::StaticBufferProvider, PubSubChannel};
+    use embassy_futures::block_on;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use futures::join;
 
     #[test_log::test]
-    fn update_subscriber_map() {
-        let pubsub: PubSubChannel<StaticBufferProvider<256>, 10> =
+    fn dropped_subscribers_decrease_count() {
+        let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 3> =
             PubSubChannel::new(StaticBufferProvider::new());
         let mut publisher = pubsub.publisher().unwrap();
-        let mut subscriber = pubsub.subscriber().unwrap();
+
+        // Create a subscriber and drop it immediately
+        let subscriber1 = pubsub.subscriber().unwrap();
+
+        // Create another subscriber
         let mut subscriber2 = pubsub.subscriber().unwrap();
 
-        let data = [
-            48, 10, // Header (publish)
-            0, 4, // Topic length
-            116, 101, 115, 116, // Topic (test)
-            0,   // Properties
-            116, 101, 115, 116, // Payload (test)
-        ];
+        // Publish a message
+        let mut wgr = publisher.grant(64).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        wgr.commit(64);
 
-        let mut wgr = publisher.grant(data.len()).unwrap();
-        wgr[..data.len()].copy_from_slice(&data);
+        drop(subscriber1);
 
-        wgr.commit(data.len());
+        // Read the message with the second subscriber
+        let rgr = subscriber2.read().unwrap();
+        assert_eq!(rgr.len(), 64);
+        rgr.release();
 
-        assert!(subscriber.read_message(&[]).is_err());
+        // Ensure the message is released
+        assert!(subscriber2.read().is_err());
+    }
 
-        let rgr = subscriber.read_any().unwrap();
-        // Drop without releasing the message
-        drop(rgr);
+    #[test_log::test]
+    fn concurrency_test() {
+        block_on(async {
+            let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 3> =
+                PubSubChannel::new(StaticBufferProvider::new());
+            let barrier = tokio::sync::Barrier::new(4); // 3 subscribers + 1 publisher
 
-        // Second subscriber touches message, making it all subscribers, thus
-        // the message should auto release
-        assert!(subscriber2.read_message(&[]).is_err());
+            let subscriber_futures = (0..3).map(|_| {
+                let pubsub_ref = &pubsub;
+                let barrier_ref = &barrier;
+                async move {
+                    let mut subscriber = pubsub_ref.subscriber().unwrap();
+                    barrier_ref.wait().await; // Wait for all subscribers to be ready
 
-        assert!(subscriber.read_any().is_err())
+                    for j in 0..10 {
+                        let rgr = subscriber.read_async().await.unwrap();
+                        assert_eq!(rgr.len(), 64);
+                        for (k, by) in rgr.iter().enumerate() {
+                            assert_eq!(*by, (j * 10 + k) as u8);
+                        }
+                        rgr.release();
+                    }
+                }
+            });
+
+            let publisher_future = async {
+                barrier.wait().await; // Wait for all subscribers to be ready
+
+                let mut publisher = pubsub.publisher().unwrap();
+                for i in 0..10 {
+                    let mut wgr = publisher.grant_async(64).await.unwrap();
+                    for (j, by) in wgr.iter_mut().enumerate() {
+                        *by = (i * 10 + j) as u8;
+                    }
+                    wgr.commit(64);
+                }
+            };
+
+            join!(
+                publisher_future,
+                futures::future::join_all(subscriber_futures)
+            );
+        });
+    }
+
+    #[test_log::test]
+    fn not_polling_one_subscriber_does_not_block_others() {
+        let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 3> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber1 = pubsub.subscriber().unwrap();
+        let mut subscriber2 = pubsub.subscriber().unwrap();
+
+        // Publish a message
+        let mut wgr = publisher.grant(64).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        wgr.commit(64);
+
+        // Read the message with the second subscriber
+        let rgr2 = subscriber2.read().unwrap();
+        assert_eq!(rgr2.len(), 64);
+        rgr2.release();
+
+        // Ensure the first subscriber can still read the message
+        let rgr1 = subscriber1.read().unwrap();
+        assert_eq!(rgr1.len(), 64);
+        rgr1.release();
+    }
+
+    #[test_log::test]
+    fn multiple_read_grants_different_messages() {
+        let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 3> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber1 = pubsub.subscriber().unwrap();
+        let mut subscriber2 = pubsub.subscriber().unwrap();
+
+        // Publish two messages
+        for i in 0..2 {
+            let mut wgr = publisher.grant(64).unwrap();
+            for (j, by) in wgr.iter_mut().enumerate() {
+                *by = (i * 10 + j) as u8;
+            }
+            wgr.commit(64);
+        }
+
+        // Read the first message with the first subscriber
+        let rgr1 = subscriber1.read().unwrap();
+        assert_eq!(rgr1.len(), 64);
+        for (j, by) in rgr1.iter().enumerate() {
+            assert_eq!(*by, j as u8);
+        }
+        rgr1.release();
+
+        // Read the first message with the second subscriber
+        let rgr2 = subscriber2.read().unwrap();
+        assert_eq!(rgr2.len(), 64);
+        for (j, by) in rgr2.iter().enumerate() {
+            assert_eq!(*by, j as u8);
+        }
+
+        let rgr3 = subscriber1.read().unwrap();
+        assert_eq!(rgr3.len(), 64);
+        for (j, by) in rgr3.iter().enumerate() {
+            assert_eq!(*by, (10 + j) as u8);
+        }
+
+        rgr2.release();
+        rgr3.release();
+    }
+
+    #[test_log::test]
+    fn multiple_read_grants_same_message() {
+        let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 3> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber1 = pubsub.subscriber().unwrap();
+        let mut subscriber2 = pubsub.subscriber().unwrap();
+
+        // Publish a message
+        let mut wgr = publisher.grant(64).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        wgr.commit(64);
+
+        // Read the message with the first subscriber
+        let rgr1 = subscriber1.read().unwrap();
+        assert_eq!(rgr1.len(), 64);
+        for (j, by) in rgr1.iter().enumerate() {
+            assert_eq!(*by, j as u8);
+        }
+
+        // Attempt to read the same message with the second subscriber
+        assert!(matches!(subscriber2.read(), Err(Error::GrantInProgress)));
+
+        rgr1.release();
+    }
+
+    #[test_log::test]
+    fn dropping_subscriber_with_active_read_grant() {
+        let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 3> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber1 = pubsub.subscriber().unwrap();
+        let subscriber2 = pubsub.subscriber().unwrap();
+
+        // Publish a message
+        let mut wgr = publisher.grant(64).unwrap();
+        for (i, by) in wgr.iter_mut().enumerate() {
+            *by = i as u8;
+        }
+        wgr.commit(64);
+
+        // Read the message with the first subscriber
+        let rgr1 = subscriber1.read().unwrap();
+        assert_eq!(rgr1.len(), 64);
+        for (j, by) in rgr1.iter().enumerate() {
+            assert_eq!(*by, j as u8);
+        }
+
+        // Drop the second subscriber
+        drop(subscriber2);
+
+        // Release the read grant from the first subscriber
+        rgr1.release();
+
+        // Ensure the message is released
+        assert!(subscriber1.read().is_err());
     }
 }

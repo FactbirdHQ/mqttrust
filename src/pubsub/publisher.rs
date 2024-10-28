@@ -37,16 +37,15 @@
 //! | (2^56)..(2^64)        | 9                    |
 //!
 
-use super::header::Header;
-use super::{BufferProvider, Error, PubSubChannel};
+use super::{BufferProvider, Error, Header, PubSubChannel};
 
 use super::Result;
 
-use bitmaps::{Bits, BitsImpl};
-use portable_atomic::Ordering::{AcqRel, Acquire, Release};
+use embassy_sync::blocking_mutex::raw::RawMutex;
 
 use core::future::Future;
 use core::pin::Pin;
+use core::ptr::NonNull;
 use core::slice::from_raw_parts_mut;
 use core::task::{Context, Poll};
 use core::{
@@ -57,7 +56,7 @@ use core::{
 /// Provides a publishing interface for writing data frames into a shared
 /// `PubSubChannel`.
 ///
-/// This struct allows for reserving contigious regions of memory within the channel's
+/// This struct allows for reserving contiguous regions of memory within the channel's
 /// buffer, writing data into them, and then committing the data to be read
 /// by subscribers.
 ///
@@ -77,20 +76,20 @@ use core::{
 ///
 /// // Now use 'publisher' to grant memory and write frames...
 /// ```
-pub struct FramePublisher<'a, B, const SUBS: usize>
+pub struct FramePublisher<'a, M, B, const SUBS: usize>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    channel: &'a PubSubChannel<B, SUBS>,
+    channel: &'a PubSubChannel<M, B, SUBS>,
 }
 
-impl<'a, B, const SUBS: usize> FramePublisher<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FramePublisher<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(super) fn new(channel: &'a PubSubChannel<B, SUBS>) -> Self {
+    pub(super) fn new(channel: &'a PubSubChannel<M, B, SUBS>) -> Self {
         Self { channel }
     }
 
@@ -113,37 +112,21 @@ where
     ///   in progress.
     /// * `Err(Error::InsufficientSize)` if there is not enough contiguous
     ///   space available in the buffer to fulfill the request.
-    pub fn grant(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, B, SUBS>> {
+    pub fn grant(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, M, B, SUBS>> {
         self.grant_with_context(max_sz, None)
     }
 
-    /// Returns the current amount of free contiguous space available in the channel.
-    ///
-    /// This represents the largest contiguous block of memory that can be
-    /// immediately granted for writing. It does not include space that
-    /// could become available after the next read operation.
-    pub fn free_capacity(&self) -> usize {
-        let inner = self.channel;
-        let write = inner.write.load(Acquire);
-        let read = inner.read.load(Acquire);
-        let max = inner.capacity;
+    pub fn grant_immediate(&mut self, max_sz: usize) -> Result<FrameGrantW<'a, M, B, SUBS>> {
+        self.channel.inner.lock(|inner| {
+            let mut inner = inner.borrow_mut();
 
-        if write < read {
-            // Inverted case
-            read - write
-        } else if write == read {
-            // Empty or full, check reservation
-            if inner.reserve.load(Acquire) == read {
-                // Empty
-                max
-            } else {
-                // Full
-                0
+            while inner.free_space() < max_sz || inner.messages.is_full() {
+                let message = inner.messages.pop_front();
+                warn!("Force removed message! {:?}", message);
             }
-        } else {
-            // Non-inverted case
-            max - write + read
-        }
+        });
+
+        self.grant(max_sz)
     }
 
     /// Attempts to grant a region of memory for writing a frame to.
@@ -188,88 +171,64 @@ where
         &mut self,
         max_sz: usize,
         cx: Option<&mut Context<'_>>,
-    ) -> Result<FrameGrantW<'a, B, SUBS>> {
-        // Calculate the total frame header length.
-        let frame_hdr_len = Header::encoded_len(max_sz);
+    ) -> Result<FrameGrantW<'a, M, B, SUBS>> {
+        let start = self.channel.inner.lock(|inner| {
+            let mut inner = inner.borrow_mut();
 
-        // Calculate the total size required for the frame, including header.
-        let sz = max_sz + frame_hdr_len;
-
-        // Get a reference to the inner channel.
-        let inner = self.channel;
-
-        // Check if a write operation is already in progress.
-        // If so, register the waker (if provided) and return an error.
-        if inner.write_in_progress.swap(true, AcqRel) {
-            if let Some(cx) = cx {
-                inner.publisher_waker.register(cx.waker());
-            }
-            return Err(Error::GrantInProgress);
-        }
-
-        // Acquire the write, read pointers and the buffer capacity.
-        // Writer component. Must never write to `read`,
-        // be careful writing to `load`
-        let write = inner.write.load(Acquire);
-        let read = inner.read.load(Acquire);
-        let max = inner.capacity;
-
-        // Check if the buffer is already in an inverted state (write < read).
-        let already_inverted = write < read;
-
-        // Determine the starting point for writing the new data.
-        let start = if already_inverted {
-            // Inverted case.
-            if (write + sz) < read {
-                // Enough space available in the inverted buffer.
-                write
-            } else {
-                // Not enough space, even in inverted mode.
-                inner.write_in_progress.store(false, Release);
+            // Check if a write operation is already in progress.
+            // If so, register the waker (if provided) and return an error.
+            if inner.write_in_progress {
                 if let Some(cx) = cx {
                     inner.publisher_waker.register(cx.waker());
                 }
-                return Err(Error::InsufficientSize);
+                return Err(Error::GrantInProgress);
             }
-        } else if write + sz <= max {
-            // Non-inverted case with enough space.
-            write
-        } else {
-            // Non-inverted, but needs to become inverted.
 
-            // NOTE: We check sz < read, NOT <=, because
-            // write must never == read in an inverted condition, since
-            // we will then not be able to tell if we are inverted or not
-            if sz <= read {
-                // Enough space to invert.
-                inner.last.store(write, Release); // Set 'last' to the current write position
-                0 // Start writing from the beginning
-            } else {
-                // Not enough space to invert.
-                inner.write_in_progress.store(false, Release);
+            if max_sz > inner.free_space() || inner.messages.is_full() {
                 if let Some(cx) = cx {
                     inner.publisher_waker.register(cx.waker());
                 }
+
                 return Err(Error::InsufficientSize);
             }
-        };
 
-        // Calculate the new reservation point and store it atomically.
-        // Safe write, only viewed by this task
-        inner.reserve.store(start + sz, Release);
+            let new_start = match inner.messages.back() {
+                Some(back) => {
+                    // We have a back, so we know we also have a front, though they may be the same item
+                    let front = inner.messages.front().unwrap();
 
-        // Get a mutable slice of the buffer for the granted memory.
-        // This is sound, as UnsafeCell, MaybeUninit, and GenericArray
-        // are all `#[repr(Transparent)]
-        let start_of_buf_ptr = unsafe { (*inner.buf.get()).buf().as_mut_ptr().cast::<u8>() };
-        let grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(start), sz) };
+                    let back_end = back.start + back.len as usize;
+
+                    let inverted = back_end < front.start;
+
+                    // We already checked that there is enough capacity in the
+                    // channel, so we just need to determine if we should wrap
+                    if inverted || max_sz <= inner.capacity - back_end {
+                        back_end
+                    } else {
+                        0
+                    }
+                }
+                None => 0,
+            };
+
+            inner.write_in_progress = true;
+
+            Ok(new_start)
+        })?;
+
+        // Get a mutable slice of the buffer for the granted memory. This is
+        // sound, as UnsafeCell, MaybeUninit, and GenericArray are all
+        // `#[repr(Transparent)]
+        let start_of_buf_ptr = unsafe { (*self.channel.buf.get()).buf().as_mut_ptr().cast::<u8>() };
+        let grant_slice = unsafe { from_raw_parts_mut(start_of_buf_ptr.add(start), max_sz) };
 
         // Create and return a FrameGrantW representing the granted memory.
         Ok(FrameGrantW {
-            buf: grant_slice,
+            buf: grant_slice.into(),
             channel: self.channel,
+            start,
             to_commit: 0,
-            frame_hdr_len: frame_hdr_len as u8,
         })
     }
 
@@ -299,48 +258,68 @@ where
     ///
     ///     // Access the granted memory slice.
     ///     let grant_slice = grant.buf;
-    ///
     ///     // Write data to the granted slice...
     ///
     ///     // Commit the written data to the buffer.
     ///     grant.commit(written_size);
     /// };
     /// ```
-    pub fn grant_async(&'_ mut self, max_sz: usize) -> GrantFuture<'a, '_, B, SUBS> {
+    pub fn grant_async(&mut self, max_sz: usize) -> GrantFuture<'a, '_, M, B, SUBS> {
         GrantFuture {
             publisher: self,
             sz: max_sz,
         }
     }
+
+    /// Returns the number of elements currently in the channel.
+    pub fn len(&self) -> usize {
+        self.channel.len()
+    }
+
+    /// Returns whether the channel is empty.
+    pub fn is_empty(&self) -> bool {
+        self.channel.is_empty()
+    }
+
+    /// Returns whether the channel is full.
+    pub fn is_full(&self) -> bool {
+        self.channel.is_full()
+    }
+
+    pub fn free_space(&self) -> usize {
+        self.channel.free_space()
+    }
 }
 
-impl<'a, B, const SUBS: usize> Drop for FramePublisher<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for FramePublisher<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
-        self.channel.publisher_taken.store(false, Release);
+        self.channel
+            .inner
+            .lock(|inner| inner.borrow_mut().publisher_taken = false);
     }
 }
 
 /// Future returned [FramePublisher::grant_async]
-#[must_use]
-pub struct GrantFuture<'a, 'b, B, const SUBS: usize>
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct GrantFuture<'a, 'b, M, B, const SUBS: usize>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    publisher: &'b mut FramePublisher<'a, B, SUBS>,
+    publisher: &'b mut FramePublisher<'a, M, B, SUBS>,
     sz: usize,
 }
 
-impl<'a, 'b, B, const SUBS: usize> Future for GrantFuture<'a, 'b, B, SUBS>
+impl<'a, 'b, M, B, const SUBS: usize> Future for GrantFuture<'a, 'b, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    type Output = Result<FrameGrantW<'a, B, SUBS>>;
+    type Output = Result<FrameGrantW<'a, M, B, SUBS>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Check if it's even possible to get the requested size
@@ -357,26 +336,30 @@ where
         // the future will never resolve. Ideally, we could just wait for all
         // the read to complete and reset the read and write to 0, but that is
         // currently not supported
-        let max = self.publisher.channel.capacity;
-        let write = self.publisher.channel.write.load(Acquire);
-        if self.sz > max || (self.sz > max - write && self.sz >= write) {
-            return Poll::Ready(Err(Error::InsufficientSize));
-        }
+        // if let Err(e) = self.publisher.channel.inner.lock(|inner| {
+        //     let state = inner.borrow();
+        //     if self.sz > state.capacity
+        //         || (self.sz > state.capacity - state.write && self.sz >= state.write)
+        //     {
+        //         return Err(Error::InsufficientSize);
+        //     }
+        //     Ok(())
+        // }) {
+        //     return Poll::Ready(Err(e));
+        // }
 
         let sz = self.sz;
 
         match self.publisher.grant_with_context(sz, Some(cx)) {
             Ok(grant) => Poll::Ready(Ok(grant)),
-            Err(e) => match e {
-                Error::GrantInProgress | Error::InsufficientSize => Poll::Pending,
-                _ => Poll::Ready(Err(e)),
-            },
+            Err(Error::GrantInProgress | Error::InsufficientSize) => Poll::Pending,
+            Err(e) => Poll::Ready(Err(e)),
         }
     }
 }
 
-impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantFuture<'a, 'b, B, SUBS> where
-    BitsImpl<{ SUBS }>: Bits
+impl<'a, 'b, M: RawMutex, B: BufferProvider, const SUBS: usize> Unpin
+    for GrantFuture<'a, 'b, M, B, SUBS>
 {
 }
 
@@ -385,20 +368,20 @@ impl<'a, 'b, B: BufferProvider, const SUBS: usize> Unpin for GrantFuture<'a, 'b,
 /// NOTE: If the grant is dropped without explicitly committing
 /// the contents without first calling `to_commit()`, then no
 /// frame will be committed for writing.
-pub struct FrameGrantW<'a, B, const SUBS: usize>
+pub struct FrameGrantW<'a, M, B, const SUBS: usize>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
-    pub(crate) buf: &'a mut [u8],
-    channel: &'a PubSubChannel<B, SUBS>,
-    pub(crate) to_commit: usize,
-    frame_hdr_len: u8,
+    buf: NonNull<[u8]>,
+    channel: &'a PubSubChannel<M, B, SUBS>,
+    start: usize,
+    to_commit: usize,
 }
 
-impl<'a, B, const SUBS: usize> Drop for FrameGrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Drop for FrameGrantW<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     fn drop(&mut self) {
@@ -406,31 +389,31 @@ where
     }
 }
 
-impl<'a, B, const SUBS: usize> Deref for FrameGrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> Deref for FrameGrantW<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.buf[self.frame_hdr_len as usize..]
+        unsafe { from_raw_parts_mut(self.buf.as_ptr() as *mut u8, self.buf.len()) }
     }
 }
 
-impl<'a, B, const SUBS: usize> DerefMut for FrameGrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> DerefMut for FrameGrantW<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     fn deref_mut(&mut self) -> &mut [u8] {
-        &mut self.buf[self.frame_hdr_len as usize..]
+        unsafe { from_raw_parts_mut(self.buf.as_ptr() as *mut u8, self.buf.len()) }
     }
 }
 
-impl<'a, B, const SUBS: usize> FrameGrantW<'a, B, SUBS>
+impl<'a, M, B, const SUBS: usize> FrameGrantW<'a, M, B, SUBS>
 where
-    BitsImpl<{ SUBS }>: Bits,
+    M: RawMutex,
     B: BufferProvider,
 {
     /// Finalizes a writable grant previously obtained with `grant()`, `grant_with_context()`,
@@ -450,12 +433,6 @@ where
     ///   portion of the granted slice. If `used` is larger than the granted size, the
     ///   maximum granted size will be committed.
     ///
-    /// # Important Note:
-    ///
-    /// - **Critical Section:** If you are compiling for targets without atomic
-    /// CAS operations, this function will briefly enter a critical section
-    /// while it updates the internal state of the ring buffer.
-    ///
     /// # Example
     ///
     /// ```ignore
@@ -470,8 +447,7 @@ where
     /// // The grant is now consumed.
     /// ```
     pub fn commit(mut self, used: usize) {
-        let total_len = self.set_header(used);
-        self.commit_inner(total_len);
+        self.commit_inner(used);
         core::mem::forget(self);
     }
 
@@ -507,17 +483,12 @@ where
     /// // written is less than or equal to 100 bytes.
     /// ```
     pub fn to_commit(&mut self, amt: usize) {
-        if amt == 0 {
-            self.to_commit = 0;
-        } else {
-            let size = self.set_header(amt);
-            self.to_commit = self.buf.len().min(size);
-        }
+        self.to_commit = amt;
     }
 
     /// Obtain access to the inner buffer for writing
     pub fn buf(&mut self) -> &mut [u8] {
-        &mut self.buf[self.frame_hdr_len as usize..]
+        self.deref_mut()
     }
 
     /// Sometimes, it's not possible for the lifetimes to check out. For example,
@@ -532,9 +503,7 @@ where
     /// Additionally, you must ensure that a separate reference to this data is not created
     /// to this data, e.g. using `DerefMut` or the `buf()` method of this grant.
     pub unsafe fn as_static_mut_buf(&mut self) -> &'static mut [u8] {
-        core::mem::transmute::<&mut [u8], &'static mut [u8]>(
-            &mut self.buf[self.frame_hdr_len as usize..],
-        )
+        core::mem::transmute::<&mut [u8], &'static mut [u8]>(self.deref_mut())
     }
     /// Commits a portion of the granted memory region.
     ///
@@ -546,70 +515,43 @@ where
     /// * `used` - The number of bytes actually used from the granted slice.
     ///   This value should be less than or equal to the length of the slice.
     fn commit_inner(&mut self, used: usize) {
-        let inner = self.channel;
-
-        // If there is no grant in progress, return early. This
-        // generally means we are dropping the grant within a
-        // wrapper structure
-        if !inner.write_in_progress.load(Acquire) {
-            return;
-        }
-
-        // Writer component. Must never write to READ,
-        // be careful writing to LAST
-
         // Saturate the grant commit
-        let len = self.buf.len();
-        let used = min(len, used);
+        let used = min(self.buf.len(), used);
 
-        // Get current write pointer and update the reservation to reflect used bytes
-        let write = inner.write.load(Acquire);
-        inner.reserve.fetch_sub(len - used, AcqRel);
+        self.channel.inner.lock(|inner| {
+            let mut inner = inner.borrow_mut();
 
-        // Load the ring buffer boundaries and the new write pointer
-        let max = inner.capacity;
-        let last = inner.last.load(Acquire);
-        let new_write = inner.reserve.load(Acquire);
+            // If there is no grant in progress, return early. This
+            // generally means we are dropping the grant within a
+            // wrapper structure
+            if !inner.write_in_progress {
+                return;
+            }
 
-        if (new_write < write) && (write != max) {
-            // We have already wrapped around the buffer, but we are skipping some bytes
-            // at the end of the ring (due to a previous partial commit).
-            // Update 'last' to the previous write pointer to mark the end of usable space
-            // before the wrapped region.
-            inner.last.store(write, Release);
-        } else if new_write > last {
-            // We're about to pass the last pointer, which was previously the artificial
-            // end of the ring. This means we've filled the gap and can now use the
-            // entire buffer capacity. So, update 'last' to the maximum capacity.
-            inner.last.store(max, Release);
-        }
-        // else: Cases where we don't need to update 'last':
-        //   * new_write == last && last == max:  We're at the very end, no need to update.
-        //   * new_write == last && last != max:  We'll update 'last' in a future commit when needed.
+            if inner.subscriber_count == 0 {
+                // We don't need to publish anything because there is no one to receive it
+                return;
+            }
+            let header = Header {
+                start: self.start,
+                len: used as u16,
+                message_id: inner.next_message_id,
+                subscriber_count: inner.subscriber_count,
+                read_in_progress: false,
+            };
 
-        // Important: Update the write pointer *after* updating 'last'.
-        // This ensures that the reader doesn't incorrectly assume it can
-        // invert the buffer before the writer has finished updating 'last'.
-        inner.write.store(new_write, Release);
+            if inner.messages.push_back(header).is_err() {
+                // If we can't push the message, we can't commit the grant
+                error!("Failed to commit grant! No room?!");
+            };
 
-        // Allow subsequent grants as the write operation is complete.
-        inner.write_in_progress.store(false, Release);
+            inner.next_message_id += 1;
 
-        // Wake up any subscribers waiting for data.
-        inner.subscriber_wakers.wake();
-    }
+            // Allow subsequent grants as the write operation is complete.
+            inner.write_in_progress = false;
 
-    /// Set the header and return the total size
-    fn set_header(&mut self, used: usize) -> usize {
-        // Saturate the commit size to the available frame size
-        let grant_len = self.buf.len();
-        let frame_hdr_len: usize = self.frame_hdr_len.into();
-        let frame_len = min(used, grant_len - frame_hdr_len);
-        let total_len = frame_len + frame_hdr_len;
-
-        // Write the actual frame length to the header
-        Header::encode_usize_to_slice(frame_len, frame_hdr_len, &mut self.buf[..frame_hdr_len]);
-
-        total_len
+            // Wake up any subscribers waiting for data.
+            inner.subscriber_wakers.wake();
+        })
     }
 }

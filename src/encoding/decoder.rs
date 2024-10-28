@@ -31,6 +31,14 @@ pub struct MqttDecoder<'a> {
 }
 
 impl<'a> MqttDecoder<'a> {
+    // TODO: Convert these to bitflags?
+    const TYP_MASK: u8 = 0b1111_0000;
+    const DUP_MASK: u8 = 0b0000_1000;
+    const QOS_MASK: u8 = 0b0000_0110;
+    const RETAIN_MASK: u8 = 0b0000_0001;
+
+    const CONT_BITMASK: u8 = 0b1000_0000;
+
     /// Tries to create a new `MqttDecoder` from the given buffer.
     pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
         if buf.len() < 2 {
@@ -38,14 +46,15 @@ impl<'a> MqttDecoder<'a> {
         }
 
         let hd = buf[0];
-        let typ = PacketType::try_from(hd & 0b1111_0000).map_err(|_| Error::InvalidHeader)?;
+        let typ = PacketType::try_from(hd & Self::TYP_MASK).map_err(|_| Error::InvalidHeader)?;
         let (remaining_len, header_len) = Self::read_len(&buf[1..])?;
 
         let fixed_header = FixedHeader {
             typ,
-            dup: hd & 0b1000 != 0,
-            qos: QoS::try_from((hd & 0b0110) >> 1).map_err(|_| Error::WrongQos(hd & 0b0110))?,
-            retain: hd & 0b0001 == 0b0001,
+            dup: (hd & Self::DUP_MASK) == Self::DUP_MASK,
+            qos: QoS::try_from((hd & Self::QOS_MASK) >> 1)
+                .map_err(|_| Error::WrongQos(hd & Self::QOS_MASK))?,
+            retain: (hd & Self::RETAIN_MASK) == Self::RETAIN_MASK,
             remaining_len,
         };
 
@@ -110,9 +119,9 @@ impl<'a> MqttDecoder<'a> {
         let mut integer = 0;
 
         for (i, byte) in buf.iter().take(4).enumerate() {
-            integer += (*byte as usize & 0x7f) << (7 * i);
+            integer += ((*byte & !Self::CONT_BITMASK) as usize) << (7 * i);
 
-            if (*byte & 0b1000_0000) == 0 {
+            if (*byte & Self::CONT_BITMASK) == 0 {
                 return Ok((integer, i + 2));
             }
             if i == 3 {
@@ -126,8 +135,9 @@ impl<'a> MqttDecoder<'a> {
     pub(crate) fn read_varint(&mut self) -> Result<u32, Error> {
         let mut integer = 0;
         for (i, byte) in self.buf[self.offset..].iter().take(4).enumerate() {
-            integer += (*byte as u32 & 0x7f) << (7 * i);
-            if (*byte & 0b1000_0000) == 0 {
+            integer += ((*byte & !Self::CONT_BITMASK) as u32) << (7 * i);
+
+            if (*byte & Self::CONT_BITMASK) == 0 {
                 self.offset += i + 1;
                 return Ok(integer);
             }

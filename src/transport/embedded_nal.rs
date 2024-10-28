@@ -5,7 +5,9 @@ use super::Transport;
 
 use crate::{error::ConnectionError, Broker, StateError};
 
-// embedded-nal-async Transport
+/// A transport layer for MQTT using a network abstraction layer (NAL).
+///
+/// This struct manages the connection to the MQTT broker using a TCP connection.
 pub struct NalTransport<'a, N: TcpConnect, B: Broker> {
     network: &'a N,
     broker: B,
@@ -13,6 +15,16 @@ pub struct NalTransport<'a, N: TcpConnect, B: Broker> {
 }
 
 impl<'a, N: TcpConnect, B: Broker> NalTransport<'a, N, B> {
+    /// Creates a new `NalTransport`.
+    ///
+    /// # Parameters
+    ///
+    /// - `network`: The network abstraction layer for TCP connections.
+    /// - `broker`: The MQTT broker information.
+    ///
+    /// # Returns
+    ///
+    /// A new instance of `NalTransport`.
     pub fn new(network: &'a N, broker: B) -> Self {
         Self {
             network,
@@ -25,6 +37,11 @@ impl<'a, N: TcpConnect, B: Broker> NalTransport<'a, N, B> {
 impl<'a, N: TcpConnect, B: Broker> Transport for NalTransport<'a, N, B> {
     type Socket = N::Connection<'a>;
 
+    /// Asynchronously connects to the MQTT broker.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the connection was successful, otherwise a `ConnectionError`.
     async fn connect(&mut self) -> Result<(), ConnectionError> {
         let addr = self
             .broker
@@ -43,15 +60,30 @@ impl<'a, N: TcpConnect, B: Broker> Transport for NalTransport<'a, N, B> {
         Ok(())
     }
 
+    /// Disconnects from the MQTT broker.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the disconnection was successful, otherwise a `ConnectionError`.
     fn disconnect(&mut self) -> Result<(), ConnectionError> {
         self.socket.take();
         Ok(())
     }
 
+    /// Checks if the transport is currently connected.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the transport is connected, otherwise `false`.
     fn is_connected(&self) -> bool {
         self.socket.is_some()
     }
 
+    /// Provides a mutable reference to the socket used by the transport.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(&mut Self::Socket)` if the socket is available, otherwise a `StateError`.
     fn socket(&mut self) -> Result<&mut Self::Socket, StateError> {
         self.socket
             .as_mut()

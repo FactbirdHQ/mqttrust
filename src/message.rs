@@ -1,38 +1,35 @@
 use core::ops::{Deref, DerefMut, Range};
 
-use bitmaps::{Bits, BitsImpl};
+use embassy_sync::blocking_mutex::raw::RawMutex;
 
 use crate::{
+    crate_config::MAX_SUBSCRIBERS,
     decoder::{FixedHeader, MqttDecoder},
-    Pid, QoS, QosPid,
+    BufferProvider, FrameGrantR, Pid, QoS, QosPid,
 };
 
-use super::{BufferProvider, FrameGrantR};
-
-pub struct Message<'a, B: BufferProvider, const SUBS: usize>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
-    grant: FrameGrantR<'a, B, SUBS>,
-    info: MessageInfo,
-}
-
-pub(crate) struct MessageInfo {
+/// Represents an MQTT message with associated metadata and payload.
+pub struct Message<'a, M: RawMutex, B: BufferProvider> {
+    /// The grant for the frame, which includes the buffer and metadata.
+    grant: FrameGrantR<'a, M, B, MAX_SUBSCRIBERS>,
+    /// The fixed header of the MQTT message.
     header: FixedHeader,
+    /// The QoS and Packet Identifier of the message.
     qos_pid: QosPid,
+    /// The range within the buffer that contains the topic name.
     topic_name: Range<usize>,
+    /// The range within the buffer that contains the payload.
     payload: Range<usize>,
+    /// The range within the buffer that contains the properties (MQTT v5 only).
     #[cfg(feature = "mqttv5")]
     properties: Range<usize>,
 }
 
-impl MessageInfo {
-    pub(crate) fn try_new<B: BufferProvider, const SUBS: usize>(
-        grant: &FrameGrantR<'_, B, SUBS>,
-    ) -> Option<Self>
-    where
-        BitsImpl<{ SUBS }>: Bits,
-    {
+impl<'a, M: RawMutex, B: BufferProvider> Message<'a, M, B> {
+    /// Tries to create a new `Message` from a given frame grant.
+    ///
+    /// Returns `Some(Message)` if successful, otherwise `None`.
+    pub(crate) fn try_new(grant: FrameGrantR<'a, M, B, MAX_SUBSCRIBERS>) -> Option<Self> {
         let mut decoder = MqttDecoder::try_new(grant.deref()).ok()?;
         // FIXME: would returning result here be more intuitive?
 
@@ -41,7 +38,7 @@ impl MessageInfo {
 
         let topic_name = {
             let topic_name_start = decoder.offset() + 2;
-            let _topic_name = decoder.read_str().ok()?;
+            let _name = decoder.read_str().ok()?;
             topic_name_start..decoder.offset()
         };
 
@@ -66,6 +63,7 @@ impl MessageInfo {
         };
 
         Some(Self {
+            grant,
             header,
             qos_pid,
             topic_name,
@@ -75,82 +73,62 @@ impl MessageInfo {
         })
     }
 
-    pub(crate) fn to_message<'a, B: BufferProvider, const SUBS: usize>(
-        self,
-        mut grant: FrameGrantR<'a, B, SUBS>,
-    ) -> Message<'a, B, SUBS>
-    where
-        BitsImpl<{ SUBS }>: Bits,
-    {
-        grant.auto_release(true);
-
-        Message { grant, info: self }
+    /// Automatically releases the grant when the message is dropped.
+    pub(crate) fn auto_release(&mut self) {
+        self.grant.auto_release(true)
     }
 
-    pub(crate) fn topic_name<'a, 'b, B: BufferProvider, const SUBS: usize>(
-        &self,
-        grant: &'b FrameGrantR<'a, B, SUBS>,
-    ) -> &'b str
-    where
-        BitsImpl<{ SUBS }>: Bits,
-    {
-        // # Safety: Checked at instantiation in `try_new`
-        unsafe { core::str::from_utf8_unchecked(&grant.deref()[self.topic_name.clone()]) }
-    }
-}
-
-impl<'a, B: BufferProvider, const SUBS: usize> Message<'a, B, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
+    /// Returns whether the message is a duplicate.
     pub fn dup(&self) -> bool {
-        self.info.header.dup
+        self.header.dup
     }
 
+    /// Returns whether the message should be retained.
     pub fn retain(&self) -> bool {
-        self.info.header.retain
+        self.header.retain
     }
 
+    /// Returns the QoS and Packet Identifier of the message.
     pub fn qos_pid(&self) -> QosPid {
-        self.info.qos_pid
+        self.qos_pid
     }
 
+    /// Returns the topic name of the message as a string slice.
     pub fn topic_name(&self) -> &str {
         // # Safety: Checked at instantiation in `try_new`
-        unsafe { core::str::from_utf8_unchecked(&self.grant.deref()[self.info.topic_name.clone()]) }
+        unsafe { core::str::from_utf8_unchecked(&self.grant.deref()[self.topic_name.clone()]) }
     }
 
+    /// Returns the properties of the message (MQTT v5 only).
     #[cfg(feature = "mqttv5")]
     pub fn properties(&self) -> crate::Properties<'_> {
-        crate::Properties::DataBlock(&self.grant.deref()[self.info.properties.clone()])
+        crate::Properties::DataBlock(&self.grant.deref()[self.properties.clone()])
     }
 
+    /// Returns the payload of the message as a byte slice.
     pub fn payload(&self) -> &[u8] {
         // # Safety: Checked at instantiation in `try_new`
-        &self.grant.deref()[self.info.payload.clone()]
+        &self.grant.deref()[self.payload.clone()]
     }
 
+    /// Returns the payload of the message as a mutable byte slice.
     pub fn payload_mut(&mut self) -> &mut [u8] {
         // # Safety: Checked at instantiation in `try_new`
-        &mut self.grant.deref_mut()[self.info.payload.clone()]
+        &mut self.grant.deref_mut()[self.payload.clone()]
     }
 }
 
-impl<'a, B: BufferProvider, const SUBS: usize> Deref for Message<'a, B, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
+impl<'a, M: RawMutex, B: BufferProvider> Deref for Message<'a, M, B> {
     type Target = [u8];
 
+    /// Dereferences the message to its payload.
     fn deref(&self) -> &Self::Target {
         self.payload()
     }
 }
 
-impl<'a, B: BufferProvider, const SUBS: usize> DerefMut for Message<'a, B, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
+impl<'a, M: RawMutex, B: BufferProvider> DerefMut for Message<'a, M, B> {
+    /// Dereferences the message to its mutable payload.
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.payload_mut()
     }

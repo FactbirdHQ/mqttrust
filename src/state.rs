@@ -3,7 +3,7 @@ use core::task::Context;
 use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
 use heapless::{FnvIndexMap, IndexMap};
 
-use crate::crate_config::{MAX_INFLIGHT, MAX_SUB_TOPICS_PER_MSG};
+use crate::crate_config::{MAX_INFLIGHT, MAX_SUBSCRIBERS, MAX_SUB_TOPICS_PER_MSG};
 use crate::encoding::Pid;
 use crate::topic_filter::TopicFilter;
 
@@ -13,11 +13,11 @@ use crate::topic_filter::TopicFilter;
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AckStatus {
     AwaitingSubAck,
-    AwaitingUnsubAck(heapless::Vec<TopicFilter, MAX_SUB_TOPICS_PER_MSG>),
+    AwaitingUnsubAck(Option<heapless::Vec<TopicFilter, MAX_SUB_TOPICS_PER_MSG>>),
     Acked(heapless::Vec<u8, MAX_SUB_TOPICS_PER_MSG>),
 }
 
-pub struct Shared<const SUBS: usize> {
+pub struct Shared {
     /// Packet id of the last outgoing packet
     last_pid: Pid,
 
@@ -34,7 +34,7 @@ pub struct Shared<const SUBS: usize> {
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
     pub(crate) inflight_pub: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
-    pub(crate) ack_status: FnvIndexMap<u16, AckStatus, SUBS>,
+    pub(crate) ack_status: FnvIndexMap<u16, AckStatus, { MAX_SUBSCRIBERS }>,
     pub(crate) outgoing_pid: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
 
     /// Packet ids of released QoS 2 publishes
@@ -46,7 +46,7 @@ pub struct Shared<const SUBS: usize> {
     pub(crate) incoming_pub: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
 }
 
-impl<const SUBS: usize> Shared<SUBS> {
+impl Shared {
     pub fn new() -> Self {
         Self {
             last_pid: Pid::new(),

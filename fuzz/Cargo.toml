@@ -13,11 +13,16 @@ libfuzzer-sys = "0.4"
 env_logger = "0.10"
 embedded-mqtt = { path = "..", features = ["std", "log", "_test"] }
 log = { version = "0.4.17" }
-tokio = { version = "1.24.2", default-features = false, features = ["rt"] }
+tokio = { version = "1.24.2", default-features = false, features = [
+    "rt",
+    "sync",
+] }
 critical-section = { version = "1", features = ["std"] }
 rand = "0.8.5"
 futures = "0.3"
 embassy-time = { version = "0.3", features = ["log", "std", "generic-queue"] }
+embassy-sync = { version = "0.6" }
+embassy-futures = { version = "0.1" }
 
 
 [[bin]]

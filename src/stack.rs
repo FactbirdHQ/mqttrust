@@ -1,6 +1,5 @@
-use core::ops::DerefMut;
+use core::ops::{Deref as _, DerefMut};
 
-use bitmaps::{Bits, BitsImpl};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use embassy_time::Duration;
@@ -8,7 +7,9 @@ use embassy_time::{Instant, Timer};
 use embedded_io_async::{Error as _, ReadExactError};
 use embedded_io_async::{ErrorKind, Write as _};
 
+use crate::crate_config::MAX_SUBSCRIBERS;
 use crate::decoder::MqttDecoder;
+
 use crate::{
     config::Config,
     encoding::{
@@ -30,13 +31,10 @@ use crate::{Properties, Property, PubAckReasonCode};
 #[cfg(feature = "qos2")]
 use crate::{PubComp, PubRec, PubRel};
 
-pub struct MqttStack<'a, M: RawMutex, const SUBS: usize>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
-    shared: &'a Mutex<M, Shared<SUBS>>,
-    tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
-    rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
+pub struct MqttStack<'a, M: RawMutex> {
+    shared: &'a Mutex<M, Shared>,
+    tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
+    rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, MAX_SUBSCRIBERS>,
 
     config: Config,
     packet_buf: PacketBuffer,
@@ -48,15 +46,12 @@ where
     connect_attempts: u8,
 }
 
-impl<'a, M: RawMutex, const SUBS: usize> MqttStack<'a, M, SUBS>
-where
-    BitsImpl<{ SUBS }>: Bits,
-{
+impl<'a, M: RawMutex> MqttStack<'a, M> {
     pub(crate) fn new(
         config: Config,
-        shared: &'a Mutex<M, Shared<SUBS>>,
-        tx_subscriber: FrameSubscriber<'a, SliceBufferProvider<'a>, 1>,
-        rx_publisher: FramePublisher<'a, SliceBufferProvider<'a>, SUBS>,
+        shared: &'a Mutex<M, Shared>,
+        tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
+        rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, MAX_SUBSCRIBERS>,
     ) -> Self {
         Self {
             shared,
@@ -148,7 +143,7 @@ where
         };
 
         match select3(
-            self.tx_subscriber.read_any_async(),
+            self.tx_subscriber.read_async(),
             self.packet_buf.get_received_packet(transport),
             keep_alive_sleep,
         )
@@ -158,7 +153,7 @@ where
                 // ### TX future:
                 transport
                     .socket()?
-                    .write_all(&tx_grant)
+                    .write_all(tx_grant.deref())
                     .await
                     .map_err(|e| StateError::Io(e.kind()))?;
 
@@ -170,9 +165,14 @@ where
 
                 let mut shared = self.shared.lock().await;
 
-                let mut decoder = MqttDecoder::try_new(&tx_grant).unwrap();
+                let mut decoder = MqttDecoder::try_new(tx_grant.deref()).unwrap();
                 if let Some(pid) = decoder.read_pid() {
                     shared.outgoing_pid.remove(&pid.get());
+                    trace!(
+                        "Outgoing PID {} successfully transmitted! Missing tx: {:?}",
+                        pid.get(),
+                        shared.outgoing_pid.len()
+                    );
                 }
 
                 tx_grant.release();
@@ -185,29 +185,6 @@ where
                 //
                 // Handle all incoming packet types by sending ack & waking
                 // // `tx_wakers`.
-
-                // if packet_header.typ == PacketType::Publish {
-                //     if self.rx_publisher.free_capacity()
-                //         < Header::encoded_len(packet_len) + packet_len
-                //     {
-                //         warn!(
-                //             "Not enough free capacity ({}) to handle publish packet of len ({}) + header ({})",
-                //             self.rx_publisher.free_capacity(),
-                //             packet_len,
-                //             Header::encoded_len(packet_len)
-                //         );
-                //         // Make sure we have a yield point in this potential hot-loop
-                //         yield_now().await;
-                //         return Ok(());
-                //     }
-                // }
-
-                // let mut packet = self
-                //     .packet_buf
-                //     .read_packet(transport)
-                //     .await
-                //     .map_err(|_e| StateError::Deserialization)?;
-
                 match packet {
                     ReceivedPacket::Disconnect(Disconnect { reason_code, .. }) => {
                         warn!("Received disconnect packet {:?}", reason_code);
@@ -230,8 +207,6 @@ where
                         topic_name,
                         ref mut publish,
                     } => {
-                        warn!("Received packet PID {:?}", qos_pid);
-
                         // Handle incoming `Publish` type packets by copying the full
                         // packet to any `shared.rx_publisher` buffers where topic
                         // matches their topic_filter.
@@ -245,7 +220,7 @@ where
 
                         let ignore_message = shared.ack_status.iter().any(|(_, status)| {
                             // Only check AwaitingUnsubAck status
-                            if let AckStatus::AwaitingUnsubAck(filters) = status {
+                            if let AckStatus::AwaitingUnsubAck(Some(filters)) = status {
                                 filters.iter().any(|f| f.is_match(topic_name))
                             } else {
                                 false
@@ -256,9 +231,9 @@ where
                         drop(shared);
 
                         if !ignore_message {
-                            debug!("Adding {:?} as available for subscribers", topic_name);
+                            trace!("Adding {:?} as available for subscribers", topic_name);
 
-                            match self.rx_publisher.grant_async(publish.len()).await {
+                            match self.rx_publisher.grant_immediate(publish.len()) {
                                 Ok(mut grant) => {
                                     publish.copy_all(grant.deref_mut()).await.map_err(
                                         |e| match e {
@@ -272,16 +247,16 @@ where
                                     // calling `commit` will wake all subscribers
                                     grant.commit(publish.len());
                                 }
-                                Err(_) => {
+                                Err(e) => {
                                     error!(
-                                        "Packet is larger than the storage allocated in `rx_publisher`"
+                                        "Packet is larger than the storage allocated in `rx_publisher`. {:?}", e
                                     );
                                     return Ok(());
                                 }
                             }
                         } else {
                             // TODO: Do we need to read remaining bytes of PartialPublish when we ignore the message here?¨
-                            warn!("Ignore message with topic {:?}", topic_name);
+                            error!("Ignore message with topic {:?}", topic_name);
                         }
 
                         // Write `PubAck` or `PubRec` depending on received QoS
@@ -391,9 +366,18 @@ where
 
                         // Pop pid from pending_ack
                         match shared.ack_status.get_mut(&pid.get()) {
-                            Some(status) if matches!(*status, AckStatus::AwaitingUnsubAck(_)) => {
+                            Some(status)
+                                if matches!(*status, AckStatus::AwaitingUnsubAck(None)) =>
+                            {
                                 *status =
                                     AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
+                                shared.wake_tx();
+                            }
+                            // Remove the entry in case this was part of a subscription being dropped
+                            Some(status)
+                                if matches!(*status, AckStatus::AwaitingUnsubAck(Some(_))) =>
+                            {
+                                shared.ack_status.remove(&pid.get());
                                 shared.wake_tx();
                             }
                             None | Some(_) => {
@@ -591,8 +575,8 @@ mod tests {
         );
 
         // Create the MQTT stack
-        static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
-        let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
+        static STATE: StaticCell<State<NoopRawMutex, 4096, 4096>> = StaticCell::new();
+        let state = STATE.init(State::<NoopRawMutex, 4096, 4096>::new());
         let config = Config::builder()
             .client_id("client_id".try_into().unwrap())
             .build();
@@ -634,8 +618,8 @@ mod tests {
         );
 
         // Create the MQTT stack
-        static STATE: StaticCell<State<NoopRawMutex, 4096, 4096, 4>> = StaticCell::new();
-        let state = STATE.init(State::<NoopRawMutex, 4096, 4096, 4>::new());
+        static STATE: StaticCell<State<NoopRawMutex, 4096, 4096>> = StaticCell::new();
+        let state = STATE.init(State::<NoopRawMutex, 4096, 4096>::new());
         let config = Config::builder()
             .client_id("client_id".try_into().unwrap())
             .build();

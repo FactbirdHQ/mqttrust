@@ -45,7 +45,7 @@ impl<'a, R: Read> ReceivedPacket<'a, R> {
         let mut decoder = MqttDecoder::try_new(buf)?;
         let header = decoder.fixed_header();
 
-        debug!("Read header {:?}", header);
+        // debug!("Read header {:?}", header);
 
         let packet = match header.typ {
             PacketType::Disconnect => Self::Disconnect(Disconnect::from_decoder(&mut decoder)?),

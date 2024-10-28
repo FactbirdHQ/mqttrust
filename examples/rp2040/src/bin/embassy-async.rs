@@ -25,8 +25,6 @@ use rand::RngCore;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-const MAX_SUBS: usize = 8;
-
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
@@ -48,7 +46,7 @@ async fn net_task(stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>)
 
 #[embassy_executor::task]
 async fn mqtt_task(
-    mut mqtt_stack: MqttStack<'static, NoopRawMutex, MAX_SUBS>,
+    mut mqtt_stack: MqttStack<'static, NoopRawMutex>,
     broker: IpBroker,
     stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>,
 ) -> ! {
@@ -63,7 +61,7 @@ async fn mqtt_task(
 
 #[embassy_executor::task(pool_size = 2)]
 async fn mqtt_subscription(
-    client: &'static MqttClient<'static, NoopRawMutex, MAX_SUBS>,
+    client: &'static MqttClient<'static, NoopRawMutex>,
     topic: &'static str,
 ) {
     // Use the MQTT client to subscribe
@@ -163,11 +161,11 @@ async fn main(spawner: Spawner) {
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
 
-    static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, MAX_SUBS>> = StaticCell::new();
+    static STATE: StaticCell<State<NoopRawMutex, 1024, 1024>> = StaticCell::new();
     let state = STATE.init(State::new());
     let (mqtt_stack, client) = embedded_mqtt::new(state, config);
 
-    static CLIENT: StaticCell<MqttClient<'static, NoopRawMutex, MAX_SUBS>> = StaticCell::new();
+    static CLIENT: StaticCell<MqttClient<'static, NoopRawMutex>> = StaticCell::new();
     let client = CLIENT.init(client);
 
     loop {

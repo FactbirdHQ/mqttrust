@@ -13,6 +13,9 @@ use super::Transport;
 
 use crate::{error::ConnectionError, Broker, StateError};
 
+/// A transport layer for MQTT over TLS using a network abstraction layer (NAL).
+///
+/// This struct manages the connection to the MQTT broker using TLS for secure communication.
 pub struct TlsNalTransport<'a, N: TcpConnect, B: Broker, P, const RX: usize, const TX: usize> {
     network: &'a N,
     broker: B,
@@ -25,6 +28,19 @@ pub struct TlsNalTransport<'a, N: TcpConnect, B: Broker, P, const RX: usize, con
 impl<'a, N: TcpConnect, B: Broker, P, const RX: usize, const TX: usize>
     TlsNalTransport<'a, N, B, P, RX, TX>
 {
+    /// Creates a new `TlsNalTransport`.
+    ///
+    /// # Parameters
+    ///
+    /// - `network`: The network abstraction layer for TCP connections.
+    /// - `broker`: The MQTT broker information.
+    /// - `tls_state`: The TLS state for managing buffers.
+    /// - `tls_config`: The TLS configuration.
+    /// - `provider`: The cryptographic provider for TLS.
+    ///
+    /// # Returns
+    ///
+    /// A new instance of `TlsNalTransport`.
     pub fn new(
         network: &'a N,
         broker: B,
@@ -54,6 +70,11 @@ impl<
 {
     type Socket = TlsConnection<'a, N, RX, TX>;
 
+    /// Asynchronously connects to the MQTT broker using TLS.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the connection was successful, otherwise a `ConnectionError`.
     async fn connect(&mut self) -> Result<(), ConnectionError> {
         let addr = self
             .broker
@@ -88,15 +109,30 @@ impl<
         Ok(())
     }
 
+    /// Disconnects from the MQTT broker.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the disconnection was successful, otherwise a `ConnectionError`.
     fn disconnect(&mut self) -> Result<(), ConnectionError> {
         self.socket.take();
         Ok(())
     }
 
+    /// Checks if the transport is currently connected.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the transport is connected, otherwise `false`.
     fn is_connected(&self) -> bool {
         self.socket.is_some()
     }
 
+    /// Provides a mutable reference to the socket used by the transport.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(&mut Self::Socket)` if the socket is available, otherwise a `StateError`.
     fn socket(&mut self) -> Result<&mut Self::Socket, StateError> {
         self.socket
             .as_mut()
@@ -104,6 +140,7 @@ impl<
     }
 }
 
+/// Represents a TLS connection for MQTT communication.
 pub struct TlsConnection<'d, N: TcpConnect + 'd, const RX: usize, const TX: usize> {
     socket: embedded_tls::TlsConnection<'d, N::Connection<'d>, embedded_tls::Aes128GcmSha256>,
     state: &'d TlsState<RX, TX>,
@@ -111,6 +148,16 @@ pub struct TlsConnection<'d, N: TcpConnect + 'd, const RX: usize, const TX: usiz
 }
 
 impl<'d, N: TcpConnect, const RX: usize, const TX: usize> TlsConnection<'d, N, RX, TX> {
+    /// Creates a new `TlsConnection`.
+    ///
+    /// # Parameters
+    ///
+    /// - `socket`: The underlying TCP connection.
+    /// - `state`: The TLS state for managing buffers.
+    ///
+    /// # Returns
+    ///
+    /// A new instance of `TlsConnection` or a `TlsError` if the connection could not be created.
     pub(crate) fn new(
         socket: N::Connection<'d>,
         state: &'d TlsState<RX, TX>,
@@ -128,6 +175,15 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> TlsConnection<'d, N, R
         })
     }
 
+    /// Opens the TLS connection.
+    ///
+    /// # Parameters
+    ///
+    /// - `context`: The TLS context containing the configuration and cryptographic provider.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the connection was opened successfully, otherwise a `TlsError`.
     pub async fn open<P: CryptoProvider<CipherSuite = embedded_tls::Aes128GcmSha256>>(
         &mut self,
         context: embedded_tls::TlsContext<'d, P>,
@@ -139,6 +195,7 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> TlsConnection<'d, N, R
 }
 
 impl<'d, N: TcpConnect, const RX: usize, const TX: usize> Drop for TlsConnection<'d, N, RX, TX> {
+    /// Frees the allocated buffers when the `TlsConnection` is dropped.
     fn drop(&mut self) {
         unsafe {
             self.state.pool.free(self.bufs);
@@ -155,6 +212,15 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> embedded_io_async::Err
 impl<'d, N: TcpConnect, const RX: usize, const TX: usize> embedded_io_async::Read
     for TlsConnection<'d, N, RX, TX>
 {
+    /// Reads data from the TLS connection.
+    ///
+    /// # Parameters
+    ///
+    /// - `buf`: The buffer to read data into.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes read or a `TlsError`.
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         self.socket.read(buf).await
     }
@@ -163,16 +229,30 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> embedded_io_async::Rea
 impl<'d, N: TcpConnect, const RX: usize, const TX: usize> embedded_io_async::Write
     for TlsConnection<'d, N, RX, TX>
 {
+    /// Writes data to the TLS connection.
+    ///
+    /// # Parameters
+    ///
+    /// - `buf`: The buffer containing the data to write.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes written or a `TlsError`.
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         self.socket.write(buf).await
     }
 
+    /// Flushes the TLS connection.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the flush was successful, otherwise a `TlsError`.
     async fn flush(&mut self) -> Result<(), Self::Error> {
         self.socket.flush().await
     }
 }
 
-/// State for TcpClient
+/// State for managing TLS buffers.
 pub struct TlsState<const RX: usize, const TX: usize> {
     pub(crate) pool: Pool<([u8; RX], [u8; TX]), 1>,
 }
@@ -184,18 +264,28 @@ impl<const RX: usize, const TX: usize> Default for TlsState<RX, TX> {
 }
 
 impl<const RX: usize, const TX: usize> TlsState<RX, TX> {
-    /// Create a new `TlsState`.
+    /// Creates a new `TlsState`.
+    ///
+    /// # Returns
+    ///
+    /// A new instance of `TlsState`.
     pub const fn new() -> Self {
         Self { pool: Pool::new() }
     }
 }
 
+/// A memory pool for managing TLS buffers.
 pub(crate) struct Pool<T, const N: usize> {
     used: [Cell<bool>; N],
     data: [UnsafeCell<MaybeUninit<T>>; N],
 }
 
 impl<T, const N: usize> Pool<T, N> {
+    /// Creates a new `Pool`.
+    ///
+    /// # Returns
+    ///
+    /// A new instance of `Pool`.
     pub(crate) const fn new() -> Self {
         Self {
             used: [const { Cell::new(false) }; N],
@@ -205,6 +295,11 @@ impl<T, const N: usize> Pool<T, N> {
 }
 
 impl<T, const N: usize> Pool<T, N> {
+    /// Allocates a buffer from the pool.
+    ///
+    /// # Returns
+    ///
+    /// A pointer to the allocated buffer or `None` if the pool is full.
     pub(crate) fn alloc(&self) -> Option<NonNull<T>> {
         for n in 0..N {
             // this can't race because Pool is not Sync.
@@ -217,7 +312,11 @@ impl<T, const N: usize> Pool<T, N> {
         None
     }
 
-    /// safety: p must be a pointer obtained from self.alloc that hasn't been freed yet.
+    /// Frees a previously allocated buffer.
+    ///
+    /// # Safety
+    ///
+    /// The pointer `p` must be a pointer obtained from `self.alloc` that hasn't been freed yet.
     pub(crate) unsafe fn free(&self, p: NonNull<T>) {
         let origin = self.data.as_ptr() as *mut T;
         let n = p.as_ptr().offset_from(origin);

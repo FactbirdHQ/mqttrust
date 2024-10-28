@@ -45,6 +45,15 @@ jobs:
       - name: Test
         run: cargo test --features "log,${{ matrix.mqtt_version }}"
 
+      - name: Install Miri
+        run: |
+          rustup toolchain install nightly --component miri
+          rustup override set nightly
+          cargo miri setup
+
+      - name: Test (Miri)
+        run: cargo miri test --lib
+
   fuzz:
     name: Fuzz Test
     runs-on: ubuntu-latest
