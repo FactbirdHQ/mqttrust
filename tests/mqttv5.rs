@@ -4,6 +4,7 @@ mod broker;
 mod common;
 
 use common::network::Network;
+use core::net::Ipv4Addr;
 use embassy_futures::select;
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
@@ -13,7 +14,6 @@ use embedded_mqtt::{
     transport::embedded_nal::NalTransport, Config, IpBroker, Publish, State, Subscribe,
     SubscribeTopic,
 };
-use embedded_nal_async::Ipv4Addr;
 use futures_util::StreamExt;
 use static_cell::StaticCell;
 

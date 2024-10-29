@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use core::net::Ipv4Addr;
 use cyw43_pio::PioSpi;
 use embassy_executor::Spawner;
 use embassy_net::{
@@ -20,7 +21,6 @@ use embedded_mqtt::{
     transport::embedded_nal::NalTransport, Config, IpBroker, MqttClient, MqttStack, Publish, State,
     Subscribe, SubscribeTopic,
 };
-use embedded_nal_async::Ipv4Addr;
 use rand::RngCore;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -40,18 +40,18 @@ async fn cyw43_task(
 }
 
 #[embassy_executor::task]
-async fn net_task(stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>) -> ! {
-    stack.run().await
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    runner.run().await
 }
 
 #[embassy_executor::task]
 async fn mqtt_task(
     mut mqtt_stack: MqttStack<'static, NoopRawMutex>,
     broker: IpBroker,
-    stack: &'static embassy_net::Stack<cyw43::NetDriver<'static>>,
+    stack: embassy_net::Stack<'static>,
 ) -> ! {
     let client_state = TcpClientState::<1, 1024, 1024>::new();
-    let tcp_client = TcpClient::new(&stack, &client_state);
+    let tcp_client = TcpClient::new(stack, &client_state);
 
     let mut nal_transport = NalTransport::new(&tcp_client, broker);
 
@@ -139,16 +139,14 @@ async fn main(spawner: Spawner) {
 
     // Init network stack
     static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
-    let stack = embassy_net::Stack::new(
+    let (stack, runner) = embassy_net::new(
         net_device,
         config,
         RESOURCES.init(StackResources::new()),
         seed,
     );
-    static STACK: StaticCell<embassy_net::Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
-    let stack = STACK.init(stack);
 
-    spawner.must_spawn(net_task(stack));
+    spawner.must_spawn(net_task(runner));
 
     // Setup `embedded-mqtt`
 

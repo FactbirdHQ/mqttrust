@@ -1,5 +1,6 @@
 use core::convert::TryFrom;
-use embedded_nal_async::{AddrType, Dns, IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use core::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use embedded_nal_async::{AddrType, Dns};
 
 /// Default MQTT port without TLS.
 #[cfg(not(feature = "embedded-tls"))]

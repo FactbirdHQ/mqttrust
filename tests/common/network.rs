@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use embedded_io_adapters::tokio_1::FromTokio;
-use embedded_nal_async::{AddrType, Dns, IpAddr, Ipv4Addr, Ipv6Addr, TcpConnect};
+use embedded_nal_async::{AddrType, Dns, TcpConnect};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Network;
@@ -21,7 +22,7 @@ impl TcpConnect for Network {
 
     async fn connect(
         &self,
-        remote: embedded_nal_async::SocketAddr,
+        remote: core::net::SocketAddr,
     ) -> Result<Self::Connection<'_>, Self::Error> {
         let stream = tokio::net::TcpStream::connect(format!("{}", remote)).await?;
         Ok(FromTokio::new(stream))

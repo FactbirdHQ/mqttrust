@@ -520,7 +520,7 @@ mod tests {
     use core::convert::Infallible;
 
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use embedded_nal_async::{Ipv4Addr, TcpConnect};
+    use embedded_nal_async::TcpConnect;
     use futures_util::StreamExt;
     use static_cell::StaticCell;
 
@@ -541,7 +541,7 @@ mod tests {
 
         async fn connect(
             &self,
-            _remote: embedded_nal_async::SocketAddr,
+            _remote: core::net::SocketAddr,
         ) -> Result<Self::Connection<'_>, Self::Error> {
             Ok(MockSocket)
         }
@@ -571,7 +571,7 @@ mod tests {
     async fn subscribe_publish() {
         let mut network = crate::transport::embedded_nal::NalTransport::new(
             &MockNetwork,
-            IpBroker::new(Ipv4Addr::LOCALHOST, 1883),
+            IpBroker::new(core::net::Ipv4Addr::LOCALHOST, 1883),
         );
 
         // Create the MQTT stack
@@ -614,7 +614,7 @@ mod tests {
     async fn multiple_subscribe() {
         let mut network = crate::transport::embedded_nal::NalTransport::new(
             &MockNetwork,
-            IpBroker::new(Ipv4Addr::LOCALHOST, 1883),
+            IpBroker::new(core::net::Ipv4Addr::LOCALHOST, 1883),
         );
 
         // Create the MQTT stack

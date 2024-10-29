@@ -22,7 +22,7 @@ futures = { version = "0.3.17", default-features = false, features = [
     "cfg-target-has-atomic",
     "unstable",
 ] }
-embedded-nal-async = { version = "0.7" }
+embedded-nal-async = { version = "0.8" }
 
 
 embassy-embedded-hal = { version = "0.2.0", features = ["defmt"] }
@@ -41,6 +41,7 @@ embassy-time = { version = "0.3.2", features = [
 ] }
 embassy-rp = { version = "0.2.0", features = [
     "defmt",
+    "rp2040",
     "unstable-pac",
     "time-driver",
     "critical-section-impl",
@@ -90,3 +91,16 @@ overflow-checks = false
 
 [package.metadata.cargo-machete]
 ignored = ["cortex-m", "defmt-rtt", "panic-probe", "portable-atomic"]
+
+
+[patch.crates-io]
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-time-queue-driver = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
