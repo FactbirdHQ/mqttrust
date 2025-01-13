@@ -2,7 +2,8 @@
 #![no_main]
 
 use core::net::Ipv4Addr;
-use cyw43_pio::PioSpi;
+use cyw43::JoinOptions;
+use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use embassy_executor::Spawner;
 use embassy_net::{
     tcp::client::{TcpClient, TcpClientState},
@@ -109,6 +110,7 @@ async fn main(spawner: Spawner) {
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
+        DEFAULT_CLOCK_DIVIDER,
         pio.irq0,
         cs,
         p.PIN_24,
@@ -167,7 +169,10 @@ async fn main(spawner: Spawner) {
     let client = CLIENT.init(client);
 
     loop {
-        match control.join_wpa2(WIFI_NETWORK, WIFI_PASSWORD).await {
+        match control
+            .join(WIFI_NETWORK, JoinOptions::new(WIFI_PASSWORD.as_bytes()))
+            .await
+        {
             Ok(_) => break,
             Err(err) => {
                 defmt::info!("join failed with status={}", err.status);

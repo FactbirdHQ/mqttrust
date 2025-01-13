@@ -25,28 +25,27 @@ futures = { version = "0.3.17", default-features = false, features = [
 embedded-nal-async = { version = "0.8" }
 
 
-embassy-embedded-hal = { version = "0.2.0", features = ["defmt"] }
+embassy-embedded-hal = { version = "0.3", features = ["defmt"] }
 embassy-sync = { version = "0.6.0", features = ["defmt"] }
-embassy-executor = { version = "0.6.0", features = [
+embassy-executor = { version = "0.7", features = [
     "task-arena-size-98304",
     "arch-cortex-m",
     "executor-thread",
     "executor-interrupt",
     "defmt",
-    "integrated-timers",
 ] }
-embassy-time = { version = "0.3.2", features = [
+embassy-time = { version = "0.4", features = [
     "defmt",
     "defmt-timestamp-uptime",
 ] }
-embassy-rp = { version = "0.2.0", features = [
+embassy-rp = { version = "0.3", features = [
     "defmt",
     "rp2040",
     "unstable-pac",
     "time-driver",
     "critical-section-impl",
 ] }
-embassy-net = { version = "0.4.0", features = [
+embassy-net = { version = "0.6", features = [
     "defmt",
     "tcp",
     "udp",
@@ -55,8 +54,8 @@ embassy-net = { version = "0.4.0", features = [
     "dns",
 ] }
 embassy-futures = { version = "0.1.0" }
-cyw43 = { version = "0.2.0", features = ["defmt", "firmware-logs"] }
-cyw43-pio = { version = "0.2.0", features = ["defmt"] }
+cyw43 = { version = "0.3", features = ["defmt", "firmware-logs"] }
+cyw43-pio = { version = "0.3", features = ["defmt"] }
 
 
 [profile.dev]
@@ -91,16 +90,3 @@ overflow-checks = false
 
 [package.metadata.cargo-machete]
 ignored = ["cortex-m", "defmt-rtt", "panic-probe", "portable-atomic"]
-
-
-[patch.crates-io]
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-time-queue-driver = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "80cb2bc" }

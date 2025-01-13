@@ -16,9 +16,10 @@ impl Network {
 impl TcpConnect for Network {
     type Error = std::io::Error;
 
-    type Connection<'a> = FromTokio<tokio::net::TcpStream>
-	    where
-		    Self: 'a;
+    type Connection<'a>
+        = FromTokio<tokio::net::TcpStream>
+    where
+        Self: 'a;
 
     async fn connect(
         &self,

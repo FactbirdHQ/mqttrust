@@ -537,7 +537,9 @@ mod tests {
         type Error = Infallible;
 
         type Connection<'a>
-	         = MockSocket where Self: 'a;
+            = MockSocket
+        where
+            Self: 'a;
 
         async fn connect(
             &self,
