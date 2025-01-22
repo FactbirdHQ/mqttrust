@@ -5,15 +5,11 @@ use heapless::{FnvIndexMap, IndexMap};
 
 use crate::crate_config::{MAX_INFLIGHT, MAX_SUBSCRIBERS, MAX_SUB_TOPICS_PER_MSG};
 use crate::encoding::Pid;
-use crate::topic_filter::TopicFilter;
 
-// Fixme: The Vec in AwaitingUnsubAck is used to hold a list of topics that we are about to unsubcribe to.
-// If we receive any msg on those topics while in AwaitingUnsubAck state we have to discard the message.
-// This could be handled differently and save MAX_SUB_TOPICS_PER_MSG * Topicfilter in RAM
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AckStatus {
     AwaitingSubAck,
-    AwaitingUnsubAck(Option<heapless::Vec<TopicFilter, MAX_SUB_TOPICS_PER_MSG>>),
+    AwaitingUnsubAck(bool),
     Acked(heapless::Vec<u8, MAX_SUB_TOPICS_PER_MSG>),
 }
 

@@ -10,9 +10,9 @@ use crate::{
         utils::{Pid, QoS},
         FixedHeader,
     },
-    varint_len,
+    varint_len, StateError,
 };
-use embedded_io_async::Read;
+use embedded_io_async::{Error as _, ErrorKind, Read, ReadExactError};
 
 use super::PacketType;
 
@@ -202,16 +202,17 @@ impl<'a, S: Read> PartialPublish<'a, S> {
         self.packet_len
     }
 
-    pub async fn copy_all(
-        &mut self,
-        buf: &mut [u8],
-    ) -> Result<(), embedded_io_async::ReadExactError<S::Error>> {
+    pub async fn copy_all(&mut self, buf: &mut [u8]) -> Result<(), StateError> {
         buf[..self.buf.len()].copy_from_slice(self.buf);
 
         if self.buf.len() < self.len() {
             self.reader
                 .read_exact(&mut buf[self.buf.len()..self.len()])
-                .await?;
+                .await
+                .map_err(|e| match e {
+                    ReadExactError::UnexpectedEof => StateError::Io(ErrorKind::BrokenPipe),
+                    ReadExactError::Other(i) => StateError::Io(i.kind()),
+                })?;
         }
 
         Ok(())

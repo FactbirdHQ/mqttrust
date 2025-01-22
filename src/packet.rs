@@ -4,7 +4,6 @@ use crate::{
     decoder::MqttDecoder,
     encoder::{MqttEncode, MqttEncoder},
     encoding::received_packet::ReceivedPacket,
-    transport::Transport,
     PacketType, StateError,
 };
 
@@ -31,9 +30,9 @@ impl PacketBuffer {
         self.packet_len = None;
     }
 
-    pub async fn write_packet(
+    pub async fn write_packet<W: Write>(
         &mut self,
-        transport: &mut impl Transport,
+        writer: &mut W,
         packet: impl MqttEncode,
     ) -> Result<(), StateError> {
         // FIXME: Reuse packet buffer?
@@ -43,33 +42,26 @@ impl PacketBuffer {
             .to_buffer(&mut encoder)
             .map_err(|_| StateError::Deserialization)?;
 
-        transport
-            .socket()?
+        writer
             .write_all(encoder.packet_bytes())
             .await
             .map_err(|e| StateError::Io(e.kind()))?;
 
-        transport
-            .socket()?
-            .flush()
-            .await
-            .map_err(|e| StateError::Io(e.kind()))?;
+        writer.flush().await.map_err(|e| StateError::Io(e.kind()))?;
         Ok(())
     }
 
-    pub async fn get_received_packet<'a, T: Transport>(
+    pub async fn get_received_packet<'a, R: Read>(
         &'a mut self,
-        transport: &'a mut T,
-    ) -> Result<ReceivedPacket<'a, T::Socket>, StateError> {
+        reader: &'a mut R,
+    ) -> Result<ReceivedPacket<'a, R>, StateError> {
         while self.packet_len.is_none() {
-            self.receive(transport.socket()?).await.map_err(|kind| {
-                error!("DISCONNECTING {:?}", kind);
-                transport.disconnect().ok();
-                StateError::Io(kind)
-            })?;
+            self.receive(reader)
+                .await
+                .map_err(|kind| StateError::Io(kind))?;
         }
 
-        self.received_packet(transport.socket()?)
+        self.received_packet(reader)
             .map_err(|_| StateError::Deserialization)
     }
 

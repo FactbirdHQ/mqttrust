@@ -107,7 +107,7 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
         .await;
     }
 
-    /// Sends an MQTT packet.
+    /// Enqueues an MQTT packet into the transmit queue, to be sent by the [`MqttStack`].
     ///
     /// # Parameters
     ///
@@ -167,7 +167,7 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
 
                 shared
                     .ack_status
-                    .insert(pid.into(), AckStatus::AwaitingUnsubAck(None))
+                    .insert(pid.into(), AckStatus::AwaitingUnsubAck(true))
                     .map_err(|_| Error::MaxInflight)?;
             }
             _ => {}
@@ -234,14 +234,20 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
                 debug!("[Publish] Sending to {:?}", pub_pkg.topic_name);
             }
 
+            let publish_fut = async {
+                let pid = self.send(&mut pub_pkg).await?;
+                self.wait_publish_tx(pid, pub_pkg.qos).await
+            };
+
             match embassy_time::with_timeout(
                 embassy_time::Duration::from_secs(5 * attempt as u64),
-                self.publish_inner(&mut pub_pkg),
+                publish_fut,
             )
             .await
             {
                 Ok(Ok(())) => return Ok(()),
                 Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
+                Err(_) if attempt == MAX_ATTEMPTS => return Err(Error::Timeout),
                 _ => {
                     continue;
                 }
@@ -272,55 +278,50 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
             .map_err(|_| Error::StateMismatch)?;
 
         let mut subscribe: Subscribe = packet.into();
-        let topic_filters = subscribe
-            .topics
-            .iter()
-            .map(|sub| TopicFilter::new(sub.topic_path))
-            .collect::<Result<_, _>>()?;
 
         const MAX_ATTEMPTS: u8 = 3;
 
         for attempt in 1..=MAX_ATTEMPTS {
             self.wait_connected().await;
 
-            if attempt > 1 {
-                debug!(
-                    "[Subscribe] Attempt: {}. Subscribing to {:?}",
-                    attempt - 1,
-                    topic_filters
-                );
-            } else {
-                debug!("[Subscribe] Subscribing to {:?}", topic_filters);
-            }
+            // if attempt > 1 {
+            //     debug!(
+            //         "[Subscribe] Attempt: {}. Subscribing to {:?}",
+            //         attempt - 1,
+            //         topic_filters
+            //     );
+            // } else {
+            //     debug!("[Subscribe] Subscribing to {:?}", topic_filters);
+            // }
 
-            match with_timeout(
-                Duration::from_secs(3 * attempt as u64),
-                self.subscribe_inner(&mut subscribe),
-            )
-            .await
-            {
-                Ok(Ok(())) => {
-                    return Ok(Subscription {
-                        subscriber,
-                        topic_filters,
-                        client: self,
-                    })
-                }
+            let subscribe_fut = async {
+                let pid = self.send(&mut subscribe).await?;
+                self.wait_subscribe_tx(pid).await
+            };
+
+            match with_timeout(Duration::from_secs(3 * attempt as u64), subscribe_fut).await {
+                Ok(Ok(())) => break,
                 Ok(Err(e)) if attempt == MAX_ATTEMPTS => return Err(e),
-                _ => {
-                    continue;
-                }
+                Err(_) if attempt == MAX_ATTEMPTS => return Err(Error::Timeout),
+                _ => continue,
             }
         }
 
-        Err(Error::Timeout)
+        let topic_filters = subscribe
+            .topics
+            .iter()
+            .map(|sub| TopicFilter::new(sub.topic_path))
+            .collect::<Result<_, _>>()?;
+
+        Ok(Subscription {
+            subscriber,
+            topic_filters,
+            client: self,
+        })
     }
 
-    async fn publish_inner<P: ToPayload>(&self, pub_pkg: &mut Publish<'_, P>) -> Result<(), Error> {
-        let should_wait_ack = !matches!(pub_pkg.qos, QoS::AtMostOnce);
-
-        let pid = self.send(pub_pkg).await?;
-
+    async fn wait_publish_tx(&self, pid: Pid, qos: QoS) -> Result<(), Error> {
+        let should_wait_ack = !matches!(qos, QoS::AtMostOnce);
         // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
@@ -364,9 +365,7 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
         Ok(())
     }
 
-    async fn subscribe_inner(&self, sub_pkg: &mut Subscribe<'_>) -> Result<(), Error> {
-        let pid = self.send(sub_pkg).await?;
-
+    async fn wait_subscribe_tx(&self, pid: Pid) -> Result<(), Error> {
         // Cleanup `ack_status` & `outgoing_pid` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
@@ -581,13 +580,7 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Drop for Subscription<'a, 'b,
 
                     shared
                         .ack_status
-                        .insert(
-                            pid.into(),
-                            AckStatus::AwaitingUnsubAck(
-                                // # Safety: Checked before subscribing (Assert: MAX_TOPICS <= crate::crate_config::MAX_SUB_TOPICS_PER_MSG)
-                                heapless::Vec::try_from(self.topic_filters.as_slice()).ok(),
-                            ),
-                        )
+                        .insert(pid.into(), AckStatus::AwaitingUnsubAck(false))
                         .unwrap();
                 } else {
                     error!("Could not lock client shared to insert AwaitingUnSubAck");
