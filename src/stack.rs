@@ -458,20 +458,6 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         }
 
         if p.reason_code.success() {
-            // TODO:
-
-            // if self.clean_start {
-            //     debug!("Connected! Reusing existing session: {}", p.session_present);
-            // } else {
-            //     debug!(
-            //         "Reconnected! Reusing existing session: {}",
-            //         p.session_present
-            //     );
-            // }
-
-            // self.clean_start = false;
-            // self.connect_attempts = 0;
-
             Ok(p.session_present)
         } else {
             error!("Connection refused! reason code: {:?}", p.reason_code);
@@ -530,7 +516,21 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         // Reset the buffer in `PacketReader`, so we are ready for the next MQTT packet
         self.packet_buf.reset();
 
-        result
+        match result {
+            Ok(present) => {
+                if self.clean_start {
+                    debug!("Connected! Reusing existing session: {}", present);
+                } else {
+                    debug!("Reconnected! Reusing existing session: {}", present);
+                }
+
+                self.clean_start = false;
+                self.connect_attempts = 0;
+
+                Ok(present)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
