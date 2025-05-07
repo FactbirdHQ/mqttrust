@@ -110,12 +110,16 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                 error!("Stack error {}", e);
                 // Clean state
                 transport.disconnect().ok();
-                self.awaiting_pingresp = false;
-                self.connect_attempts = 0;
-                self.shared.lock().await.reset();
-                self.packet_buf.reset();
+                self.reset().await;
             }
         }
+    }
+
+    pub async fn reset(&mut self) {
+        self.awaiting_pingresp = false;
+        self.connect_attempts = 0;
+        self.shared.lock().await.reset();
+        self.packet_buf.reset();
     }
 
     pub async fn disconnect<T: Transport>(

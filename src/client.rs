@@ -129,6 +129,10 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
         }
 
         let pid = shared.next_pid();
+
+        // Don't hold the lock across await points.
+        drop(shared);
+
         let mut tx_prod = self.tx_publisher.lock().await;
 
         packet.set_pid(pid);
@@ -141,6 +145,8 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
         let mut encoder = MqttEncoder::new(grant.deref_mut());
         packet.to_buffer(&mut encoder).ok();
         let used = encoder.used_size();
+
+        let mut shared = self.shared.lock().await;
 
         shared
             .outgoing_pid
