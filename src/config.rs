@@ -3,18 +3,25 @@ use bon::Builder;
 use embassy_time::Duration;
 
 /// Type alias for a backoff algorithm function, which takes the number of attempts and returns a `Duration`.
-pub type BackoffAlgo = fn(u8) -> Duration;
+pub type BackoffAlgo = fn(u8) -> Option<Duration>;
 
 /// Default backoff algorithm for reconnection attempts.
 ///
 /// This algorithm uses exponential backoff, starting with a base time of 500 milliseconds and doubling
 /// the wait time for each subsequent attempt, up to a maximum of 3 minutes.
+/// If the number of attempts exceeds 10, it returns `None`, indicating no further attempts should be made.
+/// None will make stack runner return
 const DEFAULT_BACKOFF: BackoffAlgo = |attempt| {
+    let max_attempts = 10;
+    if attempt >= max_attempts {
+        return None;
+    }
     let base_time_ms: u32 = 500;
     let backoff = base_time_ms.saturating_mul(u32::pow(2, attempt as u32));
+
     core::cmp::min(
-        Duration::from_secs(3 * 60),
-        Duration::from_millis(backoff.into()),
+        Some(Duration::from_secs(3 * 60)),
+        Some(Duration::from_millis(backoff.into())),
     )
 };
 

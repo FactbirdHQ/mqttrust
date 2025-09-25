@@ -77,7 +77,6 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                 let result = embassy_time::with_timeout(self.config.connect_timeout, async {
                     debug!("Connecting to MQTT broker...");
                     transport.connect().await?;
-                    debug!("Connected to MQTT broker!!");
 
                     let socket = transport.socket().map_err(ConnectionError::MqttState)?;
                     self.connect_mqtt(socket).await
@@ -94,10 +93,16 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     _ => {
                         error!("Failed to connect to MQTT broker, retrying...");
                         transport.disconnect().ok();
-                        embassy_time::Timer::after((self.config.backoff_algo)(
-                            self.connect_attempts,
-                        ))
-                        .await;
+
+                        match (self.config.backoff_algo)(self.connect_attempts) {
+                            Some(backoff) => {
+                                embassy_time::Timer::after(backoff).await;
+                            }
+                            None => {
+                                error!("Max reconnect attempts reached, stopping MQTT stack");
+                                return;
+                            }
+                        };
 
                         self.connect_attempts += 1;
                         continue;
@@ -514,7 +519,6 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             .get_received_packet(socket)
             .await
             .map_err(|_| ConnectionError::FlushTimeout)?;
-
         // validate connack
         let result = match packet {
             ReceivedPacket::ConnAck(p) => Self::handle_connack(p, &mut self.config),
