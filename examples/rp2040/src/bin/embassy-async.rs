@@ -22,7 +22,6 @@ use embedded_mqtt::{
     transport::embedded_nal::NalTransport, Config, IpBroker, MqttClient, MqttStack, Publish, State,
     Subscribe, SubscribeTopic,
 };
-use rand::RngCore;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 

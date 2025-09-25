@@ -587,7 +587,7 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Drop for Subscription<'a, 'b,
                     shared
                         .ack_status
                         .insert(pid.into(), AckStatus::AwaitingUnsubAck(false))
-                        .unwrap();
+                        .ok();
                 } else {
                     error!("Could not lock client shared to insert AwaitingUnSubAck");
                 }

@@ -75,7 +75,9 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                 self.shared.lock().await.set_connected(None);
 
                 let result = embassy_time::with_timeout(self.config.connect_timeout, async {
+                    debug!("Connecting to MQTT broker...");
                     transport.connect().await?;
+                    debug!("Connected to MQTT broker!!");
 
                     let socket = transport.socket().map_err(ConnectionError::MqttState)?;
                     self.connect_mqtt(socket).await
@@ -90,11 +92,13 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                             .set_connected(Some(session_present));
                     }
                     _ => {
+                        error!("Failed to connect to MQTT broker, retrying...");
                         transport.disconnect().ok();
                         embassy_time::Timer::after((self.config.backoff_algo)(
                             self.connect_attempts,
                         ))
                         .await;
+
                         self.connect_attempts += 1;
                         continue;
                     }

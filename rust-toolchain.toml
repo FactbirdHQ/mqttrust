@@ -1,6 +1,6 @@
 [toolchain]
-channel = "1.83"
-components = ["rust-src", "rustfmt", "llvm-tools"]
+channel = "nightly-2025-06-29"
+components = ["rust-src", "rustfmt", "llvm-tools", "miri", "clippy"]
 targets = [
     "x86_64-unknown-linux-gnu",
     "thumbv6m-none-eabi",
