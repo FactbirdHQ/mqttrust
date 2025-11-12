@@ -88,6 +88,34 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
         .await;
     }
 
+    /// Waits for any connection state change (connect or disconnect).
+    ///
+    /// This is useful for monitoring connection health and reacting to
+    /// disconnections, not just initial connections.
+    ///
+    /// # Returns
+    ///
+    /// `true` if connected, `false` if disconnected.
+    pub async fn wait_connection_change(&self) -> bool {
+        let mut prev_state = self.shared.lock().await.connected;
+
+        poll_fn(|cx| {
+            if let Ok(mut shared) = self.shared.try_lock() {
+                if prev_state != shared.connected {
+                    return Poll::Ready(shared.connected.is_some());
+                }
+
+                // Update prev_state before registering waker to catch any state changes
+                prev_state = shared.connected;
+                shared.connection_state_change_waker.register(cx.waker());
+                return Poll::Pending;
+            }
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        })
+        .await
+    }
+
     /// Cleans the session by waiting for the connection state to change.
     async fn clean_session(&self) {
         let mut prev_state = self.shared.lock().await.connected;

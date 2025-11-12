@@ -21,6 +21,9 @@ pub struct Shared {
 
     pub(crate) connection_waker: WakerRegistration,
 
+    /// Waker for connection state changes (both connect and disconnect)
+    pub(crate) connection_state_change_waker: WakerRegistration,
+
     /// Whether we are currently connected to the broker.
     ///
     /// - `Some(true)` if using an existing session
@@ -50,6 +53,7 @@ impl Shared {
             tx_waker: MultiWakerRegistration::new(),
 
             connection_waker: WakerRegistration::new(),
+            connection_state_change_waker: WakerRegistration::new(),
             connected: None,
 
             inflight_pub: heapless::IndexSet::new(),
@@ -64,7 +68,7 @@ impl Shared {
     }
 
     pub fn reset(&mut self) {
-        self.connected = None;
+        self.set_connected(None);
 
         self.inflight_pub.clear();
         self.ack_status.clear();
@@ -91,7 +95,13 @@ impl Shared {
     }
 
     pub fn set_connected(&mut self, connected: Option<bool>) {
+        let previous = self.connected;
         self.connected = connected;
         self.connection_waker.wake();
+
+        // Wake state change waker if connection state actually changed
+        if previous != connected {
+            self.connection_state_change_waker.wake();
+        }
     }
 }
