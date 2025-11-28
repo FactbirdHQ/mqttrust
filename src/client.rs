@@ -1,4 +1,4 @@
-use core::{future::poll_fn, ops::DerefMut, task::Poll};
+use core::{future::{poll_fn, Future}, ops::DerefMut, task::Poll};
 
 use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
@@ -555,12 +555,20 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> futures_util::Stream
         self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        // FIXME: Handle unsubscribed from broker by returning `Poll::Ready(None)`
         let Subscription {
             subscriber,
             topic_filters,
-            ..
+            client,
         } = self.get_mut();
+
+        // Check for clean session first - if clean session occurred, return None
+        // to signal the subscription is no longer valid
+        let clean_session_future = client.clean_session();
+        futures_util::pin_mut!(clean_session_future);
+
+        if let Poll::Ready(_) = clean_session_future.poll(cx) {
+            return Poll::Ready(None);
+        }
 
         match subscriber.read_with_context(Some(cx)) {
             Ok(mut grant) => {

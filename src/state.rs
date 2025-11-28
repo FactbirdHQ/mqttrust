@@ -1,7 +1,11 @@
 use core::task::Context;
 
 use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
-use heapless::{FnvIndexMap, IndexMap};
+use heapless::{
+    IndexMap,
+    index_map::FnvIndexMap,
+    index_set::FnvIndexSet,
+};
 
 use crate::crate_config::{MAX_INFLIGHT, MAX_SUBSCRIBERS, MAX_SUB_TOPICS_PER_MSG};
 use crate::encoding::Pid;
@@ -32,17 +36,17 @@ pub struct Shared {
     pub(crate) connected: Option<bool>,
 
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
-    pub(crate) inflight_pub: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
+    pub(crate) inflight_pub: FnvIndexSet<u16, MAX_INFLIGHT>,
     pub(crate) ack_status: FnvIndexMap<u16, AckStatus, { MAX_SUBSCRIBERS }>,
-    pub(crate) outgoing_pid: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
+    pub(crate) outgoing_pid: FnvIndexSet<u16, MAX_INFLIGHT>,
 
     /// Packet ids of released QoS 2 publishes
     #[cfg(feature = "qos2")]
-    pub(crate) outgoing_rel: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
+    pub(crate) outgoing_rel: FnvIndexSet<u16, MAX_INFLIGHT>,
 
     /// Packet ids on incoming QoS 2 publishes
     #[cfg(feature = "qos2")]
-    pub(crate) incoming_pub: heapless::FnvIndexSet<u16, MAX_INFLIGHT>,
+    pub(crate) incoming_pub: FnvIndexSet<u16, MAX_INFLIGHT>,
 }
 
 impl Shared {
