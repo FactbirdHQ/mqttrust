@@ -2,6 +2,12 @@
 name = "embedded-mqtt"
 version = "0.1.0"
 edition = "2021"
+description = "A lightweight, no_std async MQTT client for embedded systems"
+license = "MIT"
+repository = "https://github.com/FactbirdHQ/embedded-mqtt"
+keywords = ["mqtt", "embedded", "no_std", "async", "embassy"]
+categories = ["embedded", "no-std", "network-programming"]
+readme = "README.md"
 
 [workspace]
 default-members = ["."]

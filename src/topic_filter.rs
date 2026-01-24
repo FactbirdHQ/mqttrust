@@ -20,9 +20,11 @@ pub struct TopicFilter {
 }
 
 impl TopicFilter {
-    /// Creates a new topic filter from the string.
-    /// This can fail if the filter is not correct, such as having a '#'
-    /// wildcard in anyplace other than the last field, or if
+    /// Creates a new topic filter from the given string.
+    ///
+    /// Returns an error if the filter is invalid, such as having a `#`
+    /// wildcard in any position other than the last field, or if the
+    /// filter string exceeds the configured maximum topic length.
     pub fn new(filter: &str) -> Result<Self, Error> {
         let filter =
             heapless::String::<{ MAX_TOPIC_LEN }>::from_str(filter).map_err(|_| Error::Overflow)?;
@@ -45,6 +47,7 @@ impl TopicFilter {
         })
     }
 
+    /// Returns the filter string.
     pub fn filter(&self) -> &str {
         &self.filter
     }

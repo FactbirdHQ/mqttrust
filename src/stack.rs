@@ -29,6 +29,9 @@ use crate::{Properties, Property, PubAckReasonCode, QoS};
 #[cfg(feature = "qos2")]
 use crate::{PubComp, PubRec, PubRel};
 
+/// The MQTT protocol engine that manages connections, keep-alive, and packet I/O.
+///
+/// This must be driven by calling [`run()`](Self::run) in a long-running async task.
 pub struct MqttStack<'a, M: RawMutex> {
     shared: &'a Mutex<M, Shared>,
     tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
@@ -67,6 +70,11 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         }
     }
 
+    /// Runs the MQTT stack, connecting to the broker and processing packets indefinitely.
+    ///
+    /// This method handles connection, reconnection with backoff, keep-alive pings,
+    /// and dispatching incoming messages to subscribers. It returns only if the
+    /// maximum number of connection attempts is exhausted.
     pub async fn run<T: Transport>(&mut self, transport: &mut T) {
         loop {
             if !transport.is_connected() {

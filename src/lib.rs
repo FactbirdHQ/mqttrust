@@ -1,5 +1,43 @@
 #![cfg_attr(all(not(test), not(feature = "std")), no_std)]
 #![allow(async_fn_in_trait)]
+
+//! A lightweight, `no_std` async MQTT client for embedded systems.
+//!
+//! This crate provides a split-architecture MQTT client designed for use with the
+//! Embassy async ecosystem. The entry point is the [`new()`] function, which returns:
+//!
+//! - [`MqttStack`]: The protocol engine that must be driven in a long-running async task.
+//!   It handles connection management, keep-alive, and packet encoding/decoding.
+//! - [`MqttClient`]: A clonable handle used to publish messages and create subscriptions.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+//! use embedded_mqtt::{new, Config, State};
+//!
+//! let mut state = State::<NoopRawMutex, 1024, 1024>::new();
+//! let config = Config::builder()
+//!     .client_id("my-device".try_into().unwrap())
+//!     .build();
+//!
+//! let (mqtt_stack, mqtt_client) = new(&mut state, config);
+//!
+//! // Drive mqtt_stack.run(&mut transport) in a background task.
+//! // Use mqtt_client.publish(..) and mqtt_client.subscribe(..) from application code.
+//! ```
+//!
+//! # Transport
+//!
+//! The stack is transport-agnostic. Implement the [`transport::Transport`] trait for your
+//! network stack, or use the built-in `embedded-nal` adapter via
+//! [`transport::embedded_nal::NalTransport`].
+//!
+//! # Protocol version
+//!
+//! Enable exactly one of the `mqttv5` or `mqttv3` feature flags. Enabling both or
+//! neither will produce a compile error.
+
 mod fmt;
 pub mod transport;
 
@@ -48,6 +86,7 @@ pub use error::Error;
 #[cfg(feature = "mqttv5")]
 pub use encoding::{Properties, Property, RetainHandling};
 
+/// Backing storage for the MQTT stack and client, parameterized by TX/RX buffer sizes.
 pub struct State<M: RawMutex, const TX: usize, const RX: usize> {
     tx: [u8; TX],
     rx: [u8; RX],
