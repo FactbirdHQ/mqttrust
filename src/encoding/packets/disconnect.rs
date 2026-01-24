@@ -1,4 +1,4 @@
-use bon::{builder, Builder};
+use bon::Builder;
 
 use crate::{
     decoder::MqttDecode,

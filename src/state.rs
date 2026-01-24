@@ -1,11 +1,7 @@
 use core::task::Context;
 
 use embassy_sync::waitqueue::{MultiWakerRegistration, WakerRegistration};
-use heapless::{
-    IndexMap,
-    index_map::FnvIndexMap,
-    index_set::FnvIndexSet,
-};
+use heapless::{index_map::FnvIndexMap, index_set::FnvIndexSet, IndexMap};
 
 use crate::crate_config::{MAX_INFLIGHT, MAX_SUBSCRIBERS, MAX_SUB_TOPICS_PER_MSG};
 use crate::encoding::Pid;

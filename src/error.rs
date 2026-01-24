@@ -25,7 +25,6 @@ impl From<crate::encoding::EncodingError> for Error {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-
 pub enum ConnectionError {
     MqttState(StateError),
     NetworkTimeout,

@@ -229,6 +229,7 @@ where
             channel: self.channel,
             start,
             to_commit: 0,
+            pid: 0,
         })
     }
 
@@ -377,6 +378,7 @@ where
     channel: &'a PubSubChannel<M, B, SUBS>,
     start: usize,
     to_commit: usize,
+    pid: u16,
 }
 
 impl<'a, M, B, const SUBS: usize> Drop for FrameGrantW<'a, M, B, SUBS>
@@ -446,6 +448,12 @@ where
     ///
     /// // The grant is now consumed.
     /// ```
+    /// Set the outgoing packet identifier for TX tracking.
+    /// A value of 0 means no tracking is needed.
+    pub fn set_pid(&mut self, pid: u16) {
+        self.pid = pid;
+    }
+
     pub fn commit(mut self, used: usize) {
         self.commit_inner(used);
         core::mem::forget(self);
@@ -538,6 +546,7 @@ where
                 message_id: inner.next_message_id,
                 subscriber_count: inner.subscriber_count,
                 read_in_progress: false,
+                pid: self.pid,
             };
 
             if inner.messages.push_back(header).is_err() {

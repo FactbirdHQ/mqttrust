@@ -1,4 +1,4 @@
-use super::{error::Error, packets::PacketType, utils::QoS, Pid};
+use super::{error::Error, packets::PacketType, utils::QoS};
 
 #[cfg(feature = "mqttv5")]
 use crate::Properties;
@@ -69,31 +69,6 @@ impl<'a> MqttDecoder<'a> {
     /// Returns the fixed header of the packet.
     pub fn fixed_header(&self) -> FixedHeader {
         self.fixed_header
-    }
-
-    /// Reads the packet identifier from the buffer.
-    ///
-    /// This function will return `None` if the packet type does not have a packet identifier.
-    pub fn read_pid(&mut self) -> Option<Pid> {
-        let header = self.fixed_header();
-        if header.typ.has_pid() {
-            match header.typ {
-                crate::PacketType::Publish => {
-                    // Move read pointer past topic name
-                    let _topic_name = self.read_slice().ok();
-
-                    match header.qos {
-                        QoS::AtMostOnce => None,
-                        QoS::AtLeastOnce => self.read_u16().and_then(|p| Pid::try_from(p)).ok(),
-                        #[cfg(feature = "qos2")]
-                        QoS::ExactlyOnce => decoder.read_u16().and_then(|p| Pid::try_from(p)).ok(),
-                    }
-                }
-                _ => self.read_u16().and_then(|p| Pid::try_from(p)).ok(),
-            }
-        } else {
-            None
-        }
     }
 
     /// Returns the current offset in the buffer.

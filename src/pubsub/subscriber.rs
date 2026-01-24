@@ -44,7 +44,7 @@ where
         &mut self,
         cx: Option<&mut Context<'_>>,
     ) -> Result<FrameGrantR<'a, M, B, SUBS>> {
-        let (start, len, id) = self.channel.inner.lock(|inner| {
+        let (start, len, id, pid) = self.channel.inner.lock(|inner| {
             let mut inner = inner.borrow_mut();
 
             let start_id = inner.next_message_id - inner.messages.len() as u64;
@@ -83,7 +83,7 @@ where
 
             self.next_message_id += 1;
 
-            Ok((header.start, header.len, header.message_id))
+            Ok((header.start, header.len, header.message_id, header.pid))
         })?;
 
         // Get a mutable slice of the buffer for the granted memory. This is
@@ -97,6 +97,7 @@ where
             buf: grant_slice.into(),
             message_id: id,
             auto_release: true,
+            pid,
         })
     }
 
@@ -189,6 +190,7 @@ where
     pub(crate) buf: NonNull<[u8]>,
     pub(crate) message_id: u64,
     pub(crate) auto_release: bool,
+    pid: u16,
 }
 
 impl<'a, M, B, const SUBS: usize> Deref for FrameGrantR<'a, M, B, SUBS>
@@ -218,6 +220,12 @@ where
     M: RawMutex,
     B: BufferProvider,
 {
+    /// Returns the outgoing packet identifier for TX tracking.
+    /// A value of 0 means no tracking is needed.
+    pub fn pid(&self) -> u16 {
+        self.pid
+    }
+
     /// Obtain access to the inner buffer for reading
     pub fn buf(&self) -> &[u8] {
         unsafe { from_raw_parts_mut(self.buf.as_ptr() as *mut u8, self.buf.len()) }
@@ -243,7 +251,7 @@ where
     /// Additionally, you must ensure that a separate reference to this data is not created
     /// to this data, e.g. using `Deref` or the `buf()` method of this grant.
     pub unsafe fn as_static_buf(&self) -> &'static [u8] {
-        core::mem::transmute::<&[u8], &'static [u8]>(&self.buf())
+        core::mem::transmute::<&[u8], &'static [u8]>(self.buf())
     }
 
     /// Release a frame to make the space available for future writing

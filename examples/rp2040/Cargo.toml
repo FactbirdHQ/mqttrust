@@ -10,7 +10,7 @@ portable-atomic = { version = "1.0.2", features = [
     "unsafe-assume-single-core",
 ] }
 
-static_cell = { version = "2", features = ["nightly"] }
+static_cell = { version = "2", features = [] }
 defmt = "0.3.4"
 defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }

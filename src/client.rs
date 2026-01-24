@@ -1,4 +1,8 @@
-use core::{future::{poll_fn, Future}, ops::DerefMut, task::Poll};
+use core::{
+    future::{poll_fn, Future},
+    ops::DerefMut,
+    task::Poll,
+};
 
 use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
@@ -209,6 +213,7 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
 
         // Wait with committing the packet until we have added the PID to
         // state successfully
+        grant.set_pid(pid.get());
         grant.commit(used);
 
         Ok(pid)
@@ -566,7 +571,7 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> futures_util::Stream
         let clean_session_future = client.clean_session();
         futures_util::pin_mut!(clean_session_future);
 
-        if let Poll::Ready(_) = clean_session_future.poll(cx) {
+        if clean_session_future.poll(cx).is_ready() {
             return Poll::Ready(None);
         }
 

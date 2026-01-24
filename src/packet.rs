@@ -56,9 +56,7 @@ impl PacketBuffer {
         reader: &'a mut R,
     ) -> Result<ReceivedPacket<'a, R>, StateError> {
         while self.packet_len.is_none() {
-            self.receive(reader)
-                .await
-                .map_err(|kind| StateError::Io(kind))?;
+            self.receive(reader).await.map_err(StateError::Io)?;
         }
 
         self.received_packet(reader)

@@ -50,6 +50,7 @@ pub struct Header {
     message_id: u64,
     subscriber_count: u8,
     read_in_progress: bool,
+    pub(super) pid: u16,
 }
 
 /// Internal state of the pubsub channel.

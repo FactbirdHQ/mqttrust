@@ -60,7 +60,7 @@ test-log = "0.2.8"
 env_logger = "0.11"
 futures = { version = "0.3.17" }
 log = "0.4.14"
-static_cell = { version = "2", features = ["nightly"] }
+static_cell = { version = "2", features = [] }
 openssl = "0.10"
 rumqttd = "0.19"
 

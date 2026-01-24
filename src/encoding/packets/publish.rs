@@ -21,7 +21,7 @@ pub trait ToPayload {
     fn max_size(&self) -> usize;
 }
 
-impl<'a> ToPayload for &'a [u8] {
+impl ToPayload for &[u8] {
     fn serialize(&self, buffer: &mut [u8]) -> Result<usize, Error> {
         if buffer.len() < self.len() {
             return Err(Error::BufferSize);

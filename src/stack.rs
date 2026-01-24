@@ -8,7 +8,6 @@ use embassy_time::{Instant, Timer};
 use embedded_io_async::{Error as _, Read, Write};
 
 use crate::crate_config::MAX_SUBSCRIBERS;
-use crate::decoder::MqttDecoder;
 
 use crate::{
     config::Config,
@@ -180,18 +179,14 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
                 let mut shared = self.shared.lock().await;
 
-                match MqttDecoder::try_new(tx_grant.deref()) {
-                    Ok(mut decoder) => {
-                        if let Some(pid) = decoder.read_pid() {
-                            shared.outgoing_pid.remove(&pid.get());
-                            trace!(
-                                "Outgoing PID {} successfully transmitted! Missing tx: {:?}",
-                                pid.get(),
-                                shared.outgoing_pid.len()
-                            );
-                        }
-                    }
-                    Err(e) => error!("TX grant error {:?}", e),
+                let pid = tx_grant.pid();
+                if pid != 0 {
+                    shared.outgoing_pid.remove(&pid);
+                    trace!(
+                        "Outgoing PID {} successfully transmitted! Missing tx: {:?}",
+                        pid,
+                        shared.outgoing_pid.len()
+                    );
                 }
 
                 tx_grant.release();

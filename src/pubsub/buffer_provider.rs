@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// Trait for a buffer provider.
 /// The Buffer provider allows abstraction over the memory
 /// The memory can be statically allocated, on the heap or on the stack
