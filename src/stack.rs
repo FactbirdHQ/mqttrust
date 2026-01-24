@@ -12,8 +12,7 @@ use crate::crate_config::MAX_SUBSCRIBERS;
 use crate::{
     config::Config,
     encoding::{
-        received_packet::ReceivedPacket, Connect, PingReq, Protocol, PubAck, QoS, QosPid,
-        StateError,
+        received_packet::ReceivedPacket, Connect, PingReq, Protocol, PubAck, QosPid, StateError,
     },
     error::ConnectionError,
     packet::PacketBuffer,
@@ -25,7 +24,7 @@ use crate::{
 use crate::{ConnAck, SubAck, UnsubAck};
 
 #[cfg(feature = "mqttv5")]
-use crate::{Properties, Property, PubAckReasonCode};
+use crate::{Properties, Property, PubAckReasonCode, QoS};
 
 #[cfg(feature = "qos2")]
 use crate::{PubComp, PubRec, PubRel};
@@ -250,6 +249,8 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     reason_code: PubAckReasonCode::Success,
                                     #[cfg(feature = "mqttv5")]
                                     properties: Properties::Slice(&[]),
+                                    #[cfg(feature = "mqttv3")]
+                                    _marker: core::marker::PhantomData,
                                 };
                                 self.packet_buf.write_packet(socket, puback).await?;
                             }
@@ -444,17 +445,17 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         Ok(())
     }
 
-    fn handle_connack(p: ConnAck<'_>, config: &mut Config) -> Result<bool, ConnectionError> {
+    fn handle_connack(p: ConnAck<'_>, _config: &mut Config) -> Result<bool, ConnectionError> {
         #[cfg(feature = "mqttv5")]
         for prop in p.properties.iter() {
             match prop {
                 Ok(Property::ServerKeepAlive(keep_alive)) => {
-                    config.keepalive_interval = config
+                    _config.keepalive_interval = _config
                         .keepalive_interval
                         .min(Duration::from_secs(keep_alive as u64));
                 }
                 Ok(Property::MaximumQoS(qos)) => {
-                    config.max_qos = config
+                    _config.max_qos = _config
                         .max_qos
                         .max(QoS::try_from(qos).unwrap_or(QoS::AtLeastOnce));
                 }

@@ -1,5 +1,8 @@
 use bon::Builder;
 
+#[cfg(feature = "mqttv3")]
+use core::marker::PhantomData;
+
 use crate::{
     decoder::MqttDecode,
     encoder::MAX_MQTT_HEADER_LEN,
@@ -9,8 +12,10 @@ use crate::{
         reason_code::DisconnectReasonCode,
         FixedHeader,
     },
-    varint_len, Properties,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::{varint_len, Properties};
 
 use super::PacketType;
 
@@ -115,8 +120,6 @@ mod tests {
     #[test]
     #[cfg(feature = "mqttv3")]
     fn test_disconnect_encode_decode_v311() {
-        use core::marker::PhantomData;
-
         let disconnect = Disconnect::builder().build();
 
         let mut buf = [0u8; 512];

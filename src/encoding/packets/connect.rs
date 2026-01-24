@@ -9,8 +9,10 @@ use crate::{
         utils::QoS,
         FixedHeader,
     },
-    varint_len,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::varint_len;
 
 #[cfg(feature = "mqttv5")]
 use crate::Properties;
@@ -220,6 +222,31 @@ mod tests {
         let connect = Connect {
             protocol: Protocol::MQTT5,
             properties: Properties::Slice(&[]),
+            keep_alive: 60,
+            client_id: "TEST",
+            username: None,
+            password: None,
+            last_will: None,
+            clean_start: true,
+        };
+
+        let mut buf = [0u8; 32];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        connect.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv3")]
+    #[test]
+    fn encode_connect_v311() {
+        let expected_bytes = &[
+            0x10, 0x10, 0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, 0x04, 0x02, 0x00, 0x3C, 0x00, 0x04,
+            0x54, 0x45, 0x53, 0x54,
+        ];
+
+        let connect = Connect {
+            protocol: Protocol::MQTT311,
             keep_alive: 60,
             client_id: "TEST",
             username: None,

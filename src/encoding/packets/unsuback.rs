@@ -7,8 +7,10 @@ use crate::{
         utils::Pid,
         FixedHeader,
     },
-    varint_len,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::varint_len;
 
 #[cfg(feature = "mqttv5")]
 use crate::Properties;
@@ -66,6 +68,7 @@ impl MqttEncode for UnsubAck<'_> {
 
     /// Returns the maximum size of the packet in bytes.
     fn max_packet_size(&self) -> usize {
+        #[allow(unused_mut)]
         let mut length = 2 + MAX_MQTT_HEADER_LEN;
         #[cfg(feature = "mqttv5")]
         {
@@ -98,7 +101,7 @@ mod tests {
     fn test_unsuback_encode_decode_v311() {
         let unsuback = UnsubAck {
             pid: Pid::try_from(1234).unwrap(),
-            codes: &[UnsubAckReturnCode::Success as u8],
+            codes: &[],
         };
 
         let mut buf = [0u8; 512];

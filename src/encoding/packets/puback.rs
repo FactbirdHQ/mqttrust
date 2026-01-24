@@ -55,7 +55,7 @@ pub struct PubAck<'a> {
     pub properties: Properties<'a>,
 
     #[cfg(feature = "mqttv3")]
-    _marker: core::marker::PhantomData<&'a ()>,
+    pub(crate) _marker: core::marker::PhantomData<&'a ()>,
 }
 
 impl FixedHeader for PubAck<'_> {
@@ -79,6 +79,7 @@ impl MqttEncode for PubAck<'_> {
 
     /// Returns the maximum size of the packet in bytes.
     fn max_packet_size(&self) -> usize {
+        #[allow(unused_mut)]
         let mut length = 2 + MAX_MQTT_HEADER_LEN;
         #[cfg(feature = "mqttv5")]
         if self.reason_code != PubAckReasonCode::Success || self.properties.size() != 0 {
@@ -102,6 +103,8 @@ impl<'a> MqttDecode<'a> for PubAck<'a> {
                 reason_code: PubAckReasonCode::Success,
                 #[cfg(feature = "mqttv5")]
                 properties: Properties::DataBlock(&[]),
+                #[cfg(feature = "mqttv3")]
+                _marker: core::marker::PhantomData,
             })
         } else {
             Ok(Self {
@@ -110,6 +113,8 @@ impl<'a> MqttDecode<'a> for PubAck<'a> {
                 reason_code: PubAckReasonCode::from(decoder.read_u8()?),
                 #[cfg(feature = "mqttv5")]
                 properties: decoder.read_properties()?,
+                #[cfg(feature = "mqttv3")]
+                _marker: core::marker::PhantomData,
             })
         }
     }
@@ -124,7 +129,8 @@ mod tests {
     #[cfg(feature = "mqttv3")]
     fn test_puback_encode_decode_v311() {
         let puback = PubAck {
-            pid: Pid::new(1234),
+            pid: Pid::try_from(1234).unwrap(),
+            _marker: core::marker::PhantomData,
         };
 
         let mut buf = [0u8; 512];
@@ -134,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mqttv5")]
     fn test_puback_encode_decode_v5() {
         let puback = PubAck {
             pid: Pid::try_from(1234).unwrap(),
@@ -154,6 +161,7 @@ mod tests {
 
         let puback = PubAck {
             pid: Pid::try_from(12).unwrap(),
+            _marker: core::marker::PhantomData,
         };
 
         let mut buf = [0u8; 32];

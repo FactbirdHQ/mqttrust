@@ -19,8 +19,11 @@ use crate::{
     pubsub::{FramePublisher, FrameSubscriber, PubSubChannel, SliceBufferProvider},
     state::{AckStatus, Shared},
     topic_filter::TopicFilter,
-    OnDrop, PacketType, Properties, ToPayload, Unsubscribe,
+    OnDrop, PacketType, ToPayload, Unsubscribe,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::Properties;
 
 /// Represents an MQTT client that can publish and subscribe to topics.
 pub struct MqttClient<'a, M: RawMutex> {

@@ -1,5 +1,4 @@
 use bon::Builder;
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
     encoder::MAX_MQTT_HEADER_LEN,
@@ -8,8 +7,13 @@ use crate::{
         error::Error,
         FixedHeader, PacketType, Pid, QoS,
     },
-    varint_len,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::varint_len;
+
+#[cfg(feature = "mqttv5")]
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[cfg(feature = "mqttv5")]
 use crate::Properties;
@@ -119,6 +123,7 @@ impl<'a> MqttEncode for Subscribe<'a> {
     }
 
     fn max_packet_size(&self) -> usize {
+        #[allow(unused_mut)]
         let mut length = 2 + MAX_MQTT_HEADER_LEN;
 
         #[cfg(feature = "mqttv5")]
@@ -164,6 +169,30 @@ mod tests {
         sub.to_buffer(&mut encoder).unwrap();
 
         assert_eq!(sub.max_packet_size(), 19);
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv3")]
+    #[test]
+    fn encode_subscribe_v311() {
+        let expected_bytes = [
+            0x82, 0x0d, 0x00, 0x01, 0x00, 0x08, 0x74, 0x65, 0x73, 0x74, 0x2f, 0x31, 0x32, 0x33,
+            0x00,
+        ];
+
+        let sub = Subscribe {
+            pid: Some(Pid::new()),
+            topics: &[SubscribeTopic {
+                topic_path: "test/123",
+                maximum_qos: QoS::AtMostOnce,
+            }],
+        };
+
+        let mut buf = [0u8; 128];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        sub.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(sub.max_packet_size(), 18);
         assert_eq!(encoder.packet_bytes(), expected_bytes);
     }
 }

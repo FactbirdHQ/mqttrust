@@ -4,13 +4,13 @@ mod broker;
 mod common;
 
 use common::network::Network;
+use core::net::Ipv4Addr;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_mqtt::{
     transport::embedded_nal::NalTransport, Config, IpBroker, Publish, State, Subscribe,
     SubscribeTopic,
 };
-use embedded_nal_async::Ipv4Addr;
 use futures_util::StreamExt;
 use static_cell::StaticCell;
 
@@ -34,22 +34,20 @@ async fn main() {
         .keepalive_interval(embassy_time::Duration::from_secs(50))
         .build();
 
-    static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 2>> = StaticCell::new();
-    let state = STATE.init(State::<NoopRawMutex, 1024, 1024, 2>::new());
+    static STATE: StaticCell<State<NoopRawMutex, 1024, 1024>> = StaticCell::new();
+    let state = STATE.init(State::new());
     let (mut stack, client) = embedded_mqtt::new(state, config);
 
     let idle = async {
         log::debug!("Starting publish!");
         for i in 0..ROUND_TRIP_COUNT {
             client
-                .publish(Publish {
-                    dup: false,
-                    qos: embedded_mqtt::QoS::AtLeastOnce,
-                    pid: None,
-                    retain: false,
-                    topic_name: "embedded_mqtt/embassy_async/hello",
-                    payload: format!("This is my super secret payload {i}").as_bytes(),
-                })
+                .publish(
+                    Publish::builder()
+                        .topic_name("embedded_mqtt/embassy_async/hello")
+                        .payload(format!("This is my super secret payload {i}").as_bytes())
+                        .build(),
+                )
                 .await
                 .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -57,10 +55,10 @@ async fn main() {
     };
 
     let sub = async {
-        let subscribe = Subscribe::new(&[SubscribeTopic {
-            topic_path: "embedded_mqtt/embassy_async/hello",
-            maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
-        }]);
+        let topics = [SubscribeTopic::builder()
+            .topic_path("embedded_mqtt/embassy_async/hello")
+            .build()];
+        let subscribe = Subscribe::builder().topics(&topics).build();
 
         let mut msg_cnt = 0;
         let mut subscription = client.subscribe::<1>(subscribe).await.unwrap();
@@ -77,7 +75,7 @@ async fn main() {
         }
     };
 
-    let mut transport = NalTransport::new(network);
+    let mut transport = NalTransport::new(network, broker);
 
     embassy_time::with_timeout(
         embassy_time::Duration::from_secs(55),

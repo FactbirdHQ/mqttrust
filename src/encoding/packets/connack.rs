@@ -2,8 +2,11 @@ use crate::{
     decoder::MqttDecode,
     encoder::{MqttEncode, MqttEncoder, MAX_MQTT_HEADER_LEN},
     encoding::reason_code::ConnAckReasonCode,
-    varint_len, EncodingError as Error, FixedHeader,
+    EncodingError as Error, FixedHeader,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::varint_len;
 
 #[cfg(feature = "mqttv5")]
 use crate::Properties;
@@ -66,6 +69,7 @@ impl MqttEncode for ConnAck<'_> {
 
     /// Returns the maximum size of the packet in bytes.
     fn max_packet_size(&self) -> usize {
+        #[allow(unused_mut)]
         let mut length = 2 + MAX_MQTT_HEADER_LEN;
 
         #[cfg(feature = "mqttv5")]
@@ -91,6 +95,8 @@ impl<'a> MqttDecode<'a> for ConnAck<'a> {
             reason_code: ConnAckReasonCode::from(decoder.read_u8()?),
             #[cfg(feature = "mqttv5")]
             properties: decoder.read_properties()?,
+            #[cfg(feature = "mqttv3")]
+            _marker: core::marker::PhantomData,
         })
     }
 }
@@ -107,7 +113,7 @@ mod tests {
 
         let connack = ConnAck {
             session_present: true,
-            reason_code: ConnAckReasonCode::Success,
+            reason_code: ConnAckReasonCode::ConnectionAccepted,
             _marker: PhantomData,
         };
 

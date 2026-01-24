@@ -6,12 +6,14 @@ use crate::{
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
-        properties::Properties,
         utils::{Pid, QoS},
         FixedHeader,
     },
-    varint_len, StateError,
+    StateError,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::{encoding::properties::Properties, varint_len};
 use embedded_io_async::{Error as _, ErrorKind, Read, ReadExactError};
 
 use super::PacketType;
@@ -298,6 +300,33 @@ mod tests {
         publish.to_buffer(&mut encoder).unwrap();
 
         assert_eq!(publish.max_packet_size(), 62);
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[test]
+    #[cfg(feature = "mqttv3")]
+    fn encode_publish_bytes_v311() {
+        let expected_bytes = &[
+            50, 56, 0, 21, 109, 121, 47, 112, 101, 114, 115, 111, 110, 97, 108, 105, 122, 101, 100,
+            47, 116, 111, 112, 105, 99, 0, 1, 84, 104, 105, 115, 32, 105, 115, 32, 109, 121, 32,
+            97, 119, 101, 115, 111, 109, 101, 32, 98, 121, 116, 101, 32, 112, 97, 121, 108, 111,
+            97, 100,
+        ];
+
+        let publish = Publish {
+            dup: false,
+            qos: QoS::AtLeastOnce,
+            retain: false,
+            pid: Some(Pid::new()),
+            topic_name: "my/personalized/topic",
+            payload: b"This is my awesome byte payload",
+        };
+
+        let mut buf = [0u8; 128];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        publish.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(publish.max_packet_size(), 61);
         assert_eq!(encoder.packet_bytes(), expected_bytes);
     }
 

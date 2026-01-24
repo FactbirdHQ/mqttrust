@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        mqtt_version: ["mqttv5"] #"mqttv3",
+        mqtt_version: ["mqttv5", "mqttv3"]
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -43,7 +43,7 @@ jobs:
       - uses: dsherret/rust-toolchain-file@v1
 
       - name: Test
-        run: cargo test --features "log,${{ matrix.mqtt_version }}"
+        run: cargo test --features "log,${{ matrix.mqtt_version }}" --no-default-features
 
       - name: Install Miri
         run: |

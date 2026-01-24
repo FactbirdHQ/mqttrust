@@ -5,8 +5,10 @@ use crate::{
         error::Error,
         FixedHeader, PacketType, Pid,
     },
-    varint_len, Properties,
 };
+
+#[cfg(feature = "mqttv5")]
+use crate::{varint_len, Properties};
 
 /// Represents an `UNSUBSCRIBE` packet as defined in the MQTT specification.
 ///
@@ -87,6 +89,7 @@ impl<'a> MqttEncode for Unsubscribe<'a> {
 
     /// Returns the maximum size of the packet in bytes.
     fn max_packet_size(&self) -> usize {
+        #[allow(unused_mut)]
         let mut length = 2 + MAX_MQTT_HEADER_LEN;
 
         #[cfg(feature = "mqttv5")]
