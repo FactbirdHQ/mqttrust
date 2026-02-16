@@ -1,60 +1,52 @@
 use embedded_io_async::{Error, ErrorKind, Read, Write};
 
 use crate::{
+    crate_config::MAX_TOPIC_LEN,
     decoder::MqttDecoder,
-    encoder::{MqttEncode, MqttEncoder},
+    encoder::{MqttEncode, MqttEncoder, MAX_MQTT_HEADER_LEN},
     encoding::received_packet::ReceivedPacket,
     PacketType, StateError,
 };
 
-pub(crate) struct PacketBuffer {
-    // MqttStack holds an RX buffer just big enough to hold a single packet
-    // header + `MAX_TOPIC_LEN`, in order for it to handle `ACK`, `PING`, and
-    // route incoming `PUBLISH` messages to a subscriber.
-    buf: [u8; 128],
+/// Read buffer sized to hold a single MQTT packet header + topic.
+///
+/// Layout: fixed header (5) + topic length prefix (2) + topic (MAX_TOPIC_LEN) + PID (2)
+const READ_BUF_LEN: usize = MAX_MQTT_HEADER_LEN + 2 + MAX_TOPIC_LEN + 2;
+
+pub(crate) struct PacketReader {
+    buf: [u8; READ_BUF_LEN],
     read_bytes: usize,
     packet_len: Option<usize>,
 }
 
-impl PacketBuffer {
+impl PacketReader {
     pub fn new() -> Self {
         Self {
-            buf: [0; 128],
+            buf: [0; READ_BUF_LEN],
             read_bytes: 0,
             packet_len: None,
         }
     }
 
-    pub fn reset(&mut self) {
+    /// Reset the reader state, discarding any partially or fully received packet.
+    ///
+    /// This is `pub(crate)` for error-recovery use in `MqttStack::reset()`.
+    pub(crate) fn reset(&mut self) {
         self.read_bytes = 0;
         self.packet_len = None;
-    }
-
-    pub async fn write_packet<W: Write>(
-        &mut self,
-        writer: &mut W,
-        packet: impl MqttEncode,
-    ) -> Result<(), StateError> {
-        // FIXME: Reuse packet buffer?
-        let mut buf = [0u8; 128];
-        let mut encoder = MqttEncoder::new(&mut buf);
-        packet
-            .to_buffer(&mut encoder)
-            .map_err(|_| StateError::Deserialization)?;
-
-        writer
-            .write_all(encoder.packet_bytes())
-            .await
-            .map_err(|e| StateError::Io(e.kind()))?;
-
-        writer.flush().await.map_err(|e| StateError::Io(e.kind()))?;
-        Ok(())
     }
 
     pub async fn get_received_packet<'a, R: Read>(
         &'a mut self,
         reader: &'a mut R,
     ) -> Result<ReceivedPacket<'a, R>, StateError> {
+        // Auto-reset: if a previous packet was fully received (packet_len is Some),
+        // clear the buffer so we can start reading the next packet. Partial reads
+        // (packet_len = None) are preserved across select3 iterations.
+        if self.packet_len.is_some() {
+            self.reset();
+        }
+
         while self.packet_len.is_none() {
             self.receive(reader).await.map_err(StateError::Io)?;
         }
@@ -90,14 +82,7 @@ impl PacketBuffer {
 
         let buf_len = core::cmp::min(packet_length, self.read_bytes);
 
-        let packet = ReceivedPacket::from_buffer(&self.buf[..buf_len], reader)?;
-
-        // Reset the buffer now. Once the user drops the `ReceivedPacket`, this reader will then be
-        // immediately ready to begin receiving a new packet.
-        // self.read_bytes = 0;
-        // self.packet_len = None;
-
-        Ok(packet)
+        ReceivedPacket::from_buffer(&self.buf[..buf_len], reader)
     }
 
     fn probe_fixed_header(&mut self) -> Result<(), crate::encoding::EncodingError> {
@@ -136,4 +121,27 @@ impl PacketBuffer {
             Err(ErrorKind::NotConnected)
         }
     }
+}
+
+/// Encode `packet` into `buf` and write the result to `writer`.
+///
+/// The caller decides the buffer size — use a small stack buffer for acks/pings,
+/// or a larger one for CONNECT packets that carry credentials.
+pub(crate) async fn write_packet<W: Write>(
+    buf: &mut [u8],
+    writer: &mut W,
+    packet: impl MqttEncode,
+) -> Result<(), StateError> {
+    let mut encoder = MqttEncoder::new(buf);
+    packet
+        .to_buffer(&mut encoder)
+        .map_err(|_| StateError::Deserialization)?;
+
+    writer
+        .write_all(encoder.packet_bytes())
+        .await
+        .map_err(|e| StateError::Io(e.kind()))?;
+
+    writer.flush().await.map_err(|e| StateError::Io(e.kind()))?;
+    Ok(())
 }

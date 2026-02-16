@@ -15,7 +15,7 @@ use crate::{
         received_packet::ReceivedPacket, Connect, PingReq, Protocol, PubAck, QosPid, StateError,
     },
     error::ConnectionError,
-    packet::PacketBuffer,
+    packet::{write_packet, PacketReader},
     pubsub::{FramePublisher, FrameSubscriber, SliceBufferProvider},
     state::{AckStatus, Shared},
     transport::Transport,
@@ -38,7 +38,8 @@ pub struct MqttStack<'a, M: RawMutex> {
     rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, MAX_SUBSCRIBERS>,
 
     config: Config<'a>,
-    packet_buf: PacketBuffer,
+    packet_reader: PacketReader,
+    write_buf: [u8; 32],
 
     last_network_action: Instant,
     awaiting_pingresp: bool,
@@ -60,7 +61,8 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             rx_publisher,
 
             config,
-            packet_buf: PacketBuffer::new(),
+            packet_reader: PacketReader::new(),
+            write_buf: [0u8; 32],
 
             clean_start: true,
             connect_attempts: 0,
@@ -134,7 +136,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         self.awaiting_pingresp = false;
         self.connect_attempts = 0;
         self.shared.lock().await.reset();
-        self.packet_buf.reset();
+        self.packet_reader.reset();
     }
 
     pub async fn disconnect<T: Transport>(
@@ -147,13 +149,13 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             disconnect.properties(Properties::Slice(&[Property::SessionExpiryInterval(0)]));
 
         debug!("Disconnecting from MQTT");
-        self.packet_buf
-            .write_packet(
-                transport.socket().map_err(ConnectionError::MqttState)?,
-                disconnect.build(),
-            )
-            .await
-            .map_err(ConnectionError::MqttState)?;
+        write_packet(
+            &mut self.write_buf,
+            transport.socket().map_err(ConnectionError::MqttState)?,
+            disconnect.build(),
+        )
+        .await
+        .map_err(ConnectionError::MqttState)?;
 
         transport.disconnect()?;
         self.shared.lock().await.reset();
@@ -170,7 +172,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
         match select3(
             self.tx_subscriber.read_async(),
-            self.packet_buf.get_received_packet(socket),
+            self.packet_reader.get_received_packet(socket),
             keep_alive_sleep,
         )
         .await
@@ -264,7 +266,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     #[cfg(feature = "mqttv3")]
                                     _marker: core::marker::PhantomData,
                                 };
-                                self.packet_buf.write_packet(socket, puback).await?;
+                                write_packet(&mut self.write_buf, socket, puback).await?;
                             }
                             #[cfg(feature = "qos2")]
                             QosPid::ExactlyOnce(pid) => {
@@ -276,7 +278,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     .unwrap();
 
                                 let pubrec = PubRec { pid };
-                                self.packet_buf.write_packet(socket, pubrec).await?;
+                                write_packet(&mut self.write_buf, socket, pubrec).await?;
                             }
                         }
                     }
@@ -296,14 +298,14 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     ReceivedPacket::PubRel(p) => {
                         let mut shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rel(shared, p)?;
-                        self.packet_buf.write_packet(socket, packet).await?;
+                        write_packet(&mut self.write_buf, socket, packet).await?;
                         shared.wake_tx();
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRec(p) => {
                         let mut shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rec(shared, p)?;
-                        self.packet_buf.write_packet(socket, packet).await?;
+                        write_packet(&mut self.write_buf, socket, packet).await?;
                         shared.wake_tx();
                     }
                     #[cfg(feature = "qos2")]
@@ -312,10 +314,6 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                         Self::handle_pub_comp(shared, p)?;
                     }
                 };
-
-                // Reset the buffer in `PacketReader`, so we are ready for the
-                // next MQTT packet
-                self.packet_buf.reset();
             }
             Either3::Second(Err(StateError::Io(e))) => {
                 // Non-recoverable socket error that requires us to disconnect the socket and reconnect
@@ -323,7 +321,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             }
             Either3::Third(_) => {
                 let packet = self.handle_keep_alive()?;
-                self.packet_buf.write_packet(socket, packet).await?;
+                write_packet(&mut self.write_buf, socket, packet).await?;
             }
             _ => {}
         }
@@ -512,9 +510,10 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             debug!("Reconnecting to MQTT with options: {:?}", connect);
         }
 
-        // send mqtt connect packet
-        self.packet_buf
-            .write_packet(socket, connect)
+        // send mqtt connect packet — use a stack buffer large enough for
+        // client_id + username + password + last_will
+        let mut connect_buf = [0u8; 512];
+        write_packet(&mut connect_buf, socket, connect)
             .await
             .map_err(ConnectionError::MqttState)?;
 
@@ -522,7 +521,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
         // TODO: ERROR types
         let packet = self
-            .packet_buf
+            .packet_reader
             .get_received_packet(socket)
             .await
             .map_err(|_| ConnectionError::FlushTimeout)?;
@@ -531,9 +530,6 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             ReceivedPacket::ConnAck(p) => Self::handle_connack(p, &mut self.config),
             _ => Err(ConnectionError::NotConnAck),
         };
-
-        // Reset the buffer in `PacketReader`, so we are ready for the next MQTT packet
-        self.packet_buf.reset();
 
         match result {
             Ok(present) => {
