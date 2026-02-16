@@ -225,7 +225,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                         qos_pid,
                         topic_name,
                         ref mut publish,
-                    } => {
+                    } => 'publish: {
                         // Handle incoming `Publish` type packets by copying the full
                         // packet to any `shared.rx_publisher` buffers where topic
                         // matches their topic_filter.
@@ -240,10 +240,14 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                 grant.commit(publish.len());
                             }
                             Err(e) => {
-                                error!(
-                                        "Packet is larger than the storage allocated in `rx_publisher`. {:?}", e
-                                    );
-                                return Ok(());
+                                warn!(
+                                    "Failed to buffer incoming publish ({:?}), discarding payload",
+                                    e
+                                );
+                                publish.discard().await?;
+                                // Skip PubAck intentionally — for QoS 1, the broker will
+                                // re-deliver when we don't ack. For QoS 0, no ack needed.
+                                break 'publish;
                             }
                         }
 

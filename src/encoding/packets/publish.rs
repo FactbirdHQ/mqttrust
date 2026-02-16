@@ -220,6 +220,27 @@ impl<'a, S: Read> PartialPublish<'a, S> {
         Ok(())
     }
 
+    /// Consume and discard any remaining bytes from the TCP stream.
+    /// Must be called when the publish payload cannot be buffered
+    /// to keep the stream in sync for subsequent packets.
+    pub async fn discard(&mut self) -> Result<(), StateError> {
+        let remaining = self.len().saturating_sub(self.buf.len());
+        let mut buf = [0u8; 64];
+        let mut left = remaining;
+        while left > 0 {
+            let n = core::cmp::min(left, buf.len());
+            self.reader
+                .read_exact(&mut buf[..n])
+                .await
+                .map_err(|e| match e {
+                    ReadExactError::UnexpectedEof => StateError::Io(ErrorKind::BrokenPipe),
+                    ReadExactError::Other(i) => StateError::Io(i.kind()),
+                })?;
+            left -= n;
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn as_publish(&self) -> Publish<'_, &[u8]> {
         assert!(self.buf.len() >= self.len());
