@@ -37,7 +37,7 @@ pub struct MqttStack<'a, M: RawMutex> {
     tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
     rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, MAX_SUBSCRIBERS>,
 
-    config: Config,
+    config: Config<'a>,
     packet_buf: PacketBuffer,
 
     last_network_action: Instant,
@@ -49,7 +49,7 @@ pub struct MqttStack<'a, M: RawMutex> {
 
 impl<'a, M: RawMutex> MqttStack<'a, M> {
     pub(crate) fn new(
-        config: Config,
+        config: Config<'a>,
         shared: &'a Mutex<M, Shared>,
         tx_subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, 1>,
         rx_publisher: FramePublisher<'a, M, SliceBufferProvider<'a>, MAX_SUBSCRIBERS>,
@@ -457,7 +457,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         Ok(())
     }
 
-    fn handle_connack(p: ConnAck<'_>, _config: &mut Config) -> Result<bool, ConnectionError> {
+    fn handle_connack(p: ConnAck<'_>, _config: &mut Config<'_>) -> Result<bool, ConnectionError> {
         #[cfg(feature = "mqttv5")]
         for prop in p.properties.iter() {
             match prop {
@@ -499,10 +499,9 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             client_id: &self.config.client_id,
             clean_start: self.clean_start,
 
-            // TODO:
-            last_will: None,
-            username: None,
-            password: None,
+            last_will: self.config.last_will.clone(),
+            username: self.config.username,
+            password: self.config.password,
             #[cfg(feature = "mqttv5")]
             properties: Properties::Slice(&[Property::SessionExpiryInterval(600)]),
         };

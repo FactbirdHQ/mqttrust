@@ -1,4 +1,4 @@
-use crate::{crate_config::MAX_CLIENT_ID_LEN, QoS};
+use crate::{crate_config::MAX_CLIENT_ID_LEN, encoding::LastWill, QoS};
 use bon::Builder;
 use embassy_time::Duration;
 
@@ -39,7 +39,7 @@ const MAX_QOS: QoS = QoS::AtLeastOnce;
 /// This struct contains various settings that control the behavior of the MQTT client, such as the client ID,
 /// keepalive interval, connection timeout, backoff algorithm for reconnection attempts, and maximum QoS level.
 #[derive(Debug, Builder)]
-pub struct Config {
+pub struct Config<'a> {
     /// The client ID to use when connecting to the MQTT broker.
     ///
     /// This must be a unique identifier for the client within the broker.
@@ -71,8 +71,13 @@ pub struct Config {
     /// The default is determined by whether the `qos2` feature is enabled.
     #[builder(default = MAX_QOS)]
     pub(crate) max_qos: QoS,
-    // pub(crate) will: Option<SerializedWill<'a>>,
-    // #[builder(default = false)]
-    // pub(crate) downgrade_qos: bool,
-    // pub(crate) auth: Option<Auth<'a>>,
+
+    /// An optional username for authentication with the MQTT broker.
+    pub(crate) username: Option<&'a str>,
+
+    /// An optional password for authentication with the MQTT broker.
+    pub(crate) password: Option<&'a [u8]>,
+
+    /// An optional last will message to be sent by the broker when the client disconnects unexpectedly.
+    pub(crate) last_will: Option<LastWill<'a>>,
 }

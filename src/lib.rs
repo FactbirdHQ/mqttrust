@@ -161,7 +161,7 @@ struct StateInner<'a, M: RawMutex> {
 /// ```
 pub fn new<'d, M: RawMutex, const TX: usize, const RX: usize>(
     state: &'d mut State<M, TX, RX>,
-    config: Config,
+    config: Config<'d>,
 ) -> (MqttStack<'d, M>, MqttClient<'d, M>) {
     // safety: this is a self-referential struct, however:
     // - it can't move while the `'d` borrow is active.

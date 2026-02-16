@@ -1,3 +1,4 @@
+use bon::Builder;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
@@ -54,14 +55,18 @@ impl Protocol {
 ///
 /// [Connect]: struct.Connect.html
 /// [MQTT 3.1.3.2]: https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc3901060
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Builder)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct LastWill<'a> {
     pub(crate) topic: &'a str,
+    #[builder(default = &[])]
     pub(crate) data: &'a [u8],
+    #[builder(default = QoS::AtLeastOnce)]
     pub(crate) qos: QoS,
+    #[builder(default = false)]
     pub(crate) retained: bool,
     #[cfg(feature = "mqttv5")]
+    #[builder(default = Properties::Slice(&[]))]
     pub(crate) properties: Properties<'a>,
 }
 
@@ -256,6 +261,226 @@ mod tests {
         };
 
         let mut buf = [0u8; 32];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        connect.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv5")]
+    #[test]
+    fn encode_connect_v5_username_password() {
+        let expected_bytes = &[
+            0x10, 0x1D, // CONNECT, remaining length = 29
+            0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, // "MQTT"
+            0x05, // protocol level 5
+            0xC2, // flags: clean_start + username + password
+            0x00, 0x3C, // keep alive = 60
+            0x00, // connect properties length = 0
+            0x00, 0x04, 0x54, 0x45, 0x53, 0x54, // client_id "TEST"
+            0x00, 0x04, 0x75, 0x73, 0x65, 0x72, // username "user"
+            0x00, 0x04, 0x70, 0x61, 0x73, 0x73, // password "pass"
+        ];
+
+        let connect = Connect {
+            protocol: Protocol::MQTT5,
+            properties: Properties::Slice(&[]),
+            keep_alive: 60,
+            client_id: "TEST",
+            username: Some("user"),
+            password: Some(b"pass"),
+            last_will: None,
+            clean_start: true,
+        };
+
+        let mut buf = [0u8; 64];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        connect.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv5")]
+    #[test]
+    fn encode_connect_v5_last_will() {
+        let expected_bytes = &[
+            0x10, 0x1B, // CONNECT, remaining length = 27
+            0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, // "MQTT"
+            0x05, // protocol level 5
+            0x0E, // flags: clean_start + will + QoS1
+            0x00, 0x3C, // keep alive = 60
+            0x00, // connect properties length = 0
+            0x00, 0x04, 0x54, 0x45, 0x53, 0x54, // client_id "TEST"
+            0x00, // will properties length = 0
+            0x00, 0x03, 0x74, 0x2F, 0x77, // will topic "t/w"
+            0x00, 0x02, 0x01, 0x02, // will data [0x01, 0x02]
+        ];
+
+        let connect = Connect {
+            protocol: Protocol::MQTT5,
+            properties: Properties::Slice(&[]),
+            keep_alive: 60,
+            client_id: "TEST",
+            username: None,
+            password: None,
+            last_will: Some(LastWill {
+                topic: "t/w",
+                data: &[0x01, 0x02],
+                qos: QoS::AtLeastOnce,
+                retained: false,
+                properties: Properties::Slice(&[]),
+            }),
+            clean_start: true,
+        };
+
+        let mut buf = [0u8; 64];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        connect.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv5")]
+    #[test]
+    fn encode_connect_v5_all_fields() {
+        let expected_bytes = &[
+            0x10, 0x27, // CONNECT, remaining length = 39
+            0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, // "MQTT"
+            0x05, // protocol level 5
+            0xCE, // flags: clean_start + will + QoS1 + password + username
+            0x00, 0x3C, // keep alive = 60
+            0x00, // connect properties length = 0
+            0x00, 0x04, 0x54, 0x45, 0x53, 0x54, // client_id "TEST"
+            0x00, // will properties length = 0
+            0x00, 0x03, 0x74, 0x2F, 0x77, // will topic "t/w"
+            0x00, 0x02, 0x01, 0x02, // will data [0x01, 0x02]
+            0x00, 0x04, 0x75, 0x73, 0x65, 0x72, // username "user"
+            0x00, 0x04, 0x70, 0x61, 0x73, 0x73, // password "pass"
+        ];
+
+        let connect = Connect {
+            protocol: Protocol::MQTT5,
+            properties: Properties::Slice(&[]),
+            keep_alive: 60,
+            client_id: "TEST",
+            username: Some("user"),
+            password: Some(b"pass"),
+            last_will: Some(LastWill {
+                topic: "t/w",
+                data: &[0x01, 0x02],
+                qos: QoS::AtLeastOnce,
+                retained: false,
+                properties: Properties::Slice(&[]),
+            }),
+            clean_start: true,
+        };
+
+        let mut buf = [0u8; 64];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        connect.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv3")]
+    #[test]
+    fn encode_connect_v311_username_password() {
+        let expected_bytes = &[
+            0x10, 0x1C, // CONNECT, remaining length = 28
+            0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, // "MQTT"
+            0x04, // protocol level 4 (v3.1.1)
+            0xC2, // flags: clean_start + username + password
+            0x00, 0x3C, // keep alive = 60
+            0x00, 0x04, 0x54, 0x45, 0x53, 0x54, // client_id "TEST"
+            0x00, 0x04, 0x75, 0x73, 0x65, 0x72, // username "user"
+            0x00, 0x04, 0x70, 0x61, 0x73, 0x73, // password "pass"
+        ];
+
+        let connect = Connect {
+            protocol: Protocol::MQTT311,
+            keep_alive: 60,
+            client_id: "TEST",
+            username: Some("user"),
+            password: Some(b"pass"),
+            last_will: None,
+            clean_start: true,
+        };
+
+        let mut buf = [0u8; 64];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        connect.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv3")]
+    #[test]
+    fn encode_connect_v311_last_will() {
+        let expected_bytes = &[
+            0x10, 0x19, // CONNECT, remaining length = 25
+            0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, // "MQTT"
+            0x04, // protocol level 4
+            0x0E, // flags: clean_start + will + QoS1
+            0x00, 0x3C, // keep alive = 60
+            0x00, 0x04, 0x54, 0x45, 0x53, 0x54, // client_id "TEST"
+            0x00, 0x03, 0x74, 0x2F, 0x77, // will topic "t/w"
+            0x00, 0x02, 0x01, 0x02, // will data [0x01, 0x02]
+        ];
+
+        let connect = Connect {
+            protocol: Protocol::MQTT311,
+            keep_alive: 60,
+            client_id: "TEST",
+            username: None,
+            password: None,
+            last_will: Some(LastWill {
+                topic: "t/w",
+                data: &[0x01, 0x02],
+                qos: QoS::AtLeastOnce,
+                retained: false,
+            }),
+            clean_start: true,
+        };
+
+        let mut buf = [0u8; 64];
+        let mut encoder = MqttEncoder::new(&mut buf);
+        connect.to_buffer(&mut encoder).unwrap();
+
+        assert_eq!(encoder.packet_bytes(), expected_bytes);
+    }
+
+    #[cfg(feature = "mqttv3")]
+    #[test]
+    fn encode_connect_v311_all_fields() {
+        let expected_bytes = &[
+            0x10, 0x25, // CONNECT, remaining length = 37
+            0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, // "MQTT"
+            0x04, // protocol level 4
+            0xCE, // flags: clean_start + will + QoS1 + password + username
+            0x00, 0x3C, // keep alive = 60
+            0x00, 0x04, 0x54, 0x45, 0x53, 0x54, // client_id "TEST"
+            0x00, 0x03, 0x74, 0x2F, 0x77, // will topic "t/w"
+            0x00, 0x02, 0x01, 0x02, // will data [0x01, 0x02]
+            0x00, 0x04, 0x75, 0x73, 0x65, 0x72, // username "user"
+            0x00, 0x04, 0x70, 0x61, 0x73, 0x73, // password "pass"
+        ];
+
+        let connect = Connect {
+            protocol: Protocol::MQTT311,
+            keep_alive: 60,
+            client_id: "TEST",
+            username: Some("user"),
+            password: Some(b"pass"),
+            last_will: Some(LastWill {
+                topic: "t/w",
+                data: &[0x01, 0x02],
+                qos: QoS::AtLeastOnce,
+                retained: false,
+            }),
+            clean_start: true,
+        };
+
+        let mut buf = [0u8; 64];
         let mut encoder = MqttEncoder::new(&mut buf);
         connect.to_buffer(&mut encoder).unwrap();
 
