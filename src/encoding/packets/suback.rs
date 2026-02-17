@@ -43,8 +43,6 @@ pub struct SubAck<'a> {
     ///
     /// * [MQTT v3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385372118): Section 4.7.2
     /// * [MQTT v5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc385372101): Section 4.7.2
-    ///
-    /// TODO: Change this to `codes: &'a [SubAckReturnCode]`,
     pub(crate) codes: &'a [u8],
 }
 

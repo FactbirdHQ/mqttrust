@@ -406,8 +406,6 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         mut shared: MutexGuard<'_, M, Shared>,
         p: PubComp,
     ) -> Result<(), StateError> {
-        // TODO: Handle collisions (See rumqttc state.rs)
-
         if shared.outgoing_rel.remove(&p.pid.get()) {
             shared.wake_tx();
         } else {
@@ -519,7 +517,6 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
         self.last_network_action = Instant::now();
 
-        // TODO: ERROR types
         let packet = self
             .packet_reader
             .get_received_packet(socket)

@@ -135,7 +135,6 @@ impl MqttEncode for Connect<'_> {
         encoder.write_str(self.protocol.name())?;
         encoder.write_u8(self.protocol.into())?;
 
-        // TODO: Change `connect_flags` to bitflags
         let mut connect_flags = 0;
         connect_flags |= u8::from(self.clean_start) << 1;
         connect_flags |= u8::from(self.username.is_some()) << 7;

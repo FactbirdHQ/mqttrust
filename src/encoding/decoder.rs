@@ -31,7 +31,6 @@ pub struct MqttDecoder<'a> {
 }
 
 impl<'a> MqttDecoder<'a> {
-    // TODO: Convert these to bitflags?
     const TYP_MASK: u8 = 0b1111_0000;
     const DUP_MASK: u8 = 0b0000_1000;
     const QOS_MASK: u8 = 0b0000_0110;

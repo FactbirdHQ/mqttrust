@@ -31,7 +31,6 @@ impl<'a, M: RawMutex, B: BufferProvider> Message<'a, M, B> {
     /// Returns `Some(Message)` if successful, otherwise `None`.
     pub(crate) fn try_new(grant: FrameGrantR<'a, M, B, MAX_SUBSCRIBERS>) -> Option<Self> {
         let mut decoder = MqttDecoder::try_new(grant.deref()).ok()?;
-        // FIXME: would returning result here be more intuitive?
 
         let header = decoder.fixed_header();
         decoder.check_remaining(header.remaining_len).ok()?;
@@ -71,11 +70,6 @@ impl<'a, M: RawMutex, B: BufferProvider> Message<'a, M, B> {
             properties,
             payload,
         })
-    }
-
-    /// Automatically releases the grant when the message is dropped.
-    pub(crate) fn auto_release(&mut self) {
-        self.grant.auto_release(true)
     }
 
     /// Returns whether the message is a duplicate.

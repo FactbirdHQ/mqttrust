@@ -4,7 +4,6 @@ use core::{
     task::Poll,
 };
 
-use embassy_futures::select::{select, Either};
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex};
 use embassy_time::{with_timeout, Duration};
 
@@ -468,30 +467,8 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Subscription<'a, 'b, M, MAX_T
     ///
     /// The next message if available, otherwise `None`.
     pub async fn next_message(&mut self) -> Option<Message<'a, M, SliceBufferProvider<'a>>> {
-        loop {
-            // FIXME: Handle unsubscribed from broker by returning `None`
-            let Subscription {
-                subscriber,
-                topic_filters,
-                client,
-            } = self;
-
-            match select(subscriber.read_async(), client.clean_session()).await {
-                Either::First(Ok(grant)) => {
-                    if let Some(mut message) = Message::try_new(grant) {
-                        message.auto_release();
-                        if topic_filters
-                            .iter()
-                            .any(|f| f.is_match(message.topic_name()))
-                        {
-                            return Some(message);
-                        }
-                    }
-                }
-                Either::Second(_) => return None,
-                _ => {}
-            }
-        }
+        use futures_util::StreamExt;
+        self.next().await
     }
 
     /// Unsubscribes from the topics.
@@ -579,8 +556,7 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> futures_util::Stream
         }
 
         match subscriber.read_with_context(Some(cx)) {
-            Ok(mut grant) => {
-                grant.auto_release(true);
+            Ok(grant) => {
                 if let Some(message) = Message::try_new(grant) {
                     if topic_filters
                         .iter()

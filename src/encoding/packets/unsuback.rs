@@ -43,8 +43,6 @@ pub struct UnsubAck<'a> {
     ///
     /// * [MQTT v3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385372116): Section 4.6.2
     /// * [MQTT v5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc385372092): Section 4.6.2
-    ///
-    /// TODO: Change to `codes: &'a [UnsubAckReturnCode]`,
     pub(crate) codes: &'a [u8],
 }
 
