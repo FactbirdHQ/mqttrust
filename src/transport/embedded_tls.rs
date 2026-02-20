@@ -1,5 +1,6 @@
 use core::{
     cell::{Cell, UnsafeCell},
+    future::Future,
     mem::MaybeUninit,
     ptr::NonNull,
 };
@@ -184,13 +185,11 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> TlsConnection<'d, N, R
     /// # Returns
     ///
     /// `Ok(())` if the connection was opened successfully, otherwise a `TlsError`.
-    pub async fn open<P: CryptoProvider<CipherSuite = embedded_tls::Aes128GcmSha256>>(
-        &mut self,
+    pub fn open<'a, P: CryptoProvider<CipherSuite = embedded_tls::Aes128GcmSha256> + 'a>(
+        &'a mut self,
         context: embedded_tls::TlsContext<'d, P>,
-    ) -> Result<(), TlsError> {
-        self.socket.open(context).await?;
-
-        Ok(())
+    ) -> impl Future<Output = Result<(), TlsError>> + 'a + use<'a, 'd, P, N, RX, TX> {
+        self.socket.open(context)
     }
 }
 
@@ -221,8 +220,8 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> embedded_io_async::Rea
     /// # Returns
     ///
     /// The number of bytes read or a `TlsError`.
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.socket.read(buf).await
+    fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Self::Error>> {
+        self.socket.read(buf)
     }
 }
 
@@ -238,8 +237,8 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> embedded_io_async::Wri
     /// # Returns
     ///
     /// The number of bytes written or a `TlsError`.
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.socket.write(buf).await
+    fn write(&mut self, buf: &[u8]) -> impl Future<Output = Result<usize, Self::Error>> {
+        self.socket.write(buf)
     }
 
     /// Flushes the TLS connection.
@@ -247,8 +246,8 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> embedded_io_async::Wri
     /// # Returns
     ///
     /// `Ok(())` if the flush was successful, otherwise a `TlsError`.
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        self.socket.flush().await
+    fn flush(&mut self) -> impl Future<Output = Result<(), Self::Error>> {
+        self.socket.flush()
     }
 }
 

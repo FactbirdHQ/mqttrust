@@ -466,9 +466,12 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Subscription<'a, 'b, M, MAX_T
     /// # Returns
     ///
     /// The next message if available, otherwise `None`.
-    pub async fn next_message(&mut self) -> Option<Message<'a, M, SliceBufferProvider<'a>>> {
+    pub fn next_message(
+        &mut self,
+    ) -> impl Future<Output = Option<Message<'a, M, SliceBufferProvider<'a>>>>
+           + use<'a, '_, 'b, M, MAX_TOPICS> {
         use futures_util::StreamExt;
-        self.next().await
+        self.next()
     }
 
     /// Unsubscribes from the topics.
@@ -477,20 +480,22 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Subscription<'a, 'b, M, MAX_T
     ///
     /// `Ok(())` if the unsubscription was successful, otherwise an error.
     pub async fn unsubscribe(mut self) -> Result<(), Error> {
-        let topics = self
-            .topic_filters
-            .iter()
-            .map(|f| f.filter())
-            .collect::<heapless::Vec<_, MAX_TOPICS>>();
+        let pid = {
+            let topics = self
+                .topic_filters
+                .iter()
+                .map(|f| f.filter())
+                .collect::<heapless::Vec<_, MAX_TOPICS>>();
 
-        let mut packet = Unsubscribe {
-            pid: None,
-            #[cfg(feature = "mqttv5")]
-            properties: Properties::Slice(&[]),
-            topics: topics.as_slice(),
+            let mut packet = Unsubscribe {
+                pid: None,
+                #[cfg(feature = "mqttv5")]
+                properties: Properties::Slice(&[]),
+                topics: topics.as_slice(),
+            };
+
+            self.client.send(&mut packet).await?
         };
-
-        let pid = self.client.send(&mut packet).await?;
 
         self.client.wait_tx(&pid).await;
 
@@ -519,7 +524,6 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Subscription<'a, 'b, M, MAX_T
             return Err(Error::BadTopicFilter);
         }
 
-        drop(topics);
         self.topic_filters.clear();
 
         Ok(())

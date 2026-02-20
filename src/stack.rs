@@ -15,7 +15,7 @@ use crate::{
         received_packet::ReceivedPacket, Connect, PingReq, Protocol, PubAck, QosPid, StateError,
     },
     error::ConnectionError,
-    packet::{write_packet, PacketReader},
+    packet::{encode_packet, write_bytes, PacketReader},
     pubsub::{FramePublisher, FrameSubscriber, SliceBufferProvider},
     state::{AckStatus, Shared},
     transport::Transport,
@@ -149,10 +149,11 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             disconnect.properties(Properties::Slice(&[Property::SessionExpiryInterval(0)]));
 
         debug!("Disconnecting from MQTT");
-        write_packet(
-            &mut self.write_buf,
+        let bytes = encode_packet(&mut self.write_buf, disconnect.build())
+            .map_err(ConnectionError::MqttState)?;
+        write_bytes(
             transport.socket().map_err(ConnectionError::MqttState)?,
-            disconnect.build(),
+            bytes,
         )
         .await
         .map_err(ConnectionError::MqttState)?;
@@ -172,7 +173,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
         match select3(
             self.tx_subscriber.read_async(),
-            self.packet_reader.get_received_packet(socket),
+            self.packet_reader.recv(socket),
             keep_alive_sleep,
         )
         .await
@@ -266,7 +267,8 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     #[cfg(feature = "mqttv3")]
                                     _marker: core::marker::PhantomData,
                                 };
-                                write_packet(&mut self.write_buf, socket, puback).await?;
+                                let bytes = encode_packet(&mut self.write_buf, puback)?;
+                                write_bytes(socket, bytes).await?;
                             }
                             #[cfg(feature = "qos2")]
                             QosPid::ExactlyOnce(pid) => {
@@ -278,7 +280,8 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     .unwrap();
 
                                 let pubrec = PubRec { pid };
-                                write_packet(&mut self.write_buf, socket, pubrec).await?;
+                                let bytes = encode_packet(&mut self.write_buf, pubrec)?;
+                                write_bytes(socket, bytes).await?;
                             }
                         }
                     }
@@ -298,14 +301,16 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     ReceivedPacket::PubRel(p) => {
                         let mut shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rel(shared, p)?;
-                        write_packet(&mut self.write_buf, socket, packet).await?;
+                        let bytes = encode_packet(&mut self.write_buf, packet)?;
+                        write_bytes(socket, bytes).await?;
                         shared.wake_tx();
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRec(p) => {
                         let mut shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rec(shared, p)?;
-                        write_packet(&mut self.write_buf, socket, packet).await?;
+                        let bytes = encode_packet(&mut self.write_buf, packet)?;
+                        write_bytes(socket, bytes).await?;
                         shared.wake_tx();
                     }
                     #[cfg(feature = "qos2")]
@@ -321,7 +326,8 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             }
             Either3::Third(_) => {
                 let packet = self.handle_keep_alive()?;
-                write_packet(&mut self.write_buf, socket, packet).await?;
+                let bytes = encode_packet(&mut self.write_buf, packet)?;
+                write_bytes(socket, bytes).await?;
             }
             _ => {}
         }
@@ -510,16 +516,20 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
         // send mqtt connect packet — use a stack buffer large enough for
         // client_id + username + password + last_will
-        let mut connect_buf = [0u8; 512];
-        write_packet(&mut connect_buf, socket, connect)
-            .await
-            .map_err(ConnectionError::MqttState)?;
+        {
+            let mut connect_buf = [0u8; 512];
+            let bytes =
+                encode_packet(&mut connect_buf, connect).map_err(ConnectionError::MqttState)?;
+            write_bytes(socket, bytes)
+                .await
+                .map_err(ConnectionError::MqttState)?;
+        }
 
         self.last_network_action = Instant::now();
 
         let packet = self
             .packet_reader
-            .get_received_packet(socket)
+            .recv(socket)
             .await
             .map_err(|_| ConnectionError::FlushTimeout)?;
         // validate connack

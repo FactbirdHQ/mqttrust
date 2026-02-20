@@ -4,6 +4,8 @@ pub mod embedded_nal;
 #[cfg(feature = "embedded-tls")]
 pub mod embedded_tls;
 
+use core::future::Future;
+
 use embedded_io_async::{Read, Write};
 
 use crate::{error::ConnectionError, StateError};
@@ -52,8 +54,8 @@ pub trait Transport {
 impl<T: Transport> Transport for &mut T {
     type Socket = T::Socket;
 
-    async fn connect(&mut self) -> Result<(), ConnectionError> {
-        T::connect(self).await
+    fn connect(&mut self) -> impl Future<Output = Result<(), ConnectionError>> {
+        T::connect(self)
     }
 
     fn disconnect(&mut self) -> Result<(), ConnectionError> {

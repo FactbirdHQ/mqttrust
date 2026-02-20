@@ -36,7 +36,7 @@ impl PacketReader {
         self.packet_len = None;
     }
 
-    pub async fn get_received_packet<'a, R: Read>(
+    pub async fn recv<'a, R: Read>(
         &'a mut self,
         reader: &'a mut R,
     ) -> Result<ReceivedPacket<'a, R>, StateError> {
@@ -48,16 +48,15 @@ impl PacketReader {
         }
 
         while self.packet_len.is_none() {
-            self.receive(reader).await.map_err(StateError::Io)?;
+            self.read_chunk(reader).await.map_err(StateError::Io)?;
         }
 
-        self.received_packet(reader)
-            .map_err(|_| StateError::Deserialization)
+        self.decode(reader).map_err(|_| StateError::Deserialization)
     }
 
-    fn receive_buffer(&mut self) -> Result<&mut [u8], crate::encoding::EncodingError> {
+    fn next_read_buf(&mut self) -> Result<&mut [u8], crate::encoding::EncodingError> {
         if self.packet_len.is_none() {
-            match self.probe_fixed_header() {
+            match self.try_parse_header() {
                 Ok(_) | Err(crate::encoding::EncodingError::InsufficientBytes) => {}
                 Err(e) => return Err(e),
             }
@@ -71,7 +70,7 @@ impl PacketReader {
         Ok(&mut self.buf[self.read_bytes..end])
     }
 
-    fn received_packet<'a, R: Read>(
+    fn decode<'a, R: Read>(
         &'a mut self,
         reader: &'a mut R,
     ) -> Result<ReceivedPacket<'a, R>, crate::encoding::EncodingError> {
@@ -85,7 +84,7 @@ impl PacketReader {
         ReceivedPacket::from_buffer(&self.buf[..buf_len], reader)
     }
 
-    fn probe_fixed_header(&mut self) -> Result<(), crate::encoding::EncodingError> {
+    fn try_parse_header(&mut self) -> Result<(), crate::encoding::EncodingError> {
         let mut decoder = MqttDecoder::try_new(&self.buf[..self.read_bytes])?;
 
         if decoder.fixed_header().typ == PacketType::Publish {
@@ -98,8 +97,8 @@ impl PacketReader {
         Ok(())
     }
 
-    async fn receive<S: Read>(&mut self, socket: &mut S) -> Result<(), ErrorKind> {
-        let buffer = match self.receive_buffer() {
+    async fn read_chunk<S: Read>(&mut self, socket: &mut S) -> Result<(), ErrorKind> {
+        let buffer = match self.next_read_buf() {
             Ok(buffer) => buffer,
             Err(e) => {
                 warn!("RESET ERROR {:?}", e);
@@ -123,25 +122,29 @@ impl PacketReader {
     }
 }
 
-/// Encode `packet` into `buf` and write the result to `writer`.
+/// Encode `packet` into `buf`, returning the encoded byte slice.
 ///
-/// The caller decides the buffer size — use a small stack buffer for acks/pings,
-/// or a larger one for CONNECT packets that carry credentials.
-pub(crate) async fn write_packet<W: Write>(
-    buf: &mut [u8],
-    writer: &mut W,
+/// Non-generic over the writer type — monomorphized only per packet type.
+pub(crate) fn encode_packet<'a>(
+    buf: &'a mut [u8],
     packet: impl MqttEncode,
-) -> Result<(), StateError> {
+) -> Result<&'a [u8], StateError> {
     let mut encoder = MqttEncoder::new(buf);
     packet
         .to_buffer(&mut encoder)
         .map_err(|_| StateError::Deserialization)?;
+    Ok(encoder.into_packet_bytes())
+}
 
+/// Write pre-encoded bytes to `writer` and flush.
+///
+/// Generic only over the writer type — single monomorphization per socket type,
+/// independent of packet type.
+pub(crate) async fn write_bytes<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<(), StateError> {
     writer
-        .write_all(encoder.packet_bytes())
+        .write_all(bytes)
         .await
         .map_err(|e| StateError::Io(e.kind()))?;
-
     writer.flush().await.map_err(|e| StateError::Io(e.kind()))?;
     Ok(())
 }

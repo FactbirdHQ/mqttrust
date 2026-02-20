@@ -32,6 +32,14 @@ impl<'a> MqttEncoder<'a> {
         &self.buf[self.header_start..self.offset]
     }
 
+    /// Consumes the encoder, returning the encoded packet as a slice of the
+    /// original buffer with the buffer's lifetime.
+    pub fn into_packet_bytes(self) -> &'a [u8] {
+        let start = self.header_start;
+        let end = self.offset;
+        &self.buf[start..end]
+    }
+
     /// Returns the number of bytes used in the buffer.
     pub fn used_size(&self) -> usize {
         self.offset
