@@ -509,27 +509,24 @@ mod tests {
     #[test]
     #[cfg(all(feature = "mqttv5", feature = "qos2"))]
     fn test_puback_v5_encode_decode_received_packet() {
+        use crate::{Properties, PubAck, PubAckReasonCode};
+
         let mut buf = [0u8; 128];
         let mut encoder = MqttEncoder::new(&mut buf);
 
-        let mut packet = Packet::new(PacketType::PubAck);
-        packet.puback_mut().unwrap().pid = Pid::new();
-        packet.puback_mut().unwrap().reason_code = PubAckReasonCode::Success;
-        packet.puback_mut().unwrap().properties =
-            Properties::Slice(&[Property::ResponseTopic("response/topic".into())]);
+        let puback = PubAck {
+            pid: Pid::new(),
+            reason_code: PubAckReasonCode::Success,
+            properties: Properties::Slice(&[Property::ResponseTopic("response/topic")]),
+        };
 
-        packet.to_buffer(&mut encoder).unwrap();
+        puback.to_buffer(&mut encoder).unwrap();
 
         let mut reader = MockRead;
         let packet = ReceivedPacket::from_buffer(encoder.packet_bytes(), &mut reader).unwrap();
 
-        if let ReceivedPacket::PubAck {
-            pid,
-            _reason_code,
-            _properties,
-        } = packet
-        {
-            assert_eq!(pid, Pid::new());
+        if let ReceivedPacket::PubAck(p) = packet {
+            assert_eq!(p.pid, Pid::new());
         } else {
             panic!("Expected PubAck packet");
         }

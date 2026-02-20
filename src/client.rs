@@ -363,7 +363,7 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
 
     async fn wait_publish_tx(&self, pid: Pid, qos: QoS) -> Result<(), Error> {
         let should_wait_ack = !matches!(qos, QoS::AtMostOnce);
-        // Cleanup `inflight_pub` & `outgoing_pid` state in case of cancelled futures
+        // Cleanup `inflight_pub`, `outgoing_pid` & `outgoing_rel` state in case of cancelled futures
         let drop = OnDrop::new(|| {
             if let Ok(mut shared) = self.shared.try_lock() {
                 if shared.inflight_pub.remove(&pid.get()) || shared.outgoing_pid.remove(&pid.get())
@@ -373,6 +373,8 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
                         pid
                     );
                 }
+                #[cfg(feature = "qos2")]
+                shared.outgoing_rel.remove(&pid.get());
             }
         });
 
@@ -397,6 +399,23 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
                 Poll::Pending
             })
             .await;
+
+            // For QoS2, also wait for PUBCOMP (outgoing_rel cleared by handle_pub_comp)
+            #[cfg(feature = "qos2")]
+            if matches!(qos, QoS::ExactlyOnce) {
+                poll_fn(|cx| {
+                    if let Ok(mut shared) = self.shared.try_lock() {
+                        if !shared.outgoing_rel.contains(&pid.get()) {
+                            return Poll::Ready(());
+                        }
+                        shared.register_tx_waker(cx);
+                        return Poll::Pending;
+                    }
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                })
+                .await;
+            }
         }
 
         drop.defuse();

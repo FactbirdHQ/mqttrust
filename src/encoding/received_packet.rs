@@ -9,12 +9,12 @@ use crate::{
     },
 };
 
-#[cfg(all(feature = "mqttv5", feature = "qos2"))]
-use crate::encoding::reason_code::{PubCompReasonCode, PubRecReasonCode, PubRelReasonCode};
-
 use embedded_io_async::Read;
 
 use super::{ConnAck, Disconnect, PubAck, SubAck, UnsubAck};
+
+#[cfg(feature = "qos2")]
+use super::{PubComp, PubRec, PubRel};
 
 #[derive(Debug)]
 pub(crate) enum ReceivedPacket<'a, R: Read> {

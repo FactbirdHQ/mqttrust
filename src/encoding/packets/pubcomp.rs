@@ -1,4 +1,5 @@
 use crate::{
+    decoder::MqttDecode,
     encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
@@ -21,7 +22,7 @@ use super::PacketType;
 /// See [MQTT v3.1.1 specification](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398536887)
 /// and [MQTT v5 specification](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc453734767)
 /// for more details.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct PubComp<'a> {
     /// The packet identifier of the `PUBREL` packet.
     pub(crate) pid: Pid,
@@ -61,7 +62,7 @@ impl MqttEncode for PubComp<'_> {
     fn max_packet_size(&self) -> usize {
         let mut length = 2 + MAX_MQTT_HEADER_LEN;
         #[cfg(feature = "mqttv5")]
-        if self.reason_code != PubAckReasonCode::Success || self.properties.size() != 0 {
+        if self.reason_code != PubCompReasonCode::Success || self.properties.size() != 0 {
             // Reason Code
             length += 1;
 
@@ -108,7 +109,7 @@ mod tests {
     #[cfg(feature = "mqttv3")]
     fn test_pubcomp_encode_decode_v311() {
         let pubcomp = PubComp {
-            pid: Pid::new(1234),
+            pid: Pid::try_from(1234).unwrap(),
             _marker: core::marker::PhantomData,
         };
 
@@ -122,7 +123,7 @@ mod tests {
     #[cfg(feature = "mqttv5")]
     fn test_pubcomp_encode_decode_v5() {
         let pubcomp = PubComp {
-            pid: Pid::new(1234),
+            pid: Pid::try_from(1234).unwrap(),
             reason_code: PubCompReasonCode::Success,
             properties: Properties::default(),
         };

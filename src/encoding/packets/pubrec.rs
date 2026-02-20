@@ -1,4 +1,5 @@
 use crate::{
+    decoder::MqttDecode,
     encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
@@ -43,11 +44,11 @@ pub struct PubRec<'a> {
     pub(crate) _marker: core::marker::PhantomData<&'a ()>,
 }
 
-impl FixedHeader for PubRec {
+impl FixedHeader for PubRec<'_> {
     const PACKET_TYPE: PacketType = PacketType::PubRec;
 }
 
-impl MqttEncode for PubRec {
+impl MqttEncode for PubRec<'_> {
     /// Encodes the `PUBREC` packet into the given encoder.
     fn to_buffer(&self, encoder: &mut MqttEncoder) -> Result<(), Error> {
         encoder.write_u16(self.pid.get())?;
@@ -115,7 +116,7 @@ mod tests {
     #[cfg(feature = "mqttv3")]
     fn test_pubrec_encode_decode_v311() {
         let pubrec = PubRec {
-            pid: Pid::new(1234),
+            pid: Pid::try_from(1234).unwrap(),
             _marker: core::marker::PhantomData,
         };
 
@@ -129,7 +130,7 @@ mod tests {
     #[cfg(feature = "mqttv5")]
     fn test_pubrec_encode_decode_v5() {
         let pubrec = PubRec {
-            pid: Pid::new(1234),
+            pid: Pid::try_from(1234).unwrap(),
             reason_code: PubRecReasonCode::Success,
             properties: Properties::default(),
         };

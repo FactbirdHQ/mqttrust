@@ -279,7 +279,15 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     .insert(pid.get())
                                     .unwrap();
 
-                                let pubrec = PubRec { pid };
+                                let pubrec = PubRec {
+                                    pid,
+                                    #[cfg(feature = "mqttv5")]
+                                    reason_code: crate::PubRecReasonCode::Success,
+                                    #[cfg(feature = "mqttv5")]
+                                    properties: crate::Properties::Slice(&[]),
+                                    #[cfg(feature = "mqttv3")]
+                                    _marker: core::marker::PhantomData,
+                                };
                                 let bytes = encode_packet(&mut self.write_buf, pubrec)?;
                                 write_bytes(socket, bytes).await?;
                             }
@@ -299,23 +307,21 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRel(p) => {
-                        let mut shared = self.shared.lock().await;
+                        let shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rel(shared, p)?;
                         let bytes = encode_packet(&mut self.write_buf, packet)?;
                         write_bytes(socket, bytes).await?;
-                        shared.wake_tx();
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRec(p) => {
-                        let mut shared = self.shared.lock().await;
+                        let shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rec(shared, p)?;
                         let bytes = encode_packet(&mut self.write_buf, packet)?;
                         write_bytes(socket, bytes).await?;
-                        shared.wake_tx();
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubComp(p) => {
-                        let mut shared = self.shared.lock().await;
+                        let shared = self.shared.lock().await;
                         Self::handle_pub_comp(shared, p)?;
                     }
                 };
@@ -382,35 +388,52 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
     #[cfg(feature = "qos2")]
     fn handle_pub_rel(
         mut shared: MutexGuard<'_, M, Shared>,
-        p: PubRel,
-    ) -> Result<Packet, StateError> {
-        let mut shared = shared.lock().await;
+        p: PubRel<'_>,
+    ) -> Result<PubComp<'static>, StateError> {
         if shared.incoming_pub.remove(&p.pid.get()) {
-            Ok(Packet::PubComp(PubComp { pid: p }))
+            shared.wake_tx();
+            Ok(PubComp {
+                pid: p.pid,
+                #[cfg(feature = "mqttv5")]
+                reason_code: crate::PubCompReasonCode::Success,
+                #[cfg(feature = "mqttv5")]
+                properties: crate::Properties::Slice(&[]),
+                #[cfg(feature = "mqttv3")]
+                _marker: core::marker::PhantomData,
+            })
         } else {
             error!("Unsolicited pubrel packet: {:?}", p.pid);
-            Err(StateError::UnexpectedPacket)
+            Err(StateError::Unsolicited(p.pid.get()))
         }
     }
 
     #[cfg(feature = "qos2")]
     fn handle_pub_rec(
         mut shared: MutexGuard<'_, M, Shared>,
-        p: PubRec,
-    ) -> Result<Packet, StateError> {
-        if shared.inflight_pub.remove(&p.pid.get()).is_some() {
-            shared.outgoing_rel.insert(p.pid.get());
-            Ok(Packet::PubRel(PubRel { pid: p }))
+        p: PubRec<'_>,
+    ) -> Result<PubRel<'static>, StateError> {
+        if shared.inflight_pub.remove(&p.pid.get()) {
+            unwrap!(shared.outgoing_rel.insert(p.pid.get()));
+            shared.wake_tx();
+            Ok(PubRel {
+                pid: p.pid,
+                #[cfg(feature = "mqttv5")]
+                reason_code: crate::PubRelReasonCode::Success,
+                #[cfg(feature = "mqttv5")]
+                properties: crate::Properties::Slice(&[]),
+                #[cfg(feature = "mqttv3")]
+                _marker: core::marker::PhantomData,
+            })
         } else {
             error!("Unsolicited pubrec packet: {:?}", p.pid);
-            Err(StateError::UnexpectedPacket)
+            Err(StateError::Unsolicited(p.pid.get()))
         }
     }
 
     #[cfg(feature = "qos2")]
     fn handle_pub_comp(
         mut shared: MutexGuard<'_, M, Shared>,
-        p: PubComp,
+        p: PubComp<'_>,
     ) -> Result<(), StateError> {
         if shared.outgoing_rel.remove(&p.pid.get()) {
             shared.wake_tx();
