@@ -125,10 +125,7 @@ impl PacketReader {
 /// Encode `packet` into `buf`, returning the encoded byte slice.
 ///
 /// Non-generic over the writer type — monomorphized only per packet type.
-pub(crate) fn encode_packet<'a>(
-    buf: &'a mut [u8],
-    packet: impl MqttEncode,
-) -> Result<&'a [u8], StateError> {
+pub(crate) fn encode_packet(buf: &mut [u8], packet: impl MqttEncode) -> Result<&[u8], StateError> {
     let mut encoder = MqttEncoder::new(buf);
     packet
         .to_buffer(&mut encoder)

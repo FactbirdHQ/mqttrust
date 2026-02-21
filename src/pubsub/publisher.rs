@@ -475,7 +475,7 @@ where
     ///
     /// * If `amt` is 0, the automatic commit on drop is disabled.
     /// * If `amt` is greater than 0, the header is written, and the amount to commit is set to the
-    ///    minimum of `amt` and the total grant size.
+    ///   minimum of `amt` and the total grant size.
     ///
     /// # Example
     ///
@@ -510,6 +510,13 @@ where
     ///
     /// Additionally, you must ensure that a separate reference to this data is not created
     /// to this data, e.g. using `DerefMut` or the `buf()` method of this grant.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the grant outlives the returned reference. Using
+    /// the reference after the grant is released is undefined behavior. The
+    /// caller must also not create aliasing mutable references via `DerefMut`
+    /// or `buf()`.
     pub unsafe fn as_static_mut_buf(&mut self) -> &'static mut [u8] {
         core::mem::transmute::<&mut [u8], &'static mut [u8]>(self.deref_mut())
     }

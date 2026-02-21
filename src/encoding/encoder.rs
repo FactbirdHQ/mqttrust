@@ -28,6 +28,7 @@ impl<'a> MqttEncoder<'a> {
     }
 
     /// Returns a slice of the buffer containing the encoded packet.
+    #[cfg(test)]
     pub fn packet_bytes(&self) -> &[u8] {
         &self.buf[self.header_start..self.offset]
     }

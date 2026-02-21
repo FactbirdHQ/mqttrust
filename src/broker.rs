@@ -53,6 +53,7 @@ impl<'a, R: Dns, const T: usize> DomainBroker<'a, R, T> {
     ///
     /// # Errors
     /// Returns an error if the provided `broker` string cannot be parsed or is too long.
+    #[allow(clippy::result_unit_err)]
     pub fn new(broker: &str, resolver: &'a R) -> Result<Self, ()> {
         // Attempt to parse the broker string as a SocketAddr.
         // If parsing fails, it creates a SocketAddr with an unspecified IP and the provided or default port.

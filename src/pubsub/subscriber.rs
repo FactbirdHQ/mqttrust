@@ -250,6 +250,12 @@ where
     ///
     /// Additionally, you must ensure that a separate reference to this data is not created
     /// to this data, e.g. using `Deref` or the `buf()` method of this grant.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the grant outlives the returned reference. Using
+    /// the reference after the grant is released is undefined behavior. The
+    /// caller must also not create aliasing references via `Deref` or `buf()`.
     pub unsafe fn as_static_buf(&self) -> &'static [u8] {
         core::mem::transmute::<&[u8], &'static [u8]>(self.buf())
     }

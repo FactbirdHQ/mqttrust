@@ -531,11 +531,15 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             properties: Properties::Slice(&[Property::SessionExpiryInterval(600)]),
         };
 
-        if self.clean_start {
-            debug!("Connecting to MQTT with options: {:?}", connect);
-        } else {
-            debug!("Reconnecting to MQTT with options: {:?}", connect);
-        }
+        debug!(
+            "{} to MQTT with options: {:?}",
+            if self.clean_start {
+                "Connecting"
+            } else {
+                "Reconnecting"
+            },
+            connect
+        );
 
         // send mqtt connect packet — use a stack buffer large enough for
         // client_id + username + password + last_will
@@ -563,11 +567,15 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
         match result {
             Ok(present) => {
-                if self.clean_start {
-                    debug!("Connected! Reusing existing session: {}", present);
-                } else {
-                    debug!("Reconnected! Reusing existing session: {}", present);
-                }
+                debug!(
+                    "{}! Reusing existing session: {}",
+                    if self.clean_start {
+                        "Connected"
+                    } else {
+                        "Reconnected"
+                    },
+                    present
+                );
 
                 self.clean_start = false;
                 self.connect_attempts = 0;
@@ -628,6 +636,10 @@ mod tests {
     impl embedded_io_async::Write for MockSocket {
         async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
             Ok(buf.len())
+        }
+
+        async fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
         }
     }
 
