@@ -177,7 +177,7 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
             .map_err(|_| Error::Overflow)?;
 
         let mut encoder = MqttEncoder::new(grant.deref_mut());
-        packet.to_buffer(&mut encoder).ok();
+        packet.to_buffer(&mut encoder)?;
         let used = encoder.used_size();
 
         let mut shared = self.shared.lock().await;
@@ -580,7 +580,7 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> futures_util::Stream
 
         match subscriber.read_with_context(Some(cx)) {
             Ok(grant) => {
-                if let Some(message) = Message::try_new(grant) {
+                if let Ok(message) = Message::try_new(grant) {
                     if topic_filters
                         .iter()
                         .any(|f| f.is_match(message.topic_name()))
@@ -636,7 +636,10 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Drop for Subscription<'a, 'b,
                 }
 
                 let mut encoder = MqttEncoder::new(grant.deref_mut());
-                packet.to_buffer(&mut encoder).ok();
+                if let Err(e) = packet.to_buffer(&mut encoder) {
+                    warn!("Failed to encode unsubscribe in drop: {:?}", e);
+                    return;
+                }
                 let used = encoder.used_size();
                 grant.commit(used);
             }

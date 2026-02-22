@@ -51,7 +51,7 @@ impl PacketReader {
             self.read_chunk(reader).await.map_err(StateError::Io)?;
         }
 
-        self.decode(reader).map_err(|_| StateError::Deserialization)
+        self.decode(reader).map_err(StateError::Deserialization)
     }
 
     fn next_read_buf(&mut self) -> Result<&mut [u8], crate::encoding::EncodingError> {
@@ -129,7 +129,7 @@ pub(crate) fn encode_packet(buf: &mut [u8], packet: impl MqttEncode) -> Result<&
     let mut encoder = MqttEncoder::new(buf);
     packet
         .to_buffer(&mut encoder)
-        .map_err(|_| StateError::Deserialization)?;
+        .map_err(StateError::Serialization)?;
     Ok(encoder.into_packet_bytes())
 }
 

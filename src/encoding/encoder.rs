@@ -117,6 +117,7 @@ impl<'a> MqttEncoder<'a> {
     }
 
     /// Encodes a 32-bit unsigned integer into the buffer.
+    #[cfg_attr(not(feature = "mqttv5"), allow(dead_code))]
     pub(crate) fn write_u32(&mut self, v: u32) -> Result<(), Error> {
         self.check_remaining(4)?;
         self.buf[self.offset..self.offset + 4].copy_from_slice(&v.to_be_bytes());

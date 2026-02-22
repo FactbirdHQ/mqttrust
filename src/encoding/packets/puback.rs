@@ -95,6 +95,8 @@ impl MqttEncode for PubAck<'_> {
 
 impl<'a> MqttDecode<'a> for PubAck<'a> {
     /// Decodes the `PUBACK` packet from the given decoder.
+    // Branches differ under mqttv5 (reason_code + properties are decoded in the else arm).
+    #[allow(clippy::if_same_then_else)]
     fn from_decoder(decoder: &mut crate::decoder::MqttDecoder<'a>) -> Result<Self, Error> {
         if decoder.fixed_header().remaining_len == 2 || decoder.fixed_header().remaining_len == 3 {
             Ok(Self {

@@ -106,6 +106,7 @@ impl<'a> MqttDecoder<'a> {
     }
 
     /// Reads a variable length integer from the buffer.
+    #[cfg_attr(not(feature = "mqttv5"), allow(dead_code))]
     pub(crate) fn read_varint(&mut self) -> Result<u32, Error> {
         let mut integer = 0;
         for (i, byte) in self.buf[self.offset..].iter().take(4).enumerate() {

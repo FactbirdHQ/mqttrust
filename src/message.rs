@@ -29,39 +29,41 @@ impl<'a, M: RawMutex, B: BufferProvider> Message<'a, M, B> {
     /// Tries to create a new `Message` from a given frame grant.
     ///
     /// Returns `Some(Message)` if successful, otherwise `None`.
-    pub(crate) fn try_new(grant: FrameGrantR<'a, M, B, MAX_SUBSCRIBERS>) -> Option<Self> {
-        let mut decoder = MqttDecoder::try_new(grant.deref()).ok()?;
+    pub(crate) fn try_new(
+        grant: FrameGrantR<'a, M, B, MAX_SUBSCRIBERS>,
+    ) -> Result<Self, crate::encoding::EncodingError> {
+        let mut decoder = MqttDecoder::try_new(grant.deref())?;
 
         let header = decoder.fixed_header();
-        decoder.check_remaining(header.remaining_len).ok()?;
+        decoder.check_remaining(header.remaining_len)?;
 
         let topic_name = {
             let topic_name_start = decoder.offset() + 2;
-            let _name = decoder.read_str().ok()?;
+            let _name = decoder.read_str()?;
             topic_name_start..decoder.offset()
         };
 
         let qos_pid = match header.qos {
             QoS::AtMostOnce => QosPid::AtMostOnce,
-            QoS::AtLeastOnce => QosPid::AtLeastOnce(Pid::try_from(decoder.read_u16().ok()?).ok()?),
+            QoS::AtLeastOnce => QosPid::AtLeastOnce(Pid::try_from(decoder.read_u16()?)?),
             #[cfg(feature = "qos2")]
-            QoS::ExactlyOnce => QosPid::ExactlyOnce(Pid::try_from(decoder.read_u16().ok()?).ok()?),
+            QoS::ExactlyOnce => QosPid::ExactlyOnce(Pid::try_from(decoder.read_u16()?)?),
         };
 
         #[cfg(feature = "mqttv5")]
         let properties = {
             let properties_start = decoder.offset();
-            decoder.read_properties().ok()?;
+            decoder.read_properties()?;
             properties_start..decoder.offset()
         };
 
         let payload = {
             let payload_start = decoder.offset();
-            decoder.read_payload().ok()?;
+            decoder.read_payload()?;
             payload_start..decoder.offset()
         };
 
-        Some(Self {
+        Ok(Self {
             grant,
             header,
             qos_pid,

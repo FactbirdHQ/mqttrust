@@ -70,6 +70,7 @@ pub struct Config<'a> {
     /// This determines the highest QoS level that the client will use for publishing and subscribing to topics.
     /// The default is determined by whether the `qos2` feature is enabled.
     #[builder(default = MAX_QOS)]
+    #[cfg_attr(not(feature = "mqttv5"), allow(dead_code))]
     pub(crate) max_qos: QoS,
 
     /// An optional username for authentication with the MQTT broker.

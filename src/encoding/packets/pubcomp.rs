@@ -60,6 +60,7 @@ impl MqttEncode for PubComp<'_> {
 
     /// Returns the maximum size of the packet in bytes.
     fn max_packet_size(&self) -> usize {
+        #[allow(unused_mut)]
         let mut length = 2 + MAX_MQTT_HEADER_LEN;
         #[cfg(feature = "mqttv5")]
         if self.reason_code != PubCompReasonCode::Success || self.properties.size() != 0 {
@@ -75,6 +76,8 @@ impl MqttEncode for PubComp<'_> {
 
 impl<'a> MqttDecode<'a> for PubComp<'a> {
     /// Decodes the `PUBCOMP` packet from the given decoder.
+    // Branches differ under mqttv5 (reason_code + properties are decoded in the else arm).
+    #[allow(clippy::if_same_then_else)]
     fn from_decoder(decoder: &mut crate::decoder::MqttDecoder<'a>) -> Result<Self, Error> {
         if decoder.fixed_header().remaining_len == 2 || decoder.fixed_header().remaining_len == 3 {
             Ok(Self {

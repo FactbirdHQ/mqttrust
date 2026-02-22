@@ -326,10 +326,15 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     }
                 };
             }
-            Either3::Second(Err(StateError::Io(e))) => {
-                // Non-recoverable socket error that requires us to disconnect the socket and reconnect
-                return Err(StateError::Io(e));
-            }
+            Either3::Second(Err(e)) => match e {
+                StateError::Io(_) => {
+                    // Non-recoverable socket error that requires us to disconnect the socket and reconnect
+                    return Err(e);
+                }
+                _ => {
+                    warn!("Packet receive error: {}", e);
+                }
+            },
             Either3::Third(_) => {
                 let packet = self.handle_keep_alive()?;
                 let bytes = encode_packet(&mut self.write_buf, packet)?;
@@ -558,7 +563,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             .packet_reader
             .recv(socket)
             .await
-            .map_err(|_| ConnectionError::FlushTimeout)?;
+            .map_err(ConnectionError::MqttState)?;
         // validate connack
         let result = match packet {
             ReceivedPacket::ConnAck(p) => Self::handle_connack(p, &mut self.config),

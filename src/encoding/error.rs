@@ -52,7 +52,8 @@ pub enum StateError {
     WrongPacket,
     CollisionTimeout,
     EmptySubscription,
-    Deserialization,
+    Deserialization(super::EncodingError),
+    Serialization(super::EncodingError),
     OutgoingPacketTooLarge {
         pkt_size: usize,
         max: usize,
@@ -69,7 +70,8 @@ impl core::fmt::Display for StateError {
             Self::WrongPacket => write!(f, "Received a wrong packet while waiting for another packet"),
             Self::CollisionTimeout => write!(f, "Timeout while waiting to resolve collision"),
             Self::EmptySubscription => write!(f, "A Subscribe packet must contain atleast one filter"),
-            Self::Deserialization => write!(f, "Mqtt serialization/deserialization error"),
+            Self::Deserialization(e) => write!(f, "Mqtt deserialization error: {e:?}"),
+            Self::Serialization(e) => write!(f, "Mqtt serialization error: {e:?}"),
             Self::OutgoingPacketTooLarge { pkt_size, max} => write!(f, "Cannot receive packet of size '{pkt_size:?}'. It's greater than the client's maximum packet size of: '{max:?}'"),
         }
     }
@@ -86,7 +88,8 @@ impl defmt::Format for StateError {
             Self::WrongPacket => defmt::write!(f, "Received a wrong packet while waiting for another packet"),
             Self::CollisionTimeout => defmt::write!(f, "Timeout while waiting to resolve collision"),
             Self::EmptySubscription => defmt::write!(f, "A Subscribe packet must contain atleast one filter"),
-            Self::Deserialization => defmt::write!(f, "Mqtt serialization/deserialization error"),
+            Self::Deserialization(e) => defmt::write!(f, "Mqtt deserialization error: {}", e),
+            Self::Serialization(e) => defmt::write!(f, "Mqtt serialization error: {}", e),
             Self::OutgoingPacketTooLarge { pkt_size, max} => defmt::write!(f, "Cannot receive packet of size '{:?}'. It's greater than the client's maximum packet size of: '{:?}'", pkt_size, max),
         }
     }
