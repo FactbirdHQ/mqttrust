@@ -21,7 +21,7 @@ use crate::{
     transport::Transport,
     Disconnect,
 };
-use crate::{ConnAck, SubAck, UnsubAck};
+use crate::{ConnAck, SubAck};
 
 #[cfg(feature = "mqttv5")]
 use crate::{Properties, Property, PubAckReasonCode, QoS};
@@ -299,11 +299,25 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     }
                     ReceivedPacket::SubAck(SubAck { pid, codes, .. }) => {
                         let shared = self.shared.lock().await;
-                        Self::handle_sub_ack(shared, pid, codes)?;
+                        let raw: heapless::Vec<
+                            u8,
+                            { crate::crate_config::MAX_SUB_TOPICS_PER_MSG },
+                        > = codes.iter().copied().map(u8::from).collect();
+                        Self::handle_sub_ack(shared, pid, raw)?;
                     }
-                    ReceivedPacket::UnsubAck(UnsubAck { pid, codes, .. }) => {
+                    ReceivedPacket::UnsubAck(unsuback) => {
                         let shared = self.shared.lock().await;
-                        Self::handle_unsub_ack(shared, pid, codes)?;
+                        #[cfg(feature = "mqttv5")]
+                        let raw: heapless::Vec<
+                            u8,
+                            { crate::crate_config::MAX_SUB_TOPICS_PER_MSG },
+                        > = unsuback.codes.iter().copied().map(u8::from).collect();
+                        #[cfg(feature = "mqttv3")]
+                        let raw: heapless::Vec<
+                            u8,
+                            { crate::crate_config::MAX_SUB_TOPICS_PER_MSG },
+                        > = heapless::Vec::new();
+                        Self::handle_unsub_ack(shared, unsuback.pid, raw)?;
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRel(p) => {
@@ -451,12 +465,12 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
     fn handle_sub_ack(
         mut shared: MutexGuard<'_, M, Shared>,
         pid: crate::Pid,
-        codes: &[u8],
+        codes: heapless::Vec<u8, { crate::crate_config::MAX_SUB_TOPICS_PER_MSG }>,
     ) -> Result<(), StateError> {
         debug!("Received suback: {:?}, {:?}", pid, codes);
         match shared.ack_status.get_mut(&pid.get()) {
             Some(status) if *status == AckStatus::AwaitingSubAck => {
-                *status = AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
+                *status = AckStatus::Acked(codes);
                 shared.wake_tx();
             }
             None | Some(_) => {
@@ -469,11 +483,11 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
     fn handle_unsub_ack(
         mut shared: MutexGuard<'_, M, Shared>,
         pid: crate::Pid,
-        codes: &[u8],
+        codes: heapless::Vec<u8, { crate::crate_config::MAX_SUB_TOPICS_PER_MSG }>,
     ) -> Result<(), StateError> {
         match shared.ack_status.get_mut(&pid.get()) {
             Some(status) if matches!(*status, AckStatus::AwaitingUnsubAck(true)) => {
-                *status = AckStatus::Acked(heapless::Vec::from_slice(codes).unwrap());
+                *status = AckStatus::Acked(codes);
             }
             Some(status) if matches!(*status, AckStatus::AwaitingUnsubAck(false)) => {
                 shared.ack_status.remove(&pid.get());

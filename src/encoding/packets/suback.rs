@@ -1,9 +1,11 @@
 use crate::{
+    crate_config::MAX_SUB_TOPICS_PER_MSG,
     decoder::MqttDecode,
     encoder::MAX_MQTT_HEADER_LEN,
     encoding::{
         encoder::{MqttEncode, MqttEncoder},
         error::Error,
+        reason_code::SubAckReasonCode,
         utils::Pid,
         FixedHeader,
     },
@@ -39,11 +41,14 @@ pub struct SubAck<'a> {
     #[cfg(feature = "mqttv5")]
     pub(crate) properties: Properties<'a>,
 
-    /// The response status code of the subscription request.
+    /// The response status codes of the subscription request.
     ///
     /// * [MQTT v3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc385372118): Section 4.7.2
     /// * [MQTT v5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Toc385372101): Section 4.7.2
-    pub(crate) codes: &'a [u8],
+    pub(crate) codes: heapless::Vec<SubAckReasonCode, MAX_SUB_TOPICS_PER_MSG>,
+
+    #[cfg(feature = "mqttv3")]
+    pub(crate) _marker: core::marker::PhantomData<&'a ()>,
 }
 
 impl FixedHeader for SubAck<'_> {
@@ -57,8 +62,9 @@ impl MqttEncode for SubAck<'_> {
         #[cfg(feature = "mqttv5")]
         encoder.write_properties(&self.properties)?;
 
-        #[cfg(feature = "mqttv5")]
-        encoder.write_payload(&self.codes)?;
+        for &code in &self.codes {
+            encoder.write_u8(code.into())?;
+        }
 
         encoder.finalize_fixed_header(self)?;
         Ok(())
@@ -67,11 +73,10 @@ impl MqttEncode for SubAck<'_> {
     /// Returns the maximum size of the packet in bytes.
     fn max_packet_size(&self) -> usize {
         #[allow(unused_mut)]
-        let mut length = 2 + MAX_MQTT_HEADER_LEN;
+        let mut length = 2 + MAX_MQTT_HEADER_LEN + self.codes.len();
         #[cfg(feature = "mqttv5")]
         {
             length += varint_len(self.properties.size());
-            length += self.codes.len();
         }
         length
     }
@@ -80,11 +85,19 @@ impl MqttEncode for SubAck<'_> {
 impl<'a> MqttDecode<'a> for SubAck<'a> {
     /// Decodes the `SUBACK` packet from the given decoder.
     fn from_decoder(decoder: &mut crate::decoder::MqttDecoder<'a>) -> Result<Self, Error> {
+        let pid = Pid::try_from(decoder.read_u16()?)?;
+        #[cfg(feature = "mqttv5")]
+        let properties = decoder.read_properties()?;
+        let payload = decoder.read_payload()?;
+        let codes = payload.iter().map(|&b| SubAckReasonCode::from(b)).collect();
+
         Ok(Self {
-            pid: Pid::try_from(decoder.read_u16()?)?,
+            pid,
             #[cfg(feature = "mqttv5")]
-            properties: decoder.read_properties()?,
-            codes: decoder.read_payload()?,
+            properties,
+            codes,
+            #[cfg(feature = "mqttv3")]
+            _marker: core::marker::PhantomData,
         })
     }
 }
@@ -99,7 +112,12 @@ mod tests {
     fn test_suback_encode_decode_v311() {
         let suback = SubAck {
             pid: Pid::try_from(1234).unwrap(),
-            codes: &[],
+            codes: heapless::Vec::from_slice(&[
+                SubAckReasonCode::SuccessMaxQoS0,
+                SubAckReasonCode::SuccessMaxQoS1,
+            ])
+            .unwrap(),
+            _marker: core::marker::PhantomData,
         };
 
         let mut buf = [0u8; 512];
@@ -113,12 +131,11 @@ mod tests {
     fn test_suback_encode_decode_v5() {
         let suback = SubAck {
             pid: Pid::try_from(1234).unwrap(),
-            codes: &[
-                0,
-                0, //SubAckReturnCode::Success as u8,
-                  //SubAckReturnCode::Success as u8,
-            ],
-            #[cfg(feature = "mqttv5")]
+            codes: heapless::Vec::from_slice(&[
+                SubAckReasonCode::GrantedQoS0,
+                SubAckReasonCode::GrantedQoS0,
+            ])
+            .unwrap(),
             properties: Properties::default(),
         };
 

@@ -159,16 +159,16 @@ pub enum PubCompReasonCode {
     Unknown = 0xFF,
 }
 
-/// Subscribe return value.
+/// Subscribe acknowledgement reason codes for MQTTv3.
 ///
-/// [SubAck] packets contain a `Vec` of those.
+/// [SubAck] packets contain a `Vec` of these.
 ///
-/// [SubAck]: struct.Subscribe.html
+/// [SubAck]: struct.SubAck.html
 #[cfg(feature = "mqttv3")]
 #[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
-pub enum SubAckReturnCode {
+pub enum SubAckReasonCode {
     /// Success - Maximum QoS 0.
     SuccessMaxQoS0 = 0x00,
     /// Success - Maximum QoS 1.
@@ -181,6 +181,92 @@ pub enum SubAckReturnCode {
     /// The reason code is not one of the documented MQTT reason codes.
     #[num_enum(default)]
     Unknown = 0xFF,
+}
+
+#[cfg(feature = "mqttv3")]
+impl SubAckReasonCode {
+    pub fn success(&self) -> bool {
+        let value = u8::from(*self);
+        value < 0x80
+    }
+}
+
+/// Subscribe acknowledgement reason codes for MQTTv5.
+#[cfg(feature = "mqttv5")]
+#[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum SubAckReasonCode {
+    /// Granted QoS 0.
+    GrantedQoS0 = 0x00,
+    /// Granted QoS 1.
+    GrantedQoS1 = 0x01,
+    /// Granted QoS 2.
+    GrantedQoS2 = 0x02,
+    /// Unspecified error.
+    UnspecifiedError = 0x80,
+    /// Implementation-specific error.
+    ImplementationSpecificError = 0x83,
+    /// Not authorized.
+    NotAuthorized = 0x87,
+    /// Topic filter invalid.
+    TopicFilterInvalid = 0x8F,
+    /// Packet identifier in use.
+    PacketIdentifierInUse = 0x91,
+    /// Quota exceeded.
+    QuotaExceeded = 0x97,
+    /// Shared subscriptions not supported.
+    SharedSubscriptionsNotSupported = 0x9E,
+    /// Subscription identifiers not supported.
+    SubscriptionIdentifiersNotSupported = 0xA1,
+    /// Wildcard subscriptions not supported.
+    WildcardSubscriptionsNotSupported = 0xA2,
+
+    /// The reason code is not one of the documented MQTT reason codes.
+    #[num_enum(default)]
+    Unknown = 0xFF,
+}
+
+#[cfg(feature = "mqttv5")]
+impl SubAckReasonCode {
+    pub fn success(&self) -> bool {
+        let value = u8::from(*self);
+        value < 0x80
+    }
+}
+
+/// Unsubscribe acknowledgement reason codes for MQTTv5.
+#[cfg(feature = "mqttv5")]
+#[derive(PartialEq, PartialOrd, Copy, Clone, Debug, FromPrimitive, IntoPrimitive)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum UnsubAckReasonCode {
+    /// Success.
+    Success = 0x00,
+    /// No subscription existed.
+    NoSubscriptionExisted = 0x11,
+    /// Unspecified error.
+    UnspecifiedError = 0x80,
+    /// Implementation-specific error.
+    ImplementationSpecificError = 0x83,
+    /// Not authorized.
+    NotAuthorized = 0x87,
+    /// Topic filter invalid.
+    TopicFilterInvalid = 0x8F,
+    /// Packet identifier in use.
+    PacketIdentifierInUse = 0x91,
+
+    /// The reason code is not one of the documented MQTT reason codes.
+    #[num_enum(default)]
+    Unknown = 0xFF,
+}
+
+#[cfg(feature = "mqttv5")]
+impl UnsubAckReasonCode {
+    pub fn success(&self) -> bool {
+        let value = u8::from(*self);
+        value < 0x80
+    }
 }
 
 /// Connect Return code.
