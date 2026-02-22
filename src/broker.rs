@@ -74,6 +74,29 @@ impl<'a, R: Dns, const T: usize> DomainBroker<'a, R, T> {
             addr,
         })
     }
+
+    /// Creates a new `DomainBroker` with a separate endpoint and port.
+    ///
+    /// # Arguments
+    /// * `endpoint` - The domain name of the broker (e.g., `broker.example.com`).
+    /// * `port` - The port number to connect to.
+    /// * `resolver` - A `embedded_nal::Dns` resolver for resolving the domain name.
+    ///
+    /// # Errors
+    /// Returns an error if the provided `endpoint` string is too long.
+    #[allow(clippy::result_unit_err)]
+    pub fn new_with_port(endpoint: &str, port: u16, resolver: &'a R) -> Result<Self, ()> {
+        let addr = SocketAddr::new(
+            IpAddr::V4(endpoint.parse().unwrap_or(Ipv4Addr::UNSPECIFIED)),
+            port,
+        );
+
+        Ok(Self {
+            raw: heapless::String::try_from(endpoint).map_err(drop)?,
+            resolver,
+            addr,
+        })
+    }
 }
 
 impl<'a, R: Dns, const T: usize> Broker for DomainBroker<'a, R, T> {
