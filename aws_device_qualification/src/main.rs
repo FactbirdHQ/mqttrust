@@ -2,7 +2,7 @@ mod credentials;
 
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{
+use mqttrust::{
     transport::embedded_tls::{TlsNalTransport, TlsState},
     Config, DomainBroker, Publish, State, Subscribe, SubscribeTopic,
 };
@@ -20,7 +20,7 @@ async fn mqttv5() {
     static NETWORK: StaticCell<Network> = StaticCell::new();
     let network = NETWORK.init(Network::new());
 
-    let client_id = "embedded-mqtt";
+    let client_id = "mqttrust";
     let hostname = common::credentials::hostname();
 
     // Create the MQTT stack
@@ -30,7 +30,7 @@ async fn mqttv5() {
 
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024, 2>> = StaticCell::new();
     let state = STATE.init(State::<NoopRawMutex, 1024, 1024, 2>::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     let idle = async {
         log::debug!("Starting publish!");
@@ -40,12 +40,12 @@ async fn mqttv5() {
             client
                 .publish(Publish {
                     dup: false,
-                    qos: embedded_mqtt::QoS::AtLeastOnce,
+                    qos: mqttrust::QoS::AtLeastOnce,
                     pid: None,
                     retain: false,
-                    topic_name: "plc/input/embedded_mqtt",
+                    topic_name: "plc/input/mqttrust",
                     payload: format!("This is my super secret payload {i}").as_bytes(),
-                    properties: embedded_mqtt::Properties::Slice(&[]),
+                    properties: mqttrust::Properties::Slice(&[]),
                 })
                 .await
                 .unwrap();
@@ -55,11 +55,11 @@ async fn mqttv5() {
 
     let sub = async {
         let subscribe = Subscribe::new(&[SubscribeTopic {
-            topic_path: "plc/input/embedded_mqtt",
-            maximum_qos: embedded_mqtt::QoS::AtLeastOnce,
+            topic_path: "plc/input/mqttrust",
+            maximum_qos: mqttrust::QoS::AtLeastOnce,
             no_local: false,
             retain_as_published: false,
-            retain_handling: embedded_mqtt::RetainHandling::SendAtSubscribeTime,
+            retain_handling: mqttrust::RetainHandling::SendAtSubscribeTime,
         }]);
 
         let mut msg_cnt = 0;

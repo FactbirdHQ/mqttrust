@@ -2,7 +2,7 @@
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Duration;
-use embedded_mqtt::{pubsub::PubSubChannel, SliceBufferProvider};
+use mqttrust::{pubsub::PubSubChannel, SliceBufferProvider};
 
 use futures::future::{join, join_all};
 use libfuzzer_sys::fuzz_target;

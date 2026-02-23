@@ -1,10 +1,10 @@
 [package]
-name = "embedded-mqtt-examples-rp2040"
+name = "mqttrust-examples-rp2040"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-embedded-mqtt = { path = "../../" }
+mqttrust = { path = "../../" }
 
 portable-atomic = { version = "1.0.2", features = [
     "unsafe-assume-single-core",

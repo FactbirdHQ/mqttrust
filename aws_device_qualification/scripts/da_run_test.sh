@@ -9,7 +9,7 @@ set -e
 
 DAEMONIZE=true
 
-THING_NAME="embedded-mqtt"
+THING_NAME="mqttrust"
 SUITE_ID="1gaev57dq6i5"
 export RUST_LOG=debug 
 

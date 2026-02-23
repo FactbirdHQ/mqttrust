@@ -18,7 +18,7 @@ use embassy_rp::{
 };
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::{Duration, Timer};
-use embedded_mqtt::{
+use mqttrust::{
     transport::embedded_nal::NalTransport, Config, IpBroker, MqttClient, MqttStack, Publish, State,
     Subscribe, SubscribeTopic,
 };
@@ -149,7 +149,7 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(net_task(runner));
 
-    // Setup `embedded-mqtt`
+    // Setup `mqttrust`
 
     let client_id = "MyClient";
 
@@ -162,7 +162,7 @@ async fn main(spawner: Spawner) {
 
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mqtt_stack, client) = embedded_mqtt::new(state, config);
+    let (mqtt_stack, client) = mqttrust::new(state, config);
 
     static CLIENT: StaticCell<MqttClient<'static, NoopRawMutex>> = StaticCell::new();
     let client = CLIENT.init(client);

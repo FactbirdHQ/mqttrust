@@ -1,4 +1,4 @@
-# embedded-mqtt
+# mqttrust
 
 A lightweight, `#![no_std]` async MQTT client for embedded systems.
 
@@ -19,7 +19,7 @@ A lightweight, `#![no_std]` async MQTT client for embedded systems.
 
 ```rust,ignore
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{
+use mqttrust::{
     transport::embedded_nal::NalTransport, Config, IpBroker, Publish, State, Subscribe,
 };
 
@@ -34,7 +34,7 @@ let config = Config::builder()
     .keepalive_interval(Duration::from_secs(30))
     .build();
 
-let (mut mqtt_stack, client) = embedded_mqtt::new(state, config);
+let (mut mqtt_stack, client) = mqttrust::new(state, config);
 
 // Run the stack in a background task
 spawner.spawn(mqtt_task(mqtt_stack, broker)).unwrap();
@@ -85,7 +85,7 @@ For example, to allow up to 256-byte topic names:
 
 ```toml
 [dependencies]
-embedded-mqtt = { version = "0.1", features = ["mqttv5", "max-topic-len-256"] }
+mqttrust = { version = "1.0", features = ["mqttv5", "max-topic-len-256"] }
 ```
 
 ## Contributing

@@ -7,11 +7,11 @@ use common::network::Network;
 use core::net::Ipv4Addr;
 use embassy_futures::select;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_mqtt::{
+use futures_util::StreamExt;
+use mqttrust::{
     transport::embedded_nal::NalTransport, Config, IpBroker, Publish, State, Subscribe,
     SubscribeTopic,
 };
-use futures_util::StreamExt;
 use static_cell::StaticCell;
 
 const ROUND_TRIP_COUNT: usize = 15;
@@ -36,7 +36,7 @@ async fn main() {
 
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     let idle = async {
         log::debug!("Starting publish!");
@@ -44,7 +44,7 @@ async fn main() {
             client
                 .publish(
                     Publish::builder()
-                        .topic_name("embedded_mqtt/embassy_async/hello")
+                        .topic_name("mqttrust/embassy_async/hello")
                         .payload(format!("This is my super secret payload {i}").as_bytes())
                         .build(),
                 )
@@ -56,7 +56,7 @@ async fn main() {
 
     let sub = async {
         let topics = [SubscribeTopic::builder()
-            .topic_path("embedded_mqtt/embassy_async/hello")
+            .topic_path("mqttrust/embassy_async/hello")
             .build()];
         let subscribe = Subscribe::builder().topics(&topics).build();
 

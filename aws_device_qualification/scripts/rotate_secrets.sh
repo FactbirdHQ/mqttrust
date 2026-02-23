@@ -8,7 +8,7 @@ fi
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 SECRETS_DIR="$SCRIPT_DIR/../secrets"
 CLIENT_CONFIG="$SECRETS_DIR/client.config"
-THING_NAME="embedded-mqtt"
+THING_NAME="mqttrust"
 
 CERT_PATH="$SECRETS_DIR/cert.pem"
 PRIV_KEY_PATH="$SECRETS_DIR/priv.key.pem"

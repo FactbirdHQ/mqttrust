@@ -23,7 +23,7 @@ suite_run_id=$2
 # The PID of the binary being tested.
 pid=$3
 
-STATUS_FILE=/tmp/embedded-mqtt-qual-run-$$.status
+STATUS_FILE=/tmp/mqttrust-qual-run-$$.status
 IN_PROGRESS=1
 MONITOR_STATUS=0
 function report_status {

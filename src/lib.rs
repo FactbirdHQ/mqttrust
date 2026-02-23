@@ -14,7 +14,7 @@
 //!
 //! ```ignore
 //! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-//! use embedded_mqtt::{new, Config, State};
+//! use mqttrust::{new, Config, State};
 //!
 //! let mut state = State::<NoopRawMutex, 1024, 1024>::new();
 //! let config = Config::builder()
@@ -145,7 +145,7 @@ struct StateInner<'a, M: RawMutex> {
 /// # Example
 ///
 /// ```ignore
-/// use embedded_mqtt::{new, Config, State};
+/// use mqttrust::{new, Config, State};
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 ///
 /// let mut state = State::<NoopRawMutex, 1024, 1024>::new();

@@ -76,7 +76,7 @@ jobs:
   #     AWS_ACCESS_KEY_ID: ${{ secrets.MGMT_AWS_ACCESS_KEY_ID }}
   #     AWS_SECRET_ACCESS_KEY: ${{ secrets.MGMT_AWS_SECRET_ACCESS_KEY }}
   #     SUITE_ID: 1gaev57dq6i5
-  #     THING_ARN: arn:aws:iot:eu-west-1:411974994697:thing/embedded-mqtt
+  #     THING_ARN: arn:aws:iot:eu-west-1:411974994697:thing/mqttrust
   #   steps:
   #     - name: Checkout source code
   #       uses: actions/checkout@v4

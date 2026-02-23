@@ -10,11 +10,11 @@ use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
     signal::Signal,
 };
-use embedded_mqtt::{
+use futures_util::StreamExt;
+use mqttrust::{
     transport::embedded_nal::NalTransport, Config, IpBroker, Publish, State, Subscribe,
     SubscribeTopic,
 };
-use futures_util::StreamExt;
 use static_cell::StaticCell;
 
 const ROUND_TRIP_COUNT: usize = 15;
@@ -38,7 +38,7 @@ async fn mqttv5() {
         .build();
     static STATE: StaticCell<State<NoopRawMutex, 1024, 1024>> = StaticCell::new();
     let state = STATE.init(State::new());
-    let (mut stack, client) = embedded_mqtt::new(state, config);
+    let (mut stack, client) = mqttrust::new(state, config);
 
     let connected_signal = Signal::<CriticalSectionRawMutex, ()>::new();
 
@@ -50,7 +50,7 @@ async fn mqttv5() {
             client
                 .publish(
                     Publish::builder()
-                        .topic_name("embedded_mqtt/embassy_async/hello")
+                        .topic_name("mqttrust/embassy_async/hello")
                         .payload(format!("This is my super secret hello payload {i}").as_bytes())
                         .build(),
                 )
@@ -60,7 +60,7 @@ async fn mqttv5() {
             client
                 .publish(
                     Publish::builder()
-                        .topic_name("embedded_mqtt/embassy_async/other_topic")
+                        .topic_name("mqttrust/embassy_async/other_topic")
                         .payload(
                             format!("This is my super secret other_topic payload {i}").as_bytes(),
                         )
@@ -72,7 +72,7 @@ async fn mqttv5() {
             client
                 .publish(
                     Publish::builder()
-                        .topic_name("embedded_mqtt/embassy_async_no_subs/hello")
+                        .topic_name("mqttrust/embassy_async_no_subs/hello")
                         .payload(format!("This is my super secret payload {i}").as_bytes())
                         .build(),
                 )
@@ -95,7 +95,7 @@ async fn mqttv5() {
             .subscribe::<1>(
                 Subscribe::builder()
                     .topics(&[SubscribeTopic::builder()
-                        .topic_path("embedded_mqtt/embassy_async/#")
+                        .topic_path("mqttrust/embassy_async/#")
                         .build()])
                     .build(),
             )
@@ -106,7 +106,7 @@ async fn mqttv5() {
             .subscribe::<1>(
                 Subscribe::builder()
                     .topics(&[SubscribeTopic::builder()
-                        .topic_path("embedded_mqtt/others/#")
+                        .topic_path("mqttrust/others/#")
                         .build()])
                     .build(),
             )
@@ -121,7 +121,7 @@ async fn mqttv5() {
                 core::str::from_utf8(message.payload())
             );
 
-            if message.topic_name() == "embedded_mqtt/embassy_async_no_subs/hello" {
+            if message.topic_name() == "mqttrust/embassy_async_no_subs/hello" {
                 return Err(());
             }
 

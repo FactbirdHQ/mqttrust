@@ -8,7 +8,7 @@ use super::error::Error;
 /// For packets with [`QoS::AtLeastOne` or `QoS::ExactlyOnce`] delivery.
 ///
 /// ```rust
-/// # use embedded_mqtt::{Pid, QosPid};
+/// # use mqttrust::{Pid, QosPid};
 /// # use std::convert::TryFrom;
 /// #[derive(Default)]
 /// struct Session {

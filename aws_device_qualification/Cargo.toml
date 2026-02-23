@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-embedded-mqtt = { path = "..", features = ["mqttv5", "log"]}
+mqttrust = { path = "..", features = ["mqttv5", "log"]}
