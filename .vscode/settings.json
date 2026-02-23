@@ -1,0 +1,8 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "examples/rp2040/Cargo.toml"
+    // "examples/aws_device_qualification/Cargo.toml",
+    // "fuzz/Cargo.toml"
+  ],
+  "rust-analyzer.cargo.features": ["mqttv5"]
+}
