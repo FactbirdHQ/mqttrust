@@ -94,7 +94,7 @@ impl<const SUBS: usize> State<SUBS> {
                 let front = self.messages.front().unwrap();
 
                 let back_end = back.start + back.len as usize;
-                let inverted = back_end < front.start;
+                let inverted = back_end <= front.start;
 
                 if inverted {
                     front.start - back_end
