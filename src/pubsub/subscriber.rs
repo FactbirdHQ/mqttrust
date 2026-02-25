@@ -503,6 +503,50 @@ mod tests {
     }
 
     #[test_log::test]
+    fn grant_immediate_refuses_to_evict_read_in_progress() {
+        let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 1> =
+            PubSubChannel::new(StaticBufferProvider::new());
+        let mut publisher = pubsub.publisher().unwrap();
+        let mut subscriber = pubsub.subscriber().unwrap();
+
+        // Fill the buffer with messages until near capacity
+        let mut msg_count = 0;
+        loop {
+            match publisher.grant(64) {
+                Ok(mut wgr) => {
+                    for (i, by) in wgr.iter_mut().enumerate() {
+                        *by = (msg_count * 10 + i) as u8;
+                    }
+                    wgr.commit(64);
+                    msg_count += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(msg_count > 0);
+
+        // Subscriber takes a read grant on the front message
+        let rgr = subscriber.read().unwrap();
+        let original_data: Vec<u8> = rgr.iter().copied().collect();
+
+        // grant_immediate needs to evict but front has read_in_progress — must fail
+        let result = publisher.grant_immediate(128);
+        assert!(
+            result.is_err(),
+            "grant_immediate should fail when front message has active read grant"
+        );
+
+        // Verify the held grant's data is unchanged
+        let current_data: Vec<u8> = rgr.iter().copied().collect();
+        assert_eq!(
+            original_data, current_data,
+            "read grant data was corrupted by grant_immediate"
+        );
+
+        rgr.release();
+    }
+
+    #[test_log::test]
     fn dropping_subscriber_with_active_read_grant() {
         let pubsub: PubSubChannel<CriticalSectionRawMutex, StaticBufferProvider<256>, 3> =
             PubSubChannel::new(StaticBufferProvider::new());

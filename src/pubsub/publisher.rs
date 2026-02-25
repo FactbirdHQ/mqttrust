@@ -121,10 +121,19 @@ where
             let mut inner = inner.borrow_mut();
 
             while inner.free_space() < max_sz || inner.messages.is_full() {
-                let message = inner.messages.pop_front();
-                warn!("Force removed message! {:?}", message);
+                match inner.messages.front() {
+                    Some(front) if front.read_in_progress => {
+                        return Err(Error::InsufficientSize);
+                    }
+                    Some(_) => {
+                        let message = inner.messages.pop_front();
+                        warn!("Force removed message! {:?}", message);
+                    }
+                    None => break,
+                }
             }
-        });
+            Ok(())
+        })?;
 
         self.grant(max_sz)
     }
@@ -199,7 +208,7 @@ where
 
                     let back_end = back.start + back.len as usize;
 
-                    let inverted = back_end < front.start;
+                    let inverted = back_end <= front.start;
 
                     // We already checked that there is enough capacity in the
                     // channel, so we just need to determine if we should wrap
