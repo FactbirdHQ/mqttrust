@@ -553,7 +553,12 @@ where
             }
 
             if inner.subscriber_count == 0 {
-                // We don't need to publish anything because there is no one to receive it
+                // No subscribers — discard the message but still clear the
+                // write lock so subsequent grants can proceed. Without this,
+                // write_in_progress stays true permanently, causing every
+                // future grant_immediate() to fail with GrantInProgress and
+                // silently dropping all incoming PUBLISH messages.
+                inner.write_in_progress = false;
                 return;
             }
             let header = Header {
