@@ -16,20 +16,20 @@ exclude = ["examples", "fuzz", "aws_device_qualification"]
 [dependencies]
 cortex-m = { version = "0.7.6", optional = true }
 
-embedded-io-async = { version = "0.7" }
-embedded-nal-async = { version = "0.9" }
+embedded-io-async = "0.7"
+embedded-nal-async = "0.9"
 heapless = { version = "0.9", features = ["serde"] }
 num_enum = { version = "0.7", default-features = false }
 futures-util = { version = "0.3.28", default-features = false }
 itertools = { version = "0.13", default-features = false }
-bon = { version = "2.3", default-features = false }
+bon = { version = "3", default-features = false }
 
-defmt = { version = "0.3.5", optional = true }
+defmt = { version = "1", optional = true }
 log = { version = "0.4", optional = true }
 
-embassy-sync = { version = "0.7.2" }
-embassy-futures = "0.1.2"
-embassy-time = { version = "0.5.0" }
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+embassy-time = "0.5"
 
 embedded-tls = { git = "https://github.com/drogue-iot/embedded-tls", rev = "426f327", default-features = false, optional = true }
 
@@ -44,9 +44,9 @@ dns-lookup = "2"
 async-io = { version = "2", default-features = false }
 futures-lite = { version = "2.1", default-features = false, features = ["std"] }
 
-embassy-futures = { version = "0.1.0" }
-embassy-sync = { version = "0.7.2", features = ["log"] }
-embassy-time = { version = "0.5.0", features = [
+embassy-futures = { version = "0.1" }
+embassy-sync = { version = "0.8", features = ["log"] }
+embassy-time = { version = "0.5", features = [
     "log",
     "std",
     "generic-queue-8",
@@ -65,7 +65,7 @@ tokio = { version = "1.33", default-features = false, features = [
 test-log = "0.2.8"
 env_logger = "0.11"
 futures = { version = "0.3.17" }
-log = "0.4.14"
+log = "0.4"
 static_cell = { version = "2", features = [] }
 openssl = "0.10"
 rumqttd = "0.19"
