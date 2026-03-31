@@ -25,7 +25,7 @@ embassy-time = { version = "0.5.0", features = [
     "std",
     "generic-queue-8",
 ] }
-embassy-sync = { version = "0.7.2" }
+embassy-sync = { version = "0.8" }
 embassy-futures = { version = "0.1" }
 
 
