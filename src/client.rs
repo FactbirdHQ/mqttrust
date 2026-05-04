@@ -120,8 +120,6 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
             Poll::Pending
         })
         .await
-
-        
     }
 
     /// Enqueues an MQTT packet into the transmit queue, to be sent by the [`MqttStack`].
