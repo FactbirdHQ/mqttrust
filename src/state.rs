@@ -31,6 +31,17 @@ pub struct Shared {
     /// - `None` if disconnected
     pub(crate) connected: Option<bool>,
 
+    /// Monotonic counter incremented only when a reconnect lands with
+    /// `session_present=false` (clean session). `Subscription` snapshots
+    /// this on creation so `poll_next` can detect that the broker has
+    /// dropped our subscriptions and signal `None` to wake parked waiters.
+    /// Transient disconnects and session-resume reconnects do not bump
+    /// this counter — both broker and local subscriber state survive, so
+    /// the subscription stays valid. This survives `Subscription`'s
+    /// lifetime (it lives in the long-lived `Shared`), unlike a future-local
+    /// `prev_state`, which `poll_next` can't preserve across re-creation.
+    pub(crate) clean_session_count: u8,
+
     /// Outgoing QoS 1, 2 publishes which aren't acked yet
     pub(crate) inflight_pub: FnvIndexSet<u16, MAX_INFLIGHT>,
     pub(crate) ack_status: FnvIndexMap<u16, AckStatus, { MAX_SUBSCRIBERS }>,
@@ -55,6 +66,7 @@ impl Shared {
             connection_waker: WakerRegistration::new(),
             connection_state_change_waker: WakerRegistration::new(),
             connected: None,
+            clean_session_count: 0,
 
             inflight_pub: heapless::IndexSet::new(),
             ack_status: IndexMap::new(),
@@ -101,6 +113,16 @@ impl Shared {
 
         // Wake state change waker if connection state actually changed
         if previous != connected {
+            // Only count clean-session reconnects. A transient disconnect
+            // (`None`) or a session-resume reconnect (`Some(true)`) leaves
+            // both the broker's and our local subscriber state intact, so
+            // active `Subscription`s stay valid. Bumping the counter only
+            // on `Some(false)` (broker reports session_present=false)
+            // means quick reconnects no longer spuriously invalidate
+            // subscriptions.
+            if connected == Some(false) {
+                self.clean_session_count = self.clean_session_count.wrapping_add(1);
+            }
             self.connection_state_change_waker.wake();
         }
     }
