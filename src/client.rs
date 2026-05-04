@@ -122,25 +122,6 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
         .await
     }
 
-    /// Cleans the session by waiting for the connection state to change.
-    async fn clean_session(&self) {
-        let mut prev_state = self.shared.lock().await.connected;
-
-        poll_fn(|cx| {
-            if let Ok(mut shared) = self.shared.try_lock() {
-                if let (None | Some(true), Some(false)) = (prev_state, shared.connected) {
-                    return Poll::Ready(());
-                }
-                prev_state = shared.connected;
-                shared.connection_waker.register(cx.waker());
-                return Poll::Pending;
-            }
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        })
-        .await;
-    }
-
     /// Enqueues an MQTT packet into the transmit queue, to be sent by the [`MqttStack`].
     ///
     /// # Parameters
@@ -354,10 +335,13 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
             .map(|sub| TopicFilter::new(sub.topic_path))
             .collect::<Result<_, _>>()?;
 
+        let created_clean_session_count = self.shared.lock().await.clean_session_count;
+
         Ok(Subscription {
             subscriber,
             topic_filters,
             client: self,
+            created_clean_session_count,
         })
     }
 
@@ -477,6 +461,14 @@ pub struct Subscription<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> {
     topic_filters: heapless::Vec<TopicFilter, MAX_TOPICS>,
     subscriber: FrameSubscriber<'a, M, SliceBufferProvider<'a>, MAX_SUBSCRIBERS>,
     client: &'b MqttClient<'a, M>,
+    /// Snapshot of `Shared::clean_session_count` at subscribe time.
+    /// Compared in `poll_next`; if the live counter has advanced, the broker
+    /// has reported `session_present=false` since this subscription was
+    /// created — meaning it has dropped our subscriptions — and the wait
+    /// returns `None`. Transient disconnects and session-resume reconnects
+    /// do not advance the counter, so quick reconnects keep subscriptions
+    /// alive.
+    created_clean_session_count: u8,
 }
 
 impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> Subscription<'a, 'b, M, MAX_TOPICS> {
@@ -567,15 +559,24 @@ impl<'a, 'b, M: RawMutex, const MAX_TOPICS: usize> futures_util::Stream
             subscriber,
             topic_filters,
             client,
+            created_clean_session_count,
         } = self.get_mut();
 
-        // Check for clean session first - if clean session occurred, return None
-        // to signal the subscription is no longer valid
-        let clean_session_future = client.clean_session();
-        futures_util::pin_mut!(clean_session_future);
-
-        if clean_session_future.poll(cx).is_ready() {
-            return Poll::Ready(None);
+        // Return None if the broker has dropped our subs since this
+        // Subscription was created. `clean_session_count` is bumped by
+        // `set_connected` only on `session_present=false`; transient
+        // disconnects and session-resume reconnects leave subs valid.
+        // Register the waker before checking so a concurrent
+        // `set_connected` can't slip through.
+        if let Ok(mut shared) = client.shared.try_lock() {
+            shared.connection_state_change_waker.register(cx.waker());
+            if shared.clean_session_count != *created_clean_session_count {
+                return Poll::Ready(None);
+            }
+        } else {
+            // Lock contended (likely `set_connected` running) — retry.
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
         }
 
         match subscriber.read_with_context(Some(cx)) {
