@@ -42,6 +42,9 @@ pub struct MqttStack<'a, M: RawMutex> {
     write_buf: [u8; 32],
 
     last_network_action: Instant,
+    /// Diagnostic: when we last received ANY packet from the broker. Used to
+    /// report how long the RX path has been silent when a stack error surfaces.
+    last_inbound: Instant,
     awaiting_pingresp: bool,
 
     clean_start: bool,
@@ -68,6 +71,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             connect_attempts: 0,
 
             last_network_action: Instant::now(),
+            last_inbound: Instant::now(),
             awaiting_pingresp: false,
         }
     }
@@ -124,7 +128,16 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             };
 
             if let Err(e) = fut.await {
-                error!("Stack error {}", e);
+                // Diagnostic context: how long the RX path had been silent and
+                // how many QoS>0 publishes were still unacked when the socket
+                // died. A large idle_rx with the local timeout firing points at
+                // a link/carrier blackhole rather than a broker-side close.
+                let idle_rx_ms = self.last_inbound.elapsed().as_millis();
+                let inflight = self.shared.lock().await.inflight_pub.len();
+                error!(
+                    "Stack error {} (idle_rx {} ms, inflight_pub {}, awaiting_pingresp {})",
+                    e, idle_rx_ms, inflight, self.awaiting_pingresp
+                );
                 // Clean state
                 transport.disconnect().ok();
                 self.reset().await;
@@ -207,6 +220,8 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                 //
                 // Handle all incoming packet types by sending ack & waking
                 // // `tx_wakers`.
+                // Diagnostic: record that the RX path is alive.
+                self.last_inbound = Instant::now();
                 match packet {
                     ReceivedPacket::ConnAck(_) => {
                         // This should never happen, as this function is not
@@ -218,6 +233,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                         warn!("Received disconnect packet {:?}", reason_code);
                     }
                     ReceivedPacket::PingResp => {
+                        info!("PINGRESP received");
                         // If there was no timeout to begin with, log the spurious ping response.
                         if !self.awaiting_pingresp {
                             warn!("Got unexpected ping response");
@@ -374,11 +390,15 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
 
     fn handle_keep_alive(&mut self) -> Result<PingReq, StateError> {
         if self.awaiting_pingresp {
+            warn!(
+                "Keepalive fired with previous PINGRESP still outstanding (idle_rx {} ms) — declaring connection dead",
+                self.last_inbound.elapsed().as_millis()
+            );
             return Err(StateError::AwaitPingResp);
         }
 
-        debug!(
-            "Pingreq, last network action @ {} millisecs, current time {} millisecs",
+        info!(
+            "Sending PINGREQ, last network action @ {} millisecs, current time {} millisecs",
             self.last_network_action.as_millis(),
             Instant::now().as_millis()
         );
