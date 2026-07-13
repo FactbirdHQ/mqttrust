@@ -563,7 +563,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
         // send mqtt connect packet — use a stack buffer large enough for
         // client_id + username + password + last_will
         {
-            let mut connect_buf = [0u8; 512];
+            let mut connect_buf = [0u8; 1024];
             let bytes =
                 encode_packet(&mut connect_buf, connect).map_err(ConnectionError::MqttState)?;
             write_bytes(socket, bytes)
