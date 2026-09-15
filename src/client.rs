@@ -241,7 +241,10 @@ impl<'a, M: RawMutex> MqttClient<'a, M> {
     ) -> Result<(), Error> {
         let mut pub_pkg: Publish<'_, P> = packet.into();
 
-        const MAX_ATTEMPTS: u8 = 3;
+        // 5+10+15+20+25+30 = 105s. A link can go one-way silent for a minute or
+        // more and still recover on its own, and a shorter budget fails the
+        // publish mid-stall on a connection that was never actually lost.
+        const MAX_ATTEMPTS: u8 = 6;
 
         for attempt in 1..=MAX_ATTEMPTS {
             self.wait_connected().await;
