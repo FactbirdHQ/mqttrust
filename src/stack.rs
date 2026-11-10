@@ -9,6 +9,7 @@ use embedded_io_async::{Error as _, Read, Write};
 
 use crate::crate_config::MAX_SUBSCRIBERS;
 
+use crate::encoder::MqttEncode;
 use crate::{
     config::Config,
     encoding::{
@@ -186,6 +187,9 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     .map_err(|e| StateError::Io(e.kind()))?;
 
                 socket.flush().await.map_err(|e| StateError::Io(e.kind()))?;
+                // Manually update last_network_action since this branch writes
+                // directly to the socket rather than going through send_packet.
+                self.last_network_action = Instant::now();
 
                 let mut shared = self.shared.lock().await;
 
@@ -267,8 +271,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     #[cfg(feature = "mqttv3")]
                                     _marker: core::marker::PhantomData,
                                 };
-                                let bytes = encode_packet(&mut self.write_buf, puback)?;
-                                write_bytes(socket, bytes).await?;
+                                self.send_packet(socket, puback).await?;
                             }
                             #[cfg(feature = "qos2")]
                             QosPid::ExactlyOnce(pid) => {
@@ -288,8 +291,7 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                                     #[cfg(feature = "mqttv3")]
                                     _marker: core::marker::PhantomData,
                                 };
-                                let bytes = encode_packet(&mut self.write_buf, pubrec)?;
-                                write_bytes(socket, bytes).await?;
+                                self.send_packet(socket, pubrec).await?;
                             }
                         }
                     }
@@ -323,15 +325,13 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
                     ReceivedPacket::PubRel(p) => {
                         let shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rel(shared, p)?;
-                        let bytes = encode_packet(&mut self.write_buf, packet)?;
-                        write_bytes(socket, bytes).await?;
+                        self.send_packet(socket, packet).await?;
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubRec(p) => {
                         let shared = self.shared.lock().await;
                         let packet = Self::handle_pub_rec(shared, p)?;
-                        let bytes = encode_packet(&mut self.write_buf, packet)?;
-                        write_bytes(socket, bytes).await?;
+                        self.send_packet(socket, packet).await?;
                     }
                     #[cfg(feature = "qos2")]
                     ReceivedPacket::PubComp(p) => {
@@ -351,16 +351,23 @@ impl<'a, M: RawMutex> MqttStack<'a, M> {
             },
             Either3::Third(_) => {
                 let packet = self.handle_keep_alive()?;
-                let bytes = encode_packet(&mut self.write_buf, packet)?;
-                write_bytes(socket, bytes).await?;
+                self.send_packet(socket, packet).await?;
             }
             _ => {}
         }
 
-        // Update the last network action, in order to keep track of when to
-        // PING for keep-alive
-        self.last_network_action = Instant::now();
+        Ok(())
+    }
 
+    /// Encodes and writes a packet to the socket, updating the last_network_action
+    async fn send_packet<S: Write>(
+        &mut self,
+        socket: &mut S,
+        packet: impl MqttEncode,
+    ) -> Result<(), StateError> {
+        let bytes = encode_packet(&mut self.write_buf, packet)?;
+        write_bytes(socket, bytes).await?;
+        self.last_network_action = Instant::now();
         Ok(())
     }
 
