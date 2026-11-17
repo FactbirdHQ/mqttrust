@@ -81,6 +81,9 @@ pub use stack::MqttStack;
 use state::Shared;
 
 pub use encoding::*;
+/// Returned by [`transport::Transport::connect`]; public so crates outside this
+/// one can implement `Transport`, e.g. to wrap [`transport::embedded_tls::TlsNalTransport`].
+pub use error::ConnectionError;
 pub use error::Error;
 
 #[cfg(feature = "mqttv5")]
