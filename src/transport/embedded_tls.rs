@@ -159,10 +159,10 @@ impl<'d, N: TcpConnect, const RX: usize, const TX: usize> TlsConnection<'d, N, R
     /// # Returns
     ///
     /// A new instance of `TlsConnection` or a `TlsError` if the connection could not be created.
-    pub(crate) fn new(
-        socket: N::Connection<'d>,
-        state: &'d TlsState<RX, TX>,
-    ) -> Result<Self, TlsError> {
+    ///
+    /// Public so a transport outside this crate can do its own resolution
+    /// and TCP connect, and run work between those and the TLS handshake.
+    pub fn new(socket: N::Connection<'d>, state: &'d TlsState<RX, TX>) -> Result<Self, TlsError> {
         let mut bufs = state.pool.alloc().ok_or(TlsError::InsufficientSpace)?;
 
         let socket = unsafe {
